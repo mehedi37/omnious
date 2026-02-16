@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.env
+.env.*
+coverage/
+.turbo/
+*.tsbuildinfo
+.DS_Store
+.build-progress.md
+.migration-state.md
+
+# local
+.vscode/
+.idea/
+*.log
+.directory
+*-lock.json
+.github/*
+!.github/workflows/
+
+
+# Supabase
+supabase/*
+!supabase/migrations/
+!suabase/seed.sql

@@ -1,0 +1,21 @@
+import { ServiceNode } from './service-node';
+import { ModuleNode } from './module-node';
+import { FunctionNode } from './function-node';
+import { ComponentNode } from './component-node';
+import { RouteNode } from './route-node';
+import { DatabaseNode } from './database-node';
+import { ErrorNode } from './error-node';
+
+/**
+ * Module-level nodeTypes constant — MUST be defined outside component
+ * to prevent React Flow from re-registering on every render.
+ */
+export const nodeTypes = {
+  service: ServiceNode,
+  module: ModuleNode,
+  function: FunctionNode,
+  component: ComponentNode,
+  route: RouteNode,
+  database: DatabaseNode,
+  error: ErrorNode,
+} as const;

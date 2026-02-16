@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+.gitignore
+*.md
+.env*
+!.env.example
+biome.json
+tsconfig.json
+.vscode
+.github

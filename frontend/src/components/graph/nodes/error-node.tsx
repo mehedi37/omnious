@@ -1,0 +1,51 @@
+'use client';
+
+import { memo } from 'react';
+import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { AlertTriangle } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import type { GraphNodeData } from '@/lib/oir/transforms';
+
+function ErrorNodeComponent({ data, selected }: NodeProps) {
+  const d = data as unknown as GraphNodeData;
+  const errorCount = d.errorCount ?? 0;
+
+  return (
+    <>
+      <Handle type="target" position={Position.Top} className="!bg-red-500 !w-2 !h-2" />
+      <div
+        className={`
+          rounded-lg border-2 border-red-500/50 bg-red-500/10 px-4 py-3
+          min-w-[160px] max-w-[280px]
+          shadow-md shadow-red-500/20
+          animate-pulse-slow
+          transition-all duration-150
+          ${selected ? 'ring-2 ring-red-500 ring-offset-2 ring-offset-background' : ''}
+        `}
+      >
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0" />
+          <span className="text-sm font-medium truncate">{d.label}</span>
+          <Badge variant="destructive" className="ml-auto text-[10px] px-1.5 py-0 font-bold">
+            {errorCount}
+          </Badge>
+        </div>
+        {d.errorSeverity && (
+          <Badge variant="outline" className="mt-1.5 text-[10px] border-red-500/30 text-red-600 dark:text-red-400">
+            {d.errorSeverity}
+          </Badge>
+        )}
+        {d.filePath && (
+          <p className="text-[11px] text-red-600/70 dark:text-red-400/70 truncate mt-1">
+            {d.filePath}
+          </p>
+        )}
+      </div>
+      <Handle type="source" position={Position.Bottom} className="!bg-red-500 !w-2 !h-2" />
+    </>
+  );
+}
+
+export const ErrorNode = memo(ErrorNodeComponent, (prev, next) => {
+  return prev.data === next.data && prev.selected === next.selected;
+});

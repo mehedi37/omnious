@@ -1,0 +1,50 @@
+{
+  "name": "@omnious/backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Omnious — Visual Debugging Platform Backend API",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "lint": "eslint src/ --ext .ts",
+    "lint:fix": "eslint src/ --ext .ts --fix",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "db:types": "npx supabase gen types typescript --project-id affphbbgnddtklbttooy > src/lib/supabase/database.types.ts",
+    "docker:build": "docker build -t omnious-backend .",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "clean": "rm -rf dist node_modules .turbo"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@fastify/helmet": "^13.0.0",
+    "@fastify/rate-limit": "^10.2.0",
+    "@fastify/sensible": "^6.0.0",
+    "@fastify/swagger": "^9.4.0",
+    "@fastify/swagger-ui": "^5.2.0",
+    "@supabase/supabase-js": "^2.49.0",
+    "@trpc/server": "^11.0.0",
+    "dotenv": "^16.4.0",
+    "fastify": "^5.2.0",
+    "fastify-plugin": "^5.0.0",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0",
+    "superjson": "^2.2.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "eslint": "^9.16.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

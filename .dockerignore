@@ -1,0 +1,41 @@
+# Dependencies
+node_modules
+**/node_modules
+
+# Build outputs
+.next
+dist
+.turbo
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs & prompts (not needed in Docker)
+.github/prompts
+*.md
+!README.md
+
+# Supabase (hosted separately)
+supabase/
+
+# Test & coverage
+coverage
+__tests__
+*.test.ts
+*.spec.ts
