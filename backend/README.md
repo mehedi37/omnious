@@ -25,10 +25,12 @@ npm run build && npm start
 
 ### Docker
 
+Docker builds run from the monorepo root context. See the root [docker-compose.yml](../docker-compose.yml).
+
 ```bash
-docker compose up -d          # Start in background
-docker compose logs -f        # Follow logs
-docker compose down           # Stop
+# From monorepo root
+npm run docker:build
+npm run docker:up
 ```
 
 ### Environment Variables
@@ -258,10 +260,7 @@ PostgreSQL 15 with extensions: **pgvector** (1536-dim embeddings), **ltree** (hi
 
 ## CI/CD
 
-GitHub Actions workflow at `.github/workflows/ci.yml`:
-
-1. **Lint & Build** — runs on every push/PR to `main` that touches `backend/`
-2. **Docker Build & Push** — builds and pushes to `ghcr.io` on main branch merges
+Unified Turborepo pipeline at `.github/workflows/ci.yml` — runs lint, typecheck, build, and Docker push for all packages on push/PR to `main`.
 
 ---
 
@@ -303,6 +302,4 @@ This backend does **not** send telemetry, analytics, or any project data to thir
 | `npm start` | Start production server |
 | `npm run typecheck` | Type-check without emitting |
 | `npm run db:types` | Regenerate Supabase types |
-| `npm run docker:build` | Build Docker image |
-| `npm run docker:up` | Start via docker-compose |
-| `npm run docker:down` | Stop docker-compose |
+| `npm run clean` | Remove dist, node_modules, .turbo |

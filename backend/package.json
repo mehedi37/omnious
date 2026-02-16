@@ -15,9 +15,6 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "db:types": "npx supabase gen types typescript --project-id affphbbgnddtklbttooy > src/lib/supabase/database.types.ts",
-    "docker:build": "docker build -t omnious-backend .",
-    "docker:up": "docker compose up -d",
-    "docker:down": "docker compose down",
     "clean": "rm -rf dist node_modules .turbo"
   },
   "dependencies": {
