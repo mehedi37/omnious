@@ -56,5 +56,7 @@ export function useGraphData() {
     error: nodesQuery.error ?? edgesQuery.error,
     nodeCount: nodesQuery.data?.nodes?.length ?? 0,
     edgeCount: edgesQuery.data?.edges?.length ?? 0,
+    /** Raw code edges from the DB — used by trace replay to map spans to edges */
+    rawEdges: (edgesQuery.data?.edges ?? []) as import('@/lib/oir/types').CodeEdge[],
   };
 }

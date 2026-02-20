@@ -1,15 +1,21 @@
 'use client';
 
 import { useMemo } from 'react';
-import { ArrowLeft, Clock, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Clock, AlertCircle, Play } from 'lucide-react';
 import { useRouter, useParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { trpc } from '@/trpc/client';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { useUIStore } from '@/lib/stores/ui-store';
 import { TRACE_STATUS_STYLES, HTTP_METHOD_COLORS } from '@/lib/oir/constants';
 import { formatDuration, formatRelativeTime } from '@/lib/utils/format';
 import { SpanDetail } from './span-detail';
@@ -83,6 +89,25 @@ export function TraceTimeline({ traceId }: TraceTimelineProps) {
               {trace.status}
             </Badge>
           )}
+          <div className="ml-auto">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 text-cyan-600 border-cyan-500/30 hover:bg-cyan-500/10"
+                  onClick={() => {
+                    useUIStore.getState().setPendingReplayTraceId(traceId);
+                    router.push(`/${params.workspaceSlug}/${params.projectSlug}/graph`);
+                  }}
+                >
+                  <Play className="h-3.5 w-3.5 fill-current" />
+                  Replay on Graph
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Visualize this trace as an animated flow on the code graph</TooltipContent>
+            </Tooltip>
+          </div>
         </div>
         <div className="flex items-center gap-4 text-sm text-muted-foreground pl-11">
           {trace?.http_method && (

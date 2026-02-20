@@ -5,6 +5,10 @@ import type { Node, Edge, NodeChange, EdgeChange } from '@xyflow/react';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { GraphNodeData, GraphEdgeData } from '../oir/transforms';
 import type { ZoomLevel } from '../oir/constants';
+import type { FlowStep, RuntimeEdge } from '../oir/trace-flow';
+
+/** Node animation state during trace replay */
+export type NodeFlowState = 'idle' | 'active' | 'completed' | 'error';
 
 interface GraphState {
   nodes: Node<GraphNodeData>[];
@@ -15,6 +19,16 @@ interface GraphState {
   hiddenNodeIds: Set<string>;
   heatmapActive: boolean;
   isLayouting: boolean;
+
+  // ── Flow animation state ──
+  flowMode: 'static' | 'replay';
+  activeFlowStep: FlowStep | null;
+  activeNodeId: string | null;
+  activeEdgeIds: Set<string>;
+  completedNodeIds: Set<string>;
+  errorNodeIds: Set<string>;
+  runtimeEdges: Edge<GraphEdgeData>[];
+  callStack: FlowStep[];
 
   // Actions
   setNodes: (nodes: Node<GraphNodeData>[]) => void;
@@ -31,6 +45,12 @@ interface GraphState {
   hideNodes: (nodeIds: string[]) => void;
   showAllNodes: () => void;
   updateNodePositions: (positions: Map<string, { x: number; y: number }>) => void;
+
+  // ── Flow animation actions ──
+  startFlowReplay: (runtimeEdges: RuntimeEdge[]) => void;
+  setFlowStep: (step: FlowStep) => void;
+  clearFlowReplay: () => void;
+  getNodeFlowState: (nodeId: string) => NodeFlowState;
 }
 
 export const useGraphStore = create<GraphState>()(
@@ -44,6 +64,16 @@ export const useGraphStore = create<GraphState>()(
       hiddenNodeIds: new Set<string>(),
       heatmapActive: false,
       isLayouting: false,
+
+      // ── Flow animation state ──
+      flowMode: 'static',
+      activeFlowStep: null,
+      activeNodeId: null,
+      activeEdgeIds: new Set<string>(),
+      completedNodeIds: new Set<string>(),
+      errorNodeIds: new Set<string>(),
+      runtimeEdges: [],
+      callStack: [],
 
       setNodes: (nodes) =>
         set((state) => {
@@ -127,6 +157,87 @@ export const useGraphStore = create<GraphState>()(
             }
           }
         }),
+
+      // ── Flow animation actions ──
+
+      startFlowReplay: (runtimeEdges) =>
+        set((state) => {
+          state.flowMode = 'replay';
+          state.activeFlowStep = null;
+          state.activeNodeId = null;
+          state.activeEdgeIds = new Set();
+          state.completedNodeIds = new Set();
+          state.errorNodeIds = new Set();
+          state.callStack = [];
+          // Inject runtime edges as React Flow edges
+          state.runtimeEdges = runtimeEdges.map((re) => ({
+            id: re.id,
+            source: re.sourceNodeId,
+            target: re.targetNodeId,
+            type: 'runtime' as const,
+            animated: true,
+            data: { edgeType: 'calls' as const, isRuntime: true },
+            style: {
+              stroke: 'oklch(0.7 0.2 195)', // cyan
+              strokeDasharray: '5 3',
+              strokeWidth: 2,
+            },
+          }));
+        }),
+
+      setFlowStep: (step) =>
+        set((state) => {
+          const prev = state.activeFlowStep;
+
+          // Mark previous node as completed (or error)
+          if (prev?.nodeId) {
+            if (prev.status === 'error') {
+              state.errorNodeIds.add(prev.nodeId);
+            } else {
+              state.completedNodeIds.add(prev.nodeId);
+            }
+          }
+
+          state.activeFlowStep = step;
+          state.activeNodeId = step.nodeId;
+
+          // Activate the edge from parent → current
+          state.activeEdgeIds = new Set<string>();
+          if (step.edgeId) {
+            state.activeEdgeIds.add(step.edgeId);
+          }
+
+          // Mark error node
+          if (step.status === 'error' && step.nodeId) {
+            state.errorNodeIds.add(step.nodeId);
+          }
+
+          // Update call stack
+          // Trim stack to current depth then push
+          state.callStack = state.callStack.slice(0, step.depth);
+          state.callStack.push(step);
+        }),
+
+      clearFlowReplay: () =>
+        set((state) => {
+          state.flowMode = 'static';
+          state.activeFlowStep = null;
+          state.activeNodeId = null;
+          state.activeEdgeIds = new Set();
+          state.completedNodeIds = new Set();
+          state.errorNodeIds = new Set();
+          state.runtimeEdges = [];
+          state.callStack = [];
+        }),
+
+      getNodeFlowState: (nodeId) => {
+        const s = useGraphStore.getState();
+        if (s.flowMode !== 'replay') return 'idle';
+        if (s.activeNodeId === nodeId) return 'active';
+        if (s.errorNodeIds.has(nodeId)) return 'error';
+        if (s.completedNodeIds.has(nodeId)) return 'completed';
+        return 'idle';
+      },
     })),
   ),
 );

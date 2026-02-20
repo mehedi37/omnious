@@ -6,25 +6,31 @@ import { Database } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { NODE_BG_CLASSES } from '@/lib/oir/constants';
 import type { GraphNodeData } from '@/lib/oir/transforms';
+import { useNodeFlowState, getFlowStateClasses } from '@/hooks/use-node-flow-state';
+import { NodeFlowOverlay } from './node-flow-overlay';
 
-function DatabaseNodeComponent({ data, selected }: NodeProps) {
+function DatabaseNodeComponent({ id, data, selected }: NodeProps) {
   const d = data as unknown as GraphNodeData;
   const bgClass = NODE_BG_CLASSES.database_query;
   const hasErrors = (d.errorCount ?? 0) > 0;
   const tableName = (d.metadata?.table_name as string) ?? null;
+  const { flowState, isReplaying, activeStep, depth } = useNodeFlowState(id);
+  const flowClasses = getFlowStateClasses(flowState, isReplaying);
 
   return (
     <>
       <Handle type="target" position={Position.Top} className="!bg-muted-foreground !w-2 !h-2" />
       <div
         className={`
-          rounded-xl border-2 px-4 py-3 min-w-[160px] max-w-[280px] shadow-sm
-          transition-all duration-150
+          relative rounded-xl border-2 px-4 py-3 min-w-[160px] max-w-[280px] shadow-sm
+          transition-all duration-200
           ${bgClass}
-          ${selected ? 'ring-2 ring-primary ring-offset-2 ring-offset-background' : ''}
-          ${hasErrors ? 'ring-2 ring-red-500/60 shadow-red-500/20' : ''}
+          ${!isReplaying && selected ? 'ring-2 ring-primary ring-offset-2 ring-offset-background' : ''}
+          ${!isReplaying && hasErrors ? 'ring-2 ring-red-500/60 shadow-red-500/20' : ''}
+          ${flowClasses}
         `}
       >
+        <NodeFlowOverlay flowState={flowState} isReplaying={isReplaying} activeStep={activeStep} depth={depth} />
         <div className="flex items-center gap-2">
           <Database className="h-4 w-4 text-purple-600 dark:text-purple-400 shrink-0" />
           <span className="text-sm font-medium truncate">{d.label}</span>
@@ -50,6 +56,4 @@ function DatabaseNodeComponent({ data, selected }: NodeProps) {
   );
 }
 
-export const DatabaseNode = memo(DatabaseNodeComponent, (prev, next) => {
-  return prev.data === next.data && prev.selected === next.selected;
-});
+export const DatabaseNode = memo(DatabaseNodeComponent);

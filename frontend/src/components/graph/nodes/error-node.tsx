@@ -5,24 +5,30 @@ import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { AlertTriangle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import type { GraphNodeData } from '@/lib/oir/transforms';
+import { useNodeFlowState, getFlowStateClasses } from '@/hooks/use-node-flow-state';
+import { NodeFlowOverlay } from './node-flow-overlay';
 
-function ErrorNodeComponent({ data, selected }: NodeProps) {
+function ErrorNodeComponent({ id, data, selected }: NodeProps) {
   const d = data as unknown as GraphNodeData;
   const errorCount = d.errorCount ?? 0;
+  const { flowState, isReplaying, activeStep, depth } = useNodeFlowState(id);
+  const flowClasses = getFlowStateClasses(flowState, isReplaying);
 
   return (
     <>
       <Handle type="target" position={Position.Top} className="!bg-red-500 !w-2 !h-2" />
       <div
         className={`
-          rounded-lg border-2 border-red-500/50 bg-red-500/10 px-4 py-3
+          relative rounded-lg border-2 border-red-500/50 bg-red-500/10 px-4 py-3
           min-w-[160px] max-w-[280px]
           shadow-md shadow-red-500/20
-          animate-pulse-slow
-          transition-all duration-150
-          ${selected ? 'ring-2 ring-red-500 ring-offset-2 ring-offset-background' : ''}
+          ${!isReplaying ? 'animate-pulse-slow' : ''}
+          transition-all duration-200
+          ${!isReplaying && selected ? 'ring-2 ring-red-500 ring-offset-2 ring-offset-background' : ''}
+          ${flowClasses}
         `}
       >
+        <NodeFlowOverlay flowState={flowState} isReplaying={isReplaying} activeStep={activeStep} depth={depth} />
         <div className="flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0" />
           <span className="text-sm font-medium truncate">{d.label}</span>
@@ -46,6 +52,4 @@ function ErrorNodeComponent({ data, selected }: NodeProps) {
   );
 }
 
-export const ErrorNode = memo(ErrorNodeComponent, (prev, next) => {
-  return prev.data === next.data && prev.selected === next.selected;
-});
+export const ErrorNode = memo(ErrorNodeComponent);

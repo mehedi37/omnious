@@ -85,6 +85,32 @@ export const projectRouter = router({
       return data;
     }),
 
+  /** Get a single project by slug within a workspace */
+  getBySlug: workspaceProcedure
+    .input(
+      z.object({
+        workspaceId: z.string().uuid(),
+        slug: z.string().min(2).max(50),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { data, error } = await ctx.db
+        .from('projects')
+        .select('*')
+        .eq('workspace_id', input.workspaceId)
+        .eq('slug', input.slug)
+        .single();
+
+      if (error || !data) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Project not found',
+        });
+      }
+
+      return data;
+    }),
+
   /** Create a new project */
   create: workspaceProcedure
     .input(createProjectSchema)
@@ -188,6 +214,63 @@ export const projectRouter = router({
         .update({ api_key: newKey })
         .eq('id', input.projectId)
         .select('id, api_key')
+        .single();
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      return data;
+    }),
+
+  /** Get project stats (node, edge, trace, error counts) */
+  stats: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const [nodesResult, edgesResult, tracesResult, errorsResult] =
+        await Promise.all([
+          ctx.db
+            .from('code_nodes')
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', input.projectId),
+          ctx.db
+            .from('code_edges')
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', input.projectId),
+          ctx.db
+            .from('traces')
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', input.projectId),
+          ctx.db
+            .from('error_snapshots')
+            .select('*', { count: 'exact', head: true })
+            .eq('project_id', input.projectId)
+            .eq('resolved', false),
+        ]);
+
+      return {
+        nodeCount: nodesResult.count ?? 0,
+        edgeCount: edgesResult.count ?? 0,
+        traceCount: tracesResult.count ?? 0,
+        errorCount: errorsResult.count ?? 0,
+      };
+    }),
+
+  /** Trigger a re-index of the project (sets status to importing, clears last_indexed_at) */
+  triggerReindex: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const { data, error } = await ctx.db
+        .from('projects')
+        .update({
+          status: 'importing',
+          last_indexed_at: null,
+        })
+        .eq('id', input.projectId)
+        .select()
         .single();
 
       if (error) {

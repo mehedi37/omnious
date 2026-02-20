@@ -5,6 +5,7 @@ interface UIState {
   commandPaletteOpen: boolean;
   detailPanelOpen: boolean;
   activeDetailTab: 'properties' | 'code' | 'errors' | 'traces';
+  pendingReplayTraceId: string | null;
 
   // Actions
   toggleSidebar: () => void;
@@ -14,6 +15,7 @@ interface UIState {
   closeCommandPalette: () => void;
   setDetailPanelOpen: (open: boolean) => void;
   setActiveDetailTab: (tab: UIState['activeDetailTab']) => void;
+  setPendingReplayTraceId: (traceId: string | null) => void;
 }
 
 export const useUIStore = create<UIState>()((set) => ({
@@ -21,6 +23,7 @@ export const useUIStore = create<UIState>()((set) => ({
   commandPaletteOpen: false,
   detailPanelOpen: false,
   activeDetailTab: 'properties',
+  pendingReplayTraceId: null,
 
   toggleSidebar: () =>
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
@@ -42,4 +45,7 @@ export const useUIStore = create<UIState>()((set) => ({
 
   setActiveDetailTab: (tab) =>
     set({ activeDetailTab: tab, detailPanelOpen: true }),
+
+  setPendingReplayTraceId: (traceId) =>
+    set({ pendingReplayTraceId: traceId }),
 }));

@@ -73,6 +73,31 @@ export const workspaceRouter = router({
       return data;
     }),
 
+  /** Get a single workspace by slug (verifies membership) */
+  getBySlug: protectedProcedure
+    .input(z.object({ slug: z.string().min(2).max(50) }))
+    .query(async ({ ctx, input }) => {
+      const { data, error } = await ctx.db
+        .from('workspace_members')
+        .select(
+          `
+          role,
+          workspace:workspaces!inner (
+            id, name, slug, plan, owner_id, settings, created_at, updated_at
+          )
+        `,
+        )
+        .eq('user_id', ctx.user.id)
+        .eq('workspaces.slug', input.slug)
+        .single();
+
+      if (error || !data) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Workspace not found' });
+      }
+
+      return data;
+    }),
+
   /** Create a new workspace */
   create: protectedProcedure
     .input(createWorkspaceSchema)

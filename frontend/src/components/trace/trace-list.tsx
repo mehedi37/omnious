@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Activity, Clock, AlertCircle, ArrowRight } from 'lucide-react';
+import { Activity, Clock, AlertCircle, ArrowRight, Play } from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -16,8 +16,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { trpc } from '@/trpc/client';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { useUIStore } from '@/lib/stores/ui-store';
 import { TRACE_STATUS_STYLES, HTTP_METHOD_COLORS } from '@/lib/oir/constants';
 import { formatDuration, formatRelativeTime } from '@/lib/utils/format';
 
@@ -73,12 +79,13 @@ export function TraceList() {
               <TableHead className="w-[100px] text-right">Duration</TableHead>
               <TableHead className="w-[140px] text-right">Time</TableHead>
               <TableHead className="w-[40px]" />
+              <TableHead className="w-[40px]" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="h-32 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
                   {search ? 'No traces match your search.' : 'No traces recorded yet.'}
                 </TableCell>
               </TableRow>
@@ -128,6 +135,25 @@ export function TraceList() {
                 <TableCell className="text-right text-xs text-muted-foreground">
                   <Clock className="h-3 w-3 inline mr-1" />
                   {formatRelativeTime(trace.started_at)}
+                </TableCell>
+                <TableCell>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-cyan-600 hover:text-cyan-700 hover:bg-cyan-500/10"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          useUIStore.getState().setPendingReplayTraceId(trace.id);
+                          router.push(`/${params.workspaceSlug}/${params.projectSlug}/graph`);
+                        }}
+                      >
+                        <Play className="h-3.5 w-3.5 fill-current" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Replay on Graph</TooltipContent>
+                  </Tooltip>
                 </TableCell>
                 <TableCell>
                   <ArrowRight className="h-4 w-4 text-muted-foreground" />

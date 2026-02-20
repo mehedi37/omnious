@@ -1,0 +1,55 @@
+{
+  "name": "@omnious/cli",
+  "version": "0.1.0",
+  "description": "Omnious CLI — code intelligence from your terminal",
+  "type": "module",
+  "bin": {
+    "omnious": "./dist/bin/omnious.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'no linter configured yet'",
+    "clean": "rm -rf dist .omnious",
+    "test": "echo 'no tests yet'"
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.5.1",
+    "chalk": "^5.4.1",
+    "cli-table3": "^0.6.5",
+    "commander": "^13.1.0",
+    "glob": "^11.0.1",
+    "ignore": "^7.0.4",
+    "ora": "^8.2.0",
+    "typescript": "^5.8.3",
+    "yaml": "^2.7.1",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsup": "^8.5.0"
+  },
+  "keywords": [
+    "omnious",
+    "cli",
+    "code-graph",
+    "oir",
+    "ast",
+    "tree-sitter",
+    "debugging"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mehedi37/omnious",
+    "directory": "cli"
+  }
+}

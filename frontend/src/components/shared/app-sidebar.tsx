@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   GitGraph,
   Activity,
@@ -9,13 +9,20 @@ import {
   Bot,
   Settings,
   ChevronUp,
+  ChevronDown,
+  ChevronRight,
   LogOut,
   Moon,
   Sun,
+  ChevronsUpDown,
+  FolderKanban,
+  Plus,
+  Users,
+  CreditCard,
+  Circle,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { createClient } from '@/lib/supabase/client';
-import { useRouter } from 'next/navigation';
 import {
   Sidebar,
   SidebarContent,
@@ -27,6 +34,10 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
+  SidebarSeparator,
 } from '@/components/ui/sidebar';
 import {
   DropdownMenu,
@@ -35,11 +46,21 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Badge } from '@/components/ui/badge';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
+import { CreateWorkspaceDialog } from '@/components/workspace/create-workspace-dialog';
+import { CreateProjectDialog } from '@/components/project/create-project-dialog';
 
-const navItems = [
+/** In-project navigation items */
+const projectNavItems = [
   { title: 'Graph', icon: GitGraph, segment: 'graph' },
   { title: 'Traces', icon: Activity, segment: 'traces' },
   { title: 'Errors', icon: AlertTriangle, segment: 'errors' },
@@ -47,25 +68,65 @@ const navItems = [
   { title: 'Settings', icon: Settings, segment: 'settings' },
 ];
 
+/** Status dot color for project status */
+function statusColor(status: string) {
+  switch (status) {
+    case 'active':
+      return 'text-green-500';
+    case 'importing':
+      return 'text-amber-500';
+    case 'error':
+      return 'text-red-500';
+    default:
+      return 'text-muted-foreground';
+  }
+}
+
 export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { theme, setTheme } = useTheme();
+
+  const workspaceId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const workspaceSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const projectSlug = useWorkspaceStore((s) => s.currentProjectSlug);
+  const setCurrentWorkspace = useWorkspaceStore((s) => s.setCurrentWorkspace);
+  const setCurrentProject = useWorkspaceStore((s) => s.setCurrentProject);
 
+  // Fetch user profile
   const { data: profile } = trpc.auth.me.useQuery(undefined, {
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
-  const displayName = profile?.display_name ?? 'Account';
-  const initials = displayName
-    .split(' ')
-    .map((w: string) => w[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase() || 'U';
 
+  // Fetch workspaces
+  const { data: workspaces } = trpc.workspace.list.useQuery(undefined, {
+    staleTime: 60 * 1000,
+  });
+
+  // Fetch projects for current workspace
+  const { data: projects } = trpc.project.list.useQuery(
+    { workspaceId: workspaceId! },
+    { enabled: !!workspaceId, staleTime: 60 * 1000 },
+  );
+
+  const displayName = profile?.display_name ?? 'Account';
+  const initials =
+    displayName
+      .split(' ')
+      .map((w: string) => w[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase() || 'U';
+
+  // Find current workspace name
+  const currentWorkspace = workspaces?.find(
+    (w) => w.workspace.id === workspaceId,
+  );
+  const workspaceName = currentWorkspace?.workspace.name ?? 'Select Workspace';
+  const workspacePlan = currentWorkspace?.workspace.plan ?? '';
+
+  const isInWorkspace = !!workspaceSlug && pathname.startsWith(`/dashboard/${workspaceSlug}`);
   const basePath =
     workspaceSlug && projectSlug
       ? `/dashboard/${workspaceSlug}/${projectSlug}`
@@ -78,70 +139,213 @@ export function AppSidebar() {
     router.refresh();
   }
 
+  function handleWorkspaceSelect(id: string, slug: string) {
+    setCurrentWorkspace(id, slug);
+    router.push(`/dashboard/${slug}`);
+  }
+
+  function handleProjectSelect(id: string, slug: string) {
+    setCurrentProject(id, slug);
+    router.push(`/dashboard/${workspaceSlug}/${slug}/graph`);
+  }
+
   return (
     <Sidebar collapsible="icon" variant="sidebar">
+      {/* ── Header: Workspace Switcher ── */}
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild>
-              <Link href="/dashboard">
-                <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                  <GitGraph className="size-4" />
-                </div>
-                <div className="flex flex-col gap-0.5 leading-none">
-                  <span className="font-semibold">Omnious</span>
-                  <span className="text-xs text-muted-foreground">
-                    Visual Debugging
-                  </span>
-                </div>
-              </Link>
-            </SidebarMenuButton>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton
+                  size="lg"
+                  className="data-[state=open]:bg-sidebar-accent"
+                >
+                  <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                    <GitGraph className="size-4" />
+                  </div>
+                  <div className="flex flex-1 flex-col gap-0.5 leading-none">
+                    <span className="font-semibold truncate">
+                      {workspaceName}
+                    </span>
+                    {workspacePlan && (
+                      <span className="text-xs text-muted-foreground capitalize">
+                        {workspacePlan} plan
+                      </span>
+                    )}
+                  </div>
+                  <ChevronsUpDown className="ml-auto size-4" />
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="w-[--radix-dropdown-menu-trigger-width] min-w-56"
+              >
+                {workspaces?.map((item) => (
+                  <DropdownMenuItem
+                    key={item.workspace.id}
+                    onClick={() =>
+                      handleWorkspaceSelect(
+                        item.workspace.id,
+                        item.workspace.slug,
+                      )
+                    }
+                  >
+                    <FolderKanban className="mr-2 size-4" />
+                    <span className="flex-1 truncate">
+                      {item.workspace.name}
+                    </span>
+                    <Badge
+                      variant="outline"
+                      className="ml-2 text-[10px] capitalize"
+                    >
+                      {item.workspace.plan}
+                    </Badge>
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <CreateWorkspaceDialog>
+                  <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                    <Plus className="mr-2 size-4" />
+                    Create Workspace
+                  </DropdownMenuItem>
+                </CreateWorkspaceDialog>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
 
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {navItems.map((item) => {
-                const hasContext = !!(workspaceSlug && projectSlug);
-                const href = hasContext
-                  ? `${basePath}/${item.segment}`
-                  : '#';
-                const isActive = pathname.includes(`/${item.segment}`);
+        {/* ── Projects List (visible when inside a workspace) ── */}
+        {isInWorkspace && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Projects</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <ScrollArea className="max-h-70">
+                <SidebarMenu>
+                  {projects?.map((project) => {
+                    const isActiveProject = project.slug === projectSlug;
 
-                return (
-                  <SidebarMenuItem key={item.segment}>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={isActive}
-                      tooltip={item.title}
-                    >
-                      {hasContext ? (
-                        <Link href={href}>
-                          <item.icon />
-                          <span>{item.title}</span>
-                        </Link>
-                      ) : (
-                        <a
-                          aria-disabled="true"
-                          className="pointer-events-none opacity-50"
-                        >
-                          <item.icon />
-                          <span>{item.title}</span>
-                        </a>
-                      )}
+                    return (
+                      <Collapsible
+                        key={project.id}
+                        defaultOpen={isActiveProject}
+                        asChild
+                      >
+                        <SidebarMenuItem>
+                          <CollapsibleTrigger asChild>
+                            <SidebarMenuButton
+                              isActive={isActiveProject}
+                              tooltip={project.name}
+                              onClick={() =>
+                                handleProjectSelect(project.id, project.slug)
+                              }
+                            >
+                              <Circle
+                                className={`size-2.5 fill-current ${statusColor(project.status)}`}
+                              />
+                              <span className="truncate">{project.name}</span>
+                              {isActiveProject && (
+                                <ChevronDown className="ml-auto size-4 transition-transform" />
+                              )}
+                              {!isActiveProject && (
+                                <ChevronRight className="ml-auto size-4 opacity-0 group-hover/menu-item:opacity-100 transition-opacity" />
+                              )}
+                            </SidebarMenuButton>
+                          </CollapsibleTrigger>
+
+                          {/* In-project nav (shown under active project) */}
+                          {isActiveProject && (
+                            <CollapsibleContent>
+                              <SidebarMenuSub>
+                                {projectNavItems.map((item) => {
+                                  const href = `${basePath}/${item.segment}`;
+                                  const isActive =
+                                    pathname.startsWith(href);
+
+                                  return (
+                                    <SidebarMenuSubItem key={item.segment}>
+                                      <SidebarMenuSubButton
+                                        asChild
+                                        isActive={isActive}
+                                      >
+                                        <Link href={href}>
+                                          <item.icon className="size-4" />
+                                          <span>{item.title}</span>
+                                        </Link>
+                                      </SidebarMenuSubButton>
+                                    </SidebarMenuSubItem>
+                                  );
+                                })}
+                              </SidebarMenuSub>
+                            </CollapsibleContent>
+                          )}
+                        </SidebarMenuItem>
+                      </Collapsible>
+                    );
+                  })}
+
+                  {/* New Project button */}
+                  {workspaceId && workspaceSlug && (
+                    <SidebarMenuItem>
+                      <CreateProjectDialog
+                        workspaceId={workspaceId}
+                        workspaceSlug={workspaceSlug}
+                      >
+                        <SidebarMenuButton className="text-muted-foreground">
+                          <Plus className="size-4" />
+                          <span>New Project</span>
+                        </SidebarMenuButton>
+                      </CreateProjectDialog>
+                    </SidebarMenuItem>
+                  )}
+                </SidebarMenu>
+              </ScrollArea>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+
+        {/* ── Workspace-scoped nav (Members, Settings, Billing) ── */}
+        {isInWorkspace && (
+          <>
+            <SidebarSeparator />
+            <SidebarGroup>
+              <SidebarGroupLabel>Workspace</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild tooltip="Members">
+                      <Link href={`/dashboard/${workspaceSlug}/settings/members`}>
+                        <Users className="size-4" />
+                        <span>Members</span>
+                      </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild tooltip="Settings">
+                      <Link href={`/dashboard/${workspaceSlug}/settings`}>
+                        <Settings className="size-4" />
+                        <span>Settings</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild tooltip="Billing">
+                      <Link href={`/dashboard/${workspaceSlug}/settings/billing`}>
+                        <CreditCard className="size-4" />
+                        <span>Billing</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          </>
+        )}
       </SidebarContent>
 
+      {/* ── Footer: User Profile ── */}
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
@@ -149,7 +353,9 @@ export function AppSidebar() {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton>
                   <Avatar className="size-6">
-                    <AvatarFallback className="text-xs">{initials}</AvatarFallback>
+                    <AvatarFallback className="text-xs">
+                      {initials}
+                    </AvatarFallback>
                   </Avatar>
                   <span>{displayName}</span>
                   <ChevronUp className="ml-auto size-4" />
@@ -160,7 +366,11 @@ export function AppSidebar() {
                 align="start"
                 className="w-[--radix-dropdown-menu-trigger-width]"
               >
-                <DropdownMenuItem onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+                <DropdownMenuItem
+                  onClick={() =>
+                    setTheme(theme === 'dark' ? 'light' : 'dark')
+                  }
+                >
                   {theme === 'dark' ? (
                     <Sun className="mr-2 size-4" />
                   ) : (

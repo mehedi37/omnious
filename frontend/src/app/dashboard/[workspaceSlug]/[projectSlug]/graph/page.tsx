@@ -1,14 +1,57 @@
-import { HydrateClient } from '@/trpc/server';
+'use client';
+
 import { GraphCanvas } from '@/components/graph/graph-canvas';
+import { EmptyProjectState } from '@/components/project/empty-project-state';
+import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { trpc } from '@/trpc/client';
+import { Skeleton } from '@/components/ui/skeleton';
 
-export const metadata = { title: 'Graph' };
+export default function GraphPage() {
+  const projectId = useWorkspaceStore((s) => s.currentProjectId);
+  const projectSlug = useWorkspaceStore((s) => s.currentProjectSlug);
+  const workspaceSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
-export default async function GraphPage() {
-  return (
-    <HydrateClient>
-      <div className="h-[calc(100vh-6rem)]">
-        <GraphCanvas />
+  const projectQuery = trpc.project.getById.useQuery(
+    { projectId: projectId ?? '' },
+    { enabled: !!projectId },
+  );
+
+  const nodeCountQuery = trpc.graph.listNodes.useQuery(
+    { projectId: projectId ?? '', limit: 1, offset: 0 },
+    { enabled: !!projectId, staleTime: 30_000 },
+  );
+
+  const isLoading = nodeCountQuery.isLoading || projectQuery.isLoading;
+  const hasNodes = (nodeCountQuery.data?.total ?? 0) > 0;
+
+  if (isLoading) {
+    return (
+      <div className="h-[calc(100vh-6rem)] flex items-center justify-center">
+        <div className="space-y-4 text-center">
+          <Skeleton className="h-16 w-16 rounded-full mx-auto" />
+          <Skeleton className="h-4 w-48 mx-auto" />
+          <Skeleton className="h-3 w-32 mx-auto" />
+        </div>
       </div>
-    </HydrateClient>
+    );
+  }
+
+  if (!hasNodes) {
+    return (
+      <div className="h-[calc(100vh-6rem)] overflow-auto">
+        <EmptyProjectState
+          projectName={projectQuery.data?.name ?? projectSlug ?? 'Project'}
+          projectSlug={projectSlug ?? ''}
+          apiKey={projectQuery.data?.api_key ?? null}
+          workspaceSlug={workspaceSlug ?? ''}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-[calc(100vh-6rem)]">
+      <GraphCanvas />
+    </div>
   );
 }

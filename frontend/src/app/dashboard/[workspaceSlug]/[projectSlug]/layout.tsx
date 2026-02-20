@@ -4,7 +4,6 @@ import { useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import { trpc } from '@/trpc/client';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
-import { ProjectNav } from '@/components/project/project-nav';
 
 export default function ProjectLayout({
   children,
@@ -35,7 +34,6 @@ export default function ProjectLayout({
 
   return (
     <div className="flex h-full flex-col">
-      <ProjectNav />
       <div className="flex-1 overflow-auto">{children}</div>
     </div>
   );

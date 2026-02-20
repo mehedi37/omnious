@@ -7,6 +7,8 @@ export async function GET(request: NextRequest) {
   const next = searchParams.get('next') ?? '/dashboard';
 
   if (code) {
+    const cookiesToSet: { name: string; value: string; options?: object }[] = [];
+
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -15,10 +17,9 @@ export async function GET(request: NextRequest) {
           getAll() {
             return request.cookies.getAll();
           },
-          setAll(cookiesToSet) {
-            for (const { name, value } of cookiesToSet) {
-              request.cookies.set(name, value);
-            }
+          setAll(cookies) {
+            // Collect cookies to set on the response later
+            cookiesToSet.push(...cookies.map(({ name, value, options }) => ({ name, value, options })));
           },
         },
       },
@@ -30,13 +31,23 @@ export async function GET(request: NextRequest) {
       const forwardedHost = request.headers.get('x-forwarded-host');
       const isLocalEnv = process.env.NODE_ENV === 'development';
 
+      let redirectUrl: string;
       if (isLocalEnv) {
-        return NextResponse.redirect(`${origin}${next}`);
+        redirectUrl = `${origin}${next}`;
+      } else if (forwardedHost) {
+        redirectUrl = `https://${forwardedHost}${next}`;
+      } else {
+        redirectUrl = `${origin}${next}`;
       }
-      if (forwardedHost) {
-        return NextResponse.redirect(`https://${forwardedHost}${next}`);
+
+      const response = NextResponse.redirect(redirectUrl);
+
+      // Set auth cookies on the redirect response so the session persists
+      for (const { name, value, options } of cookiesToSet) {
+        response.cookies.set(name, value, options as any);
       }
-      return NextResponse.redirect(`${origin}${next}`);
+
+      return response;
     }
   }
 
