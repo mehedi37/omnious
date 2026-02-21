@@ -1,10 +1,10 @@
 'use client';
 
+import { AlertCircle, CheckCircle2, Hash, Play } from 'lucide-react';
 import { memo } from 'react';
-import { CheckCircle2, AlertCircle, Play, Hash } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import type { NodeFlowState } from '@/lib/stores/graph-store';
 import type { FlowStep } from '@/lib/oir/trace-flow';
+import type { NodeFlowState } from '@/lib/stores/graph-store';
 
 interface NodeFlowOverlayProps {
   flowState: NodeFlowState;
@@ -17,7 +17,12 @@ interface NodeFlowOverlayProps {
  * Overlay badges rendered on top of graph nodes during trace replay.
  * Shows operation info for active nodes, checkmarks for completed, etc.
  */
-function NodeFlowOverlayComponent({ flowState, isReplaying, activeStep, depth }: NodeFlowOverlayProps) {
+function NodeFlowOverlayComponent({
+  flowState,
+  isReplaying,
+  activeStep,
+  depth,
+}: NodeFlowOverlayProps) {
   if (!isReplaying || flowState === 'idle') return null;
 
   return (

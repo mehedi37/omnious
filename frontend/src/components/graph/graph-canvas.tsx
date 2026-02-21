@@ -1,36 +1,41 @@
 'use client';
 
-import { useCallback, useRef, useEffect, useMemo } from 'react';
 import {
-  ReactFlow,
-  ReactFlowProvider,
   Background,
   Controls,
   MiniMap,
   type NodeMouseHandler,
-  type OnNodesChange,
   type OnEdgesChange,
+  type OnNodesChange,
+  ReactFlow,
+  ReactFlowProvider,
   useReactFlow,
 } from '@xyflow/react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import '@xyflow/react/dist/style.css';
 import { useTheme } from 'next-themes';
-import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
+import { useShallow } from 'zustand/react/shallow';
+import { FlowControls } from '@/components/trace/flow-controls';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import { useAutoLayout } from '@/hooks/use-auto-layout';
+import { useGraphData } from '@/hooks/use-graph-data';
+import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
+import { useTracePlayback } from '@/hooks/use-trace-playback';
+import { useZoomLevel } from '@/hooks/use-zoom-level';
+import { NODE_COLORS } from '@/lib/oir/constants';
+import type { GraphNodeData } from '@/lib/oir/transforms';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
-import { useGraphData } from '@/hooks/use-graph-data';
-import { useTracePlayback } from '@/hooks/use-trace-playback';
 import { trpc } from '@/trpc/client';
-import { nodeTypes } from './nodes';
 import { edgeTypes } from './edges';
 import { GraphControls } from './graph-controls';
+import { GraphSearch } from './graph-search';
+import { nodeTypes } from './nodes';
 import { NodeDetailPanel } from './panels/node-detail-panel';
-import { FlowControls } from '@/components/trace/flow-controls';
-import { NODE_COLORS } from '@/lib/oir/constants';
-import type { GraphNodeData } from '@/lib/oir/transforms';
 
 function GraphCanvasInner() {
-  const { fitView, setCenter } = useReactFlow();
+  const { setCenter } = useReactFlow();
   const { resolvedTheme } = useTheme();
   const nodes = useGraphStore((s) => s.nodes);
   const edges = useGraphStore((s) => s.edges);
@@ -47,11 +52,35 @@ function GraphCanvasInner() {
   // Trace playback
   const playback = useTracePlayback();
 
-  // Merge runtime edges into displayed edges during replay
+  // Wire up layout engine, keyboard shortcuts, and zoom tracking
+  useAutoLayout();
+  useKeyboardShortcuts();
+  useZoomLevel();
+
+  // Focus mode — single combined selector to avoid extra subscriptions
+  // shallow equality required: selector returns a plain object (object identity always differs)
+  const focusState = useGraphStore(
+    useShallow((s) => ({ focusedNodeId: s.focusedNodeId, connectedNodeIds: s.connectedNodeIds })),
+  );
+
+  // Merge runtime edges during replay + apply focus dimming
   const displayEdges = useMemo(() => {
-    if (flowMode !== 'replay' || runtimeEdges.length === 0) return edges;
-    return [...edges, ...runtimeEdges];
-  }, [edges, runtimeEdges, flowMode]);
+    let result =
+      flowMode !== 'replay' || runtimeEdges.length === 0 ? edges : [...edges, ...runtimeEdges];
+
+    // Dim edges outside the focus neighborhood
+    if (focusState.focusedNodeId) {
+      result = result.map((edge) => {
+        const isInFocus =
+          focusState.connectedNodeIds.has(edge.source) &&
+          focusState.connectedNodeIds.has(edge.target);
+        if (isInFocus) return edge;
+        return { ...edge, style: { ...edge.style, opacity: 0.06 }, animated: false };
+      });
+    }
+
+    return result;
+  }, [edges, runtimeEdges, flowMode, focusState.focusedNodeId, focusState.connectedNodeIds]);
 
   // Fetch trace data when a pending replay is requested
   const traceQuery = trpc.trace.getById.useQuery(
@@ -74,11 +103,7 @@ function GraphCanvasInner() {
 
     startedReplayRef.current = pendingReplayTraceId;
     useUIStore.getState().setPendingReplayTraceId(null);
-    playback.startReplay(
-      pendingReplayTraceId,
-      traceQuery.data.spans as any,
-      rawEdges,
-    );
+    playback.startReplay(pendingReplayTraceId, traceQuery.data.spans as any, rawEdges);
   }, [pendingReplayTraceId, traceQuery.data, rawEdges, playback]);
 
   // Auto-pan camera to follow active node during replay
@@ -115,7 +140,13 @@ function GraphCanvasInner() {
   return (
     <div className="flex h-full flex-col">
       <GraphControls />
-      <ResizablePanelGroup orientation="horizontal" className="flex-1">
+      {/* Re-key the panel group when detail panel opens/closes
+          so defaultSize is re-applied (uncontrolled component) */}
+      <ResizablePanelGroup
+        key={detailPanelOpen ? 'open' : 'closed'}
+        orientation="horizontal"
+        className="flex-1"
+      >
         <ResizablePanel defaultSize={detailPanelOpen ? 70 : 100} minSize={40}>
           <div className="relative w-full h-full">
             <ReactFlow
@@ -146,6 +177,9 @@ function GraphCanvasInner() {
                 zoomable
               />
             </ReactFlow>
+
+            {/* Floating node search */}
+            <GraphSearch />
 
             {/* Flow Controls overlay during trace replay */}
             {flowMode === 'replay' && (

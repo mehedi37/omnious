@@ -1,7 +1,7 @@
 'use client';
 
-import { HydrateClient } from '@/trpc/server';
 import { AIChatPanel } from '@/components/ai/ai-chat-panel';
+import { HydrateClient } from '@/trpc/server';
 
 export default function AIPage() {
   return (

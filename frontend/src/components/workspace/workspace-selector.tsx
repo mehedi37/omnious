@@ -1,12 +1,12 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
-import { trpc } from '@/trpc/client';
-import { useWorkspaceStore } from '@/lib/stores/workspace-store';
-import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Plus } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Button } from '@/components/ui/button';
+import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { trpc } from '@/trpc/client';
 import { CreateWorkspaceDialog } from './create-workspace-dialog';
 
 export function WorkspaceSelector() {
@@ -48,9 +48,7 @@ export function WorkspaceSelector() {
         <Card className="flex cursor-pointer items-center justify-center border-dashed transition-colors hover:border-primary/50">
           <CardHeader className="items-center">
             <Plus className="mb-2 size-8 text-muted-foreground" />
-            <CardTitle className="text-sm text-muted-foreground">
-              New Workspace
-            </CardTitle>
+            <CardTitle className="text-sm text-muted-foreground">New Workspace</CardTitle>
           </CardHeader>
         </Card>
       </CreateWorkspaceDialog>

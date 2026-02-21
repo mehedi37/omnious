@@ -1,10 +1,10 @@
-import { ServiceNode } from './service-node';
-import { ModuleNode } from './module-node';
-import { FunctionNode } from './function-node';
 import { ComponentNode } from './component-node';
-import { RouteNode } from './route-node';
 import { DatabaseNode } from './database-node';
 import { ErrorNode } from './error-node';
+import { FunctionNode } from './function-node';
+import { ModuleNode } from './module-node';
+import { RouteNode } from './route-node';
+import { ServiceNode } from './service-node';
 
 /**
  * Module-level nodeTypes constant — MUST be defined outside component

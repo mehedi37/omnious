@@ -1,6 +1,6 @@
-import type { Node, Edge } from '@xyflow/react';
-import type { CodeNode, CodeEdge, ErrorHeatmapEntry, OIREdgeType } from './types';
-import { NODE_COLORS, EDGE_COLORS } from './constants';
+import type { Edge, Node } from '@xyflow/react';
+import { EDGE_COLORS, NODE_COLORS } from './constants';
+import type { CodeEdge, CodeNode, ErrorHeatmapEntry, OIREdgeType } from './types';
 
 /** React Flow node data shape */
 export interface GraphNodeData extends Record<string, unknown> {
@@ -73,9 +73,7 @@ export function applyErrorHeatmap(
   nodes: Node<GraphNodeData>[],
   heatmap: ErrorHeatmapEntry[],
 ): Node<GraphNodeData>[] {
-  const errorMap = new Map(
-    heatmap.map((entry) => [entry.code_node_id, entry]),
-  );
+  const errorMap = new Map(heatmap.map((entry) => [entry.code_node_id, entry]));
 
   return nodes.map((node) => {
     const error = errorMap.get(node.id);
@@ -95,7 +93,9 @@ export function applyErrorHeatmap(
 /**
  * Group nodes by file's parent module for zoomed-out views.
  */
-export function groupNodesByModule(nodes: Node<GraphNodeData>[]): Map<string, Node<GraphNodeData>[]> {
+export function groupNodesByModule(
+  nodes: Node<GraphNodeData>[],
+): Map<string, Node<GraphNodeData>[]> {
   const groups = new Map<string, Node<GraphNodeData>[]>();
   for (const node of nodes) {
     const dir = node.data.filePath.split('/').slice(0, -1).join('/') || '/';
@@ -134,5 +134,7 @@ function mapNodeType(type: CodeNode['type']): string {
 
 /** Whether this edge type represents a runtime data flow (not static import) */
 function isRuntimeEdge(type: OIREdgeType): boolean {
-  return ['calls', 'routes_to', 'queries', 'emits_event', 'subscribes_to', 'renders'].includes(type);
+  return ['calls', 'routes_to', 'queries', 'emits_event', 'subscribes_to', 'renders'].includes(
+    type,
+  );
 }

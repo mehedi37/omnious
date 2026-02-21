@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
 import { useReactFlow } from '@xyflow/react';
+import { useEffect } from 'react';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
@@ -24,19 +24,24 @@ export function useKeyboardShortcuts() {
     function handleKeyDown(e: KeyboardEvent) {
       // Don't intercept when typing in inputs
       const target = e.target as HTMLElement;
-      if (
-        target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.isContentEditable
-      ) {
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
         return;
       }
 
       switch (e.key) {
-        case 'Escape':
-          useGraphStore.getState().deselectAll();
-          useUIStore.getState().setDetailPanelOpen(false);
+        case 'Escape': {
+          // Layered escape: close search → clear focus → deselect all
+          const gs = useGraphStore.getState();
+          if (gs.nodeSearchOpen) {
+            gs.setNodeSearchOpen(false);
+          } else if (gs.focusedNodeId) {
+            gs.clearFocusMode();
+          } else {
+            gs.deselectAll();
+            useUIStore.getState().setDetailPanelOpen(false);
+          }
           break;
+        }
 
         case 'Delete':
         case 'Backspace':
@@ -54,8 +59,21 @@ export function useKeyboardShortcuts() {
           break;
 
         case 'f':
-          if (!e.ctrlKey && !e.metaKey) {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            useGraphStore.getState().setNodeSearchOpen(true);
+          } else {
             fitView({ duration: 400 });
+          }
+          break;
+
+        case 'n':
+          if (!e.ctrlKey && !e.metaKey) {
+            const { selectedNodeIds } = useGraphStore.getState();
+            const first = selectedNodeIds.values().next().value;
+            if (first) {
+              useGraphStore.getState().setFocusMode(first as string);
+            }
           }
           break;
 

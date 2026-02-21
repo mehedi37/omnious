@@ -1,15 +1,11 @@
 'use client';
 
-import { useEffect } from 'react';
 import { useParams } from 'next/navigation';
-import { trpc } from '@/trpc/client';
+import { useEffect } from 'react';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { trpc } from '@/trpc/client';
 
-export default function WorkspaceLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function WorkspaceLayout({ children }: { children: React.ReactNode }) {
   const params = useParams<{ workspaceSlug: string }>();
   const setCurrentWorkspace = useWorkspaceStore((s) => s.setCurrentWorkspace);
   const currentSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -24,9 +20,7 @@ export default function WorkspaceLayout({
     // If slug matches and we already have an ID, skip
     if (params.workspaceSlug === currentSlug && currentId) return;
 
-    const match = workspaces.find(
-      (w) => w.workspace.slug === params.workspaceSlug,
-    );
+    const match = workspaces.find((w) => w.workspace.slug === params.workspaceSlug);
     if (match) {
       setCurrentWorkspace(match.workspace.id, match.workspace.slug);
     }

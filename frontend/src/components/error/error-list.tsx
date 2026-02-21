@@ -1,7 +1,13 @@
 'use client';
 
+import { AlertCircle, ArrowUpDown, Check, Clock } from 'lucide-react';
 import { useState } from 'react';
-import { AlertCircle, Check, Clock, ArrowUpDown } from 'lucide-react';
+import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
   TableBody,
@@ -10,15 +16,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Skeleton } from '@/components/ui/skeleton';
-import { toast } from 'sonner';
-import { trpc } from '@/trpc/client';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
-import { formatRelativeTime, formatNumber } from '@/lib/utils/format';
+import { formatNumber, formatRelativeTime } from '@/lib/utils/format';
+import { trpc } from '@/trpc/client';
 
 export function ErrorList() {
   const currentProjectId = useWorkspaceStore((s) => s.currentProjectId);
@@ -94,11 +94,17 @@ export function ErrorList() {
                 <TableRow key={error.id} className={isResolved ? 'opacity-60' : ''}>
                   <TableCell>
                     {isResolved ? (
-                      <Badge variant="outline" className="bg-green-500/20 text-green-700 dark:text-green-400">
+                      <Badge
+                        variant="outline"
+                        className="bg-green-500/20 text-green-700 dark:text-green-400"
+                      >
                         <Check className="h-3 w-3" />
                       </Badge>
                     ) : (
-                      <Badge variant="outline" className="bg-red-500/20 text-red-700 dark:text-red-400">
+                      <Badge
+                        variant="outline"
+                        className="bg-red-500/20 text-red-700 dark:text-red-400"
+                      >
                         <AlertCircle className="h-3 w-3" />
                       </Badge>
                     )}
@@ -128,7 +134,12 @@ export function ErrorList() {
                         size="sm"
                         className="h-7 text-xs"
                         disabled={resolveMutation.isPending}
-                        onClick={() => resolveMutation.mutate({ projectId: currentProjectId!, errorId: error.id })}
+                        onClick={() =>
+                          resolveMutation.mutate({
+                            projectId: currentProjectId!,
+                            errorId: error.id,
+                          })
+                        }
                       >
                         Resolve
                       </Button>

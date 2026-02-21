@@ -1,19 +1,19 @@
-import type { OIRNodeType, OIREdgeType } from './types';
+import type { OIREdgeType, OIRNodeType } from './types';
 
 /** OKLCH color for each OIR node type */
 export const NODE_COLORS: Record<OIRNodeType, string> = {
-  function: 'oklch(0.527 0.185 145.14)',    // green
-  component: 'oklch(0.546 0.245 262.88)',   // blue
-  route: 'oklch(0.705 0.213 47.6)',         // orange
-  database_query: 'oklch(0.553 0.235 303)',  // purple
-  module: 'oklch(0.637 0.025 260)',          // slate
-  class: 'oklch(0.6 0.145 280)',             // indigo
-  middleware: 'oklch(0.65 0.175 55)',        // amber
-  event_emitter: 'oklch(0.6 0.19 200)',     // cyan
-  event_listener: 'oklch(0.55 0.17 190)',   // teal
-  external_api: 'oklch(0.65 0.14 340)',     // pink
-  variable: 'oklch(0.65 0.06 250)',          // gray-blue
-  type_def: 'oklch(0.6 0.12 310)',           // violet
+  function: 'oklch(0.527 0.185 145.14)', // green
+  component: 'oklch(0.546 0.245 262.88)', // blue
+  route: 'oklch(0.705 0.213 47.6)', // orange
+  database_query: 'oklch(0.553 0.235 303)', // purple
+  module: 'oklch(0.637 0.025 260)', // slate
+  class: 'oklch(0.6 0.145 280)', // indigo
+  middleware: 'oklch(0.65 0.175 55)', // amber
+  event_emitter: 'oklch(0.6 0.19 200)', // cyan
+  event_listener: 'oklch(0.55 0.17 190)', // teal
+  external_api: 'oklch(0.65 0.14 340)', // pink
+  variable: 'oklch(0.65 0.06 250)', // gray-blue
+  type_def: 'oklch(0.6 0.12 310)', // violet
 };
 
 /** Tailwind color class (bg-*) for each node type */
@@ -50,18 +50,18 @@ export const NODE_ICONS: Record<OIRNodeType, string> = {
 
 /** Edge color by type */
 export const EDGE_COLORS: Record<OIREdgeType, string> = {
-  calls: 'oklch(0.527 0.185 145.14)',       // green — runtime flow
-  imports: 'oklch(0.6 0.03 260)',            // gray — static
-  extends: 'oklch(0.6 0.145 280)',           // indigo
-  implements: 'oklch(0.55 0.17 190)',        // teal
-  renders: 'oklch(0.546 0.245 262.88)',      // blue
-  routes_to: 'oklch(0.705 0.213 47.6)',      // orange
-  queries: 'oklch(0.553 0.235 303)',         // purple
-  emits_event: 'oklch(0.6 0.19 200)',        // cyan
-  subscribes_to: 'oklch(0.55 0.17 190)',     // teal
-  redirects_to: 'oklch(0.65 0.175 55)',      // amber
-  uses: 'oklch(0.65 0.06 250)',              // gray-blue
-  exports: 'oklch(0.6 0.03 260)',            // gray
+  calls: 'oklch(0.527 0.185 145.14)', // green — runtime flow
+  imports: 'oklch(0.6 0.03 260)', // gray — static
+  extends: 'oklch(0.6 0.145 280)', // indigo
+  implements: 'oklch(0.55 0.17 190)', // teal
+  renders: 'oklch(0.546 0.245 262.88)', // blue
+  routes_to: 'oklch(0.705 0.213 47.6)', // orange
+  queries: 'oklch(0.553 0.235 303)', // purple
+  emits_event: 'oklch(0.6 0.19 200)', // cyan
+  subscribes_to: 'oklch(0.55 0.17 190)', // teal
+  redirects_to: 'oklch(0.65 0.175 55)', // amber
+  uses: 'oklch(0.65 0.06 250)', // gray-blue
+  exports: 'oklch(0.6 0.03 260)', // gray
 };
 
 /** Zoom thresholds for level-of-detail rendering */

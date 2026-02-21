@@ -1,9 +1,9 @@
 'use client';
 
+import { BaseEdge, type EdgeProps, getSmoothStepPath } from '@xyflow/react';
 import { memo } from 'react';
-import { BaseEdge, getSmoothStepPath, type EdgeProps } from '@xyflow/react';
-import type { GraphEdgeData } from '@/lib/oir/transforms';
 import { EDGE_COLORS } from '@/lib/oir/constants';
+import type { GraphEdgeData } from '@/lib/oir/transforms';
 import { useGraphStore } from '@/lib/stores/graph-store';
 
 function DataFlowEdgeComponent({
@@ -17,12 +17,13 @@ function DataFlowEdgeComponent({
   data,
   markerEnd,
   selected,
+  style,
 }: EdgeProps) {
   const d = data as unknown as GraphEdgeData | undefined;
   const edgeType = d?.edgeType ?? 'calls';
   const strokeColor = EDGE_COLORS[edgeType] ?? EDGE_COLORS.calls;
 
-  // Flow animation state
+  // Flow animation state — only subscribe to needed values
   const flowMode = useGraphStore((s) => s.flowMode);
   const isActive = useGraphStore((s) => s.activeEdgeIds.has(id));
   const inReplay = flowMode === 'replay';
@@ -37,24 +38,16 @@ function DataFlowEdgeComponent({
     borderRadius: 16,
   });
 
-  // During replay: only active edges get the particle + glow
-  const showParticle = inReplay ? isActive : true;
-  const strokeWidth = inReplay
-    ? isActive ? 4 : 1.5
-    : selected ? 3 : 2;
-  const opacity = inReplay
-    ? isActive ? 1 : 0.2
-    : 1;
+  // During replay: active edges get particle + glow, others dim
+  // Outside replay: simple static colored edge (NO continuous animation)
+  const strokeWidth = inReplay ? (isActive ? 4 : 1.5) : selected ? 2.5 : 1.5;
+  const opacity = inReplay ? (isActive ? 1 : 0.15) : ((style?.opacity as number) ?? 0.7);
 
   return (
     <>
-      <defs>
-        <linearGradient id={`gradient-${id}`} x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor={strokeColor} stopOpacity={0.4 * opacity} />
-          <stop offset="50%" stopColor={strokeColor} stopOpacity={opacity} />
-          <stop offset="100%" stopColor={strokeColor} stopOpacity={0.4 * opacity} />
-        </linearGradient>
-        {isActive && (
+      {/* Only add per-edge defs during active replay */}
+      {inReplay && isActive && (
+        <defs>
           <filter id={`glow-${id}`}>
             <feGaussianBlur stdDeviation="3" result="coloredBlur" />
             <feMerge>
@@ -62,34 +55,25 @@ function DataFlowEdgeComponent({
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
-        )}
-      </defs>
+        </defs>
+      )}
       <BaseEdge
         id={id}
         path={edgePath}
         markerEnd={markerEnd}
         style={{
-          stroke: isActive ? strokeColor : `url(#gradient-${id})`,
+          stroke: strokeColor,
           strokeWidth,
           opacity,
-          filter: isActive ? `url(#glow-${id})` : undefined,
+          filter: inReplay && isActive ? `url(#glow-${id})` : undefined,
           transition: 'stroke-width 0.3s, opacity 0.3s',
+          ...style,
         }}
       />
-      {/* Animated particle along the path */}
-      {showParticle && (
-        <circle
-          r={isActive ? 5 : 3}
-          fill={strokeColor}
-          opacity={isActive ? 1 : 0.6}
-          filter={isActive ? `url(#glow-${id})` : undefined}
-        >
-          <animateMotion
-            dur={isActive ? '1s' : '2s'}
-            repeatCount={isActive ? '1' : 'indefinite'}
-            path={edgePath}
-            fill={isActive ? 'freeze' : undefined}
-          />
+      {/* Only render animated particle during active replay */}
+      {inReplay && isActive && (
+        <circle r={5} fill={strokeColor} filter={`url(#glow-${id})`}>
+          <animateMotion dur="1s" repeatCount="1" path={edgePath} fill="freeze" />
         </circle>
       )}
     </>

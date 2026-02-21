@@ -282,4 +282,62 @@ export const projectRouter = router({
 
       return data;
     }),
+
+  /** Get sync status for a project (used by frontend SyncStatusBadge) */
+  getSyncStatus: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const { data: project, error: projectError } = await ctx.db
+        .from('projects')
+        .select('id, status, last_indexed_at, last_index_hash')
+        .eq('id', input.projectId)
+        .single();
+
+      if (projectError || !project) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Project not found.',
+        });
+      }
+
+      const [nodesResult, edgesResult] = await Promise.all([
+        ctx.db
+          .from('code_nodes')
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', input.projectId),
+        ctx.db
+          .from('code_edges')
+          .select('*', { count: 'exact', head: true })
+          .eq('project_id', input.projectId),
+      ]);
+
+      // Derive sync_state from project data
+      type SyncState = 'empty' | 'synced' | 'importing' | 'error' | 'stale' | 'unknown';
+      let syncState: SyncState = 'unknown';
+      const nodeCount = nodesResult.count ?? 0;
+
+      if (project.status === 'importing') {
+        syncState = 'importing';
+      } else if (project.status === 'error') {
+        syncState = 'error';
+      } else if (nodeCount === 0 && !project.last_indexed_at) {
+        syncState = 'empty';
+      } else if (project.last_index_hash && project.last_indexed_at) {
+        // Check staleness: if last_indexed_at is older than 7 days, mark as stale
+        const lastIndexed = new Date(project.last_indexed_at);
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        syncState = lastIndexed < sevenDaysAgo ? 'stale' : 'synced';
+      } else if (nodeCount > 0) {
+        syncState = 'synced';
+      }
+
+      return {
+        status: project.status ?? 'active',
+        last_indexed_at: project.last_indexed_at,
+        last_index_hash: project.last_index_hash,
+        node_count: nodeCount,
+        edge_count: edgesResult.count ?? 0,
+        sync_state: syncState,
+      };
+    }),
 });

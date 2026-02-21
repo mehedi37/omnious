@@ -1,11 +1,11 @@
 'use client';
 
+import { AlertCircle, ChevronDown, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, AlertCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { TRACE_STATUS_STYLES } from '@/lib/oir/constants';
-import { formatDuration } from '@/lib/utils/format';
 import type { Span } from '@/lib/oir/types';
+import { formatDuration } from '@/lib/utils/format';
 
 interface SpanDetailProps {
   span: Span;

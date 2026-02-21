@@ -1,19 +1,9 @@
 'use client';
 
+import { Gauge, Layers, Pause, Play, SkipBack, SkipForward, Timer, X } from 'lucide-react';
 import { memo } from 'react';
-import {
-  Play,
-  Pause,
-  SkipForward,
-  SkipBack,
-  X,
-  Timer,
-  Layers,
-  Gauge,
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Slider } from '@/components/ui/slider';
+import { Button } from '@/components/ui/button';
 import {
   Select,
   SelectContent,
@@ -21,13 +11,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
-import type { FlowStep } from '@/lib/oir/trace-flow';
+import { Slider } from '@/components/ui/slider';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { PlaybackMode } from '@/hooks/use-trace-playback';
+import type { FlowStep } from '@/lib/oir/trace-flow';
 
 interface FlowControlsProps {
   isPlaying: boolean;
@@ -82,7 +69,10 @@ function FlowControlsComponent({
           <div className="flex items-center gap-2 min-w-0 flex-1">
             {currentFlowStep ? (
               <>
-                <Badge variant="secondary" className="shrink-0 text-[10px] font-mono bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/30">
+                <Badge
+                  variant="secondary"
+                  className="shrink-0 text-[10px] font-mono bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/30"
+                >
                   {currentFlowStep.operation}
                 </Badge>
                 {currentFlowStep.serviceName && (
@@ -116,7 +106,9 @@ function FlowControlsComponent({
                 <div className="space-y-0.5">
                   {callStack.map((s, i) => (
                     <p key={s.spanId} className="text-[10px] font-mono text-muted-foreground">
-                      {'  '.repeat(i)}{i > 0 ? '└ ' : ''}{s.operation}
+                      {'  '.repeat(i)}
+                      {i > 0 ? '└ ' : ''}
+                      {s.operation}
                     </p>
                   ))}
                 </div>

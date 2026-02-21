@@ -1,15 +1,11 @@
 'use client';
 
-import { useEffect } from 'react';
 import { useParams } from 'next/navigation';
-import { trpc } from '@/trpc/client';
+import { useEffect } from 'react';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { trpc } from '@/trpc/client';
 
-export default function ProjectLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function ProjectLayout({ children }: { children: React.ReactNode }) {
   const params = useParams<{ workspaceSlug: string; projectSlug: string }>();
   const setCurrentProject = useWorkspaceStore((s) => s.setCurrentProject);
   const currentProjectSlug = useWorkspaceStore((s) => s.currentProjectSlug);

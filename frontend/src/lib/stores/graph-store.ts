@@ -1,11 +1,11 @@
+import type { Edge, EdgeChange, Node, NodeChange } from '@xyflow/react';
+import { applyEdgeChanges, applyNodeChanges } from '@xyflow/react';
 import { create } from 'zustand';
-import { immer } from 'zustand/middleware/immer';
 import { subscribeWithSelector } from 'zustand/middleware';
-import type { Node, Edge, NodeChange, EdgeChange } from '@xyflow/react';
-import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
-import type { GraphNodeData, GraphEdgeData } from '../oir/transforms';
+import { immer } from 'zustand/middleware/immer';
 import type { ZoomLevel } from '../oir/constants';
 import type { FlowStep, RuntimeEdge } from '../oir/trace-flow';
+import type { GraphEdgeData, GraphNodeData } from '../oir/transforms';
 
 /** Node animation state during trace replay */
 export type NodeFlowState = 'idle' | 'active' | 'completed' | 'error';
@@ -30,6 +30,11 @@ interface GraphState {
   runtimeEdges: Edge<GraphEdgeData>[];
   callStack: FlowStep[];
 
+  // ── Focus mode ──
+  focusedNodeId: string | null;
+  connectedNodeIds: Set<string>;
+  nodeSearchOpen: boolean;
+
   // Actions
   setNodes: (nodes: Node<GraphNodeData>[]) => void;
   setEdges: (edges: Edge<GraphEdgeData>[]) => void;
@@ -51,6 +56,11 @@ interface GraphState {
   setFlowStep: (step: FlowStep) => void;
   clearFlowReplay: () => void;
   getNodeFlowState: (nodeId: string) => NodeFlowState;
+
+  // ── Focus + Search ──
+  setFocusMode: (nodeId: string) => void;
+  clearFocusMode: () => void;
+  setNodeSearchOpen: (open: boolean) => void;
 }
 
 export const useGraphStore = create<GraphState>()(
@@ -74,6 +84,11 @@ export const useGraphStore = create<GraphState>()(
       errorNodeIds: new Set<string>(),
       runtimeEdges: [],
       callStack: [],
+
+      // ── Focus mode ──
+      focusedNodeId: null,
+      connectedNodeIds: new Set<string>(),
+      nodeSearchOpen: false,
 
       setNodes: (nodes) =>
         set((state) => {
@@ -238,6 +253,31 @@ export const useGraphStore = create<GraphState>()(
         if (s.completedNodeIds.has(nodeId)) return 'completed';
         return 'idle';
       },
+
+      // ── Focus + Search ──
+
+      setFocusMode: (nodeId) =>
+        set((state) => {
+          const connected = new Set<string>([nodeId]);
+          for (const edge of state.edges) {
+            if (edge.source === nodeId) connected.add(edge.target);
+            if (edge.target === nodeId) connected.add(edge.source);
+          }
+          state.focusedNodeId = nodeId;
+          state.connectedNodeIds = connected;
+          state.selectedNodeIds = new Set([nodeId]);
+        }),
+
+      clearFocusMode: () =>
+        set((state) => {
+          state.focusedNodeId = null;
+          state.connectedNodeIds = new Set();
+        }),
+
+      setNodeSearchOpen: (open) =>
+        set((state) => {
+          state.nodeSearchOpen = open;
+        }),
     })),
   ),
 );

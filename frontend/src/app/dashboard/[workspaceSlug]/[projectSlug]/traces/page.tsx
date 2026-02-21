@@ -1,7 +1,7 @@
 import { Suspense } from 'react';
-import { HydrateClient } from '@/trpc/server';
-import { TraceList } from '@/components/trace/trace-list';
 import { TableSkeleton } from '@/components/shared/loading-skeleton';
+import { TraceList } from '@/components/trace/trace-list';
+import { HydrateClient } from '@/trpc/server';
 
 export default async function TracesPage() {
   return (

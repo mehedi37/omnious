@@ -1,23 +1,19 @@
 'use client';
 
+import { AlertCircle, ArrowLeft, Clock, Play } from 'lucide-react';
+import { useParams, useRouter } from 'next/navigation';
 import { useMemo } from 'react';
-import { ArrowLeft, Clock, AlertCircle, Play } from 'lucide-react';
-import { useRouter, useParams } from 'next/navigation';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
-import { trpc } from '@/trpc/client';
-import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { HTTP_METHOD_COLORS, TRACE_STATUS_STYLES } from '@/lib/oir/constants';
 import { useUIStore } from '@/lib/stores/ui-store';
-import { TRACE_STATUS_STYLES, HTTP_METHOD_COLORS } from '@/lib/oir/constants';
+import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { formatDuration, formatRelativeTime } from '@/lib/utils/format';
+import { trpc } from '@/trpc/client';
 import { SpanDetail } from './span-detail';
 
 interface TraceTimelineProps {
@@ -39,19 +35,25 @@ export function TraceTimeline({ traceId }: TraceTimelineProps) {
 
   // Build a waterfall by sorting spans by start time
   const sortedSpans = useMemo(
-    () => [...spans].sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()),
+    () =>
+      [...spans].sort(
+        (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime(),
+      ),
     [spans],
   );
 
   // Calculate trace time bounds for waterfall scaling
   const traceStart = sortedSpans.length > 0 ? new Date(sortedSpans[0].started_at).getTime() : 0;
-  const traceEnd = sortedSpans.length > 0
-    ? Math.max(
-        ...sortedSpans.map((s) =>
-          s.ended_at ? new Date(s.ended_at).getTime() : new Date(s.started_at).getTime() + (s.duration_ms ?? 0),
-        ),
-      )
-    : 0;
+  const traceEnd =
+    sortedSpans.length > 0
+      ? Math.max(
+          ...sortedSpans.map((s) =>
+            s.ended_at
+              ? new Date(s.ended_at).getTime()
+              : new Date(s.started_at).getTime() + (s.duration_ms ?? 0),
+          ),
+        )
+      : 0;
   const traceDurationMs = traceEnd - traceStart || 1;
 
   if (traceQuery.isLoading) {
@@ -81,9 +83,7 @@ export function TraceTimeline({ traceId }: TraceTimelineProps) {
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <h2 className="text-lg font-semibold">
-            {trace?.root_operation ?? 'Trace Detail'}
-          </h2>
+          <h2 className="text-lg font-semibold">{trace?.root_operation ?? 'Trace Detail'}</h2>
           {trace?.status && (
             <Badge variant="outline" className={TRACE_STATUS_STYLES[trace.status] ?? ''}>
               {trace.status}
@@ -105,13 +105,18 @@ export function TraceTimeline({ traceId }: TraceTimelineProps) {
                   Replay on Graph
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Visualize this trace as an animated flow on the code graph</TooltipContent>
+              <TooltipContent>
+                Visualize this trace as an animated flow on the code graph
+              </TooltipContent>
             </Tooltip>
           </div>
         </div>
         <div className="flex items-center gap-4 text-sm text-muted-foreground pl-11">
           {trace?.http_method && (
-            <Badge variant="outline" className={`font-mono text-xs ${HTTP_METHOD_COLORS[trace.http_method] ?? ''}`}>
+            <Badge
+              variant="outline"
+              className={`font-mono text-xs ${HTTP_METHOD_COLORS[trace.http_method] ?? ''}`}
+            >
               {trace.http_method}
             </Badge>
           )}
@@ -124,9 +129,7 @@ export function TraceTimeline({ traceId }: TraceTimelineProps) {
               {formatDuration(trace.duration_ms)}
             </span>
           )}
-          {trace?.started_at && (
-            <span>{formatRelativeTime(trace.started_at)}</span>
-          )}
+          {trace?.started_at && <span>{formatRelativeTime(trace.started_at)}</span>}
         </div>
         {trace?.error_message && (
           <div className="flex items-start gap-2 pl-11 mt-2">

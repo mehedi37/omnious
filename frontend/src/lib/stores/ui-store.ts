@@ -25,27 +25,19 @@ export const useUIStore = create<UIState>()((set) => ({
   activeDetailTab: 'properties',
   pendingReplayTraceId: null,
 
-  toggleSidebar: () =>
-    set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+  toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
 
-  setSidebarCollapsed: (collapsed) =>
-    set({ sidebarCollapsed: collapsed }),
+  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
 
-  toggleCommandPalette: () =>
-    set((state) => ({ commandPaletteOpen: !state.commandPaletteOpen })),
+  toggleCommandPalette: () => set((state) => ({ commandPaletteOpen: !state.commandPaletteOpen })),
 
-  openCommandPalette: () =>
-    set({ commandPaletteOpen: true }),
+  openCommandPalette: () => set({ commandPaletteOpen: true }),
 
-  closeCommandPalette: () =>
-    set({ commandPaletteOpen: false }),
+  closeCommandPalette: () => set({ commandPaletteOpen: false }),
 
-  setDetailPanelOpen: (open) =>
-    set({ detailPanelOpen: open }),
+  setDetailPanelOpen: (open) => set({ detailPanelOpen: open }),
 
-  setActiveDetailTab: (tab) =>
-    set({ activeDetailTab: tab, detailPanelOpen: true }),
+  setActiveDetailTab: (tab) => set({ activeDetailTab: tab, detailPanelOpen: true }),
 
-  setPendingReplayTraceId: (traceId) =>
-    set({ pendingReplayTraceId: traceId }),
+  setPendingReplayTraceId: (traceId) => set({ pendingReplayTraceId: traceId }),
 }));

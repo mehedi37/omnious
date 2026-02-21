@@ -1,16 +1,10 @@
 'use client';
 
-import { createClient } from '@/lib/supabase/client';
-import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
-import { toast } from 'sonner';
 import { Github } from 'lucide-react';
+import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { createClient } from '@/lib/supabase/client';
 
 export default function LoginPage() {
   async function handleOAuthLogin(provider: 'github' | 'google') {
@@ -37,19 +31,11 @@ export default function LoginPage() {
       </CardHeader>
       <CardContent>
         <div className="grid gap-3">
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => handleOAuthLogin('github')}
-          >
+          <Button variant="outline" className="w-full" onClick={() => handleOAuthLogin('github')}>
             <Github className="mr-2 h-4 w-4" />
             Continue with GitHub
           </Button>
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => handleOAuthLogin('google')}
-          >
+          <Button variant="outline" className="w-full" onClick={() => handleOAuthLogin('google')}>
             <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24">
               <path
                 d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"

@@ -1,29 +1,24 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter, useParams } from 'next/navigation';
 import {
-  Save,
-  Loader2,
-  RefreshCw,
-  Trash2,
+  BarChart3,
+  Copy,
   ExternalLink,
+  Eye,
+  EyeOff,
+  FolderOpen,
   GitBranch,
   Github,
   Globe,
-  FolderOpen,
-  Copy,
-  Eye,
-  EyeOff,
-  BarChart3,
+  Loader2,
+  RefreshCw,
+  Save,
+  Trash2,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Separator } from '@/components/ui/separator';
-import { Badge } from '@/components/ui/badge';
+import { useParams, useRouter } from 'next/navigation';
+import { useState } from 'react';
+import { toast } from 'sonner';
+import { deriveSyncState, SyncStatusBadge } from '@/components/project/sync-status-badge';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,9 +30,15 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { toast } from 'sonner';
-import { trpc } from '@/trpc/client';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
+import { Textarea } from '@/components/ui/textarea';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { trpc } from '@/trpc/client';
 
 function formatRelativeTime(date: string | null) {
   if (!date) return 'Never';
@@ -184,9 +185,7 @@ export default function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle>Source Details</CardTitle>
-          <CardDescription>
-            Git repository and source information
-          </CardDescription>
+          <CardDescription>Git repository and source information</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex items-center gap-2">
@@ -197,9 +196,7 @@ export default function SettingsPage() {
             {project?.primary_language && (
               <Badge variant="secondary">{project.primary_language}</Badge>
             )}
-            {project?.framework && (
-              <Badge variant="secondary">{project.framework}</Badge>
-            )}
+            {project?.framework && <Badge variant="secondary">{project.framework}</Badge>}
           </div>
           {project?.git_url && (
             <div className="flex items-center gap-2 text-sm">
@@ -223,14 +220,11 @@ export default function SettingsPage() {
           )}
           {!project?.git_url && !project?.git_provider && (
             <p className="text-sm text-muted-foreground">
-              No git provider configured. Use the Omnious CLI to index your
-              project:
+              No git provider configured. Use the Omnious CLI to index your project:
             </p>
           )}
           <div className="rounded-md bg-muted p-3 text-sm font-mono">
-            <p className="text-muted-foreground">
-              # Install CLI and index your project
-            </p>
+            <p className="text-muted-foreground"># Install CLI and index your project</p>
             <p>npx @omnious/cli init</p>
             <p>npx @omnious/cli index</p>
             <p>npx @omnious/cli push</p>
@@ -246,57 +240,42 @@ export default function SettingsPage() {
             Indexing Status
           </CardTitle>
           <CardDescription>
-            Last indexed{' '}
-            {formatRelativeTime(project?.last_indexed_at ?? null)} · OIR
-            v{project?.oir_version ?? '—'}
+            Last indexed {formatRelativeTime(project?.last_indexed_at ?? null)} · OIR v
+            {project?.oir_version ?? '—'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center gap-2">
-            <Badge
-              variant={
-                project?.status === 'active'
-                  ? 'default'
-                  : project?.status === 'importing'
-                    ? 'secondary'
-                    : 'destructive'
-              }
-              className="capitalize"
-            >
-              {project?.status ?? 'unknown'}
-            </Badge>
+            <SyncStatusBadge
+              syncState={deriveSyncState(
+                project?.status ?? 'unknown',
+                project?.last_indexed_at,
+                stats?.nodeCount,
+              )}
+            />
           </div>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <div className="rounded-lg border p-3 text-center">
-              <p className="text-2xl font-bold">
-                {stats?.nodeCount ?? '—'}
-              </p>
+              <p className="text-2xl font-bold">{stats?.nodeCount ?? '—'}</p>
               <p className="text-xs text-muted-foreground">Nodes</p>
             </div>
             <div className="rounded-lg border p-3 text-center">
-              <p className="text-2xl font-bold">
-                {stats?.edgeCount ?? '—'}
-              </p>
+              <p className="text-2xl font-bold">{stats?.edgeCount ?? '—'}</p>
               <p className="text-xs text-muted-foreground">Edges</p>
             </div>
             <div className="rounded-lg border p-3 text-center">
-              <p className="text-2xl font-bold">
-                {stats?.traceCount ?? '—'}
-              </p>
+              <p className="text-2xl font-bold">{stats?.traceCount ?? '—'}</p>
               <p className="text-xs text-muted-foreground">Traces</p>
             </div>
             <div className="rounded-lg border p-3 text-center">
-              <p className="text-2xl font-bold">
-                {stats?.errorCount ?? '—'}
-              </p>
+              <p className="text-2xl font-bold">{stats?.errorCount ?? '—'}</p>
               <p className="text-xs text-muted-foreground">Errors</p>
             </div>
           </div>
           <Button
             variant="outline"
             onClick={() => {
-              if (currentProjectId)
-                reindexMutation.mutate({ projectId: currentProjectId });
+              if (currentProjectId) reindexMutation.mutate({ projectId: currentProjectId });
             }}
             disabled={reindexMutation.isPending || project?.status === 'importing'}
           >
@@ -314,9 +293,7 @@ export default function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle>API Key</CardTitle>
-          <CardDescription>
-            Use this key with the CLI or to ingest traces
-          </CardDescription>
+          <CardDescription>Use this key with the CLI or to ingest traces</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex items-center gap-2">
@@ -326,16 +303,8 @@ export default function SettingsPage() {
               value={project?.api_key ?? ''}
               className="font-mono text-sm"
             />
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowApiKey(!showApiKey)}
-            >
-              {showApiKey ? (
-                <EyeOff className="size-4" />
-              ) : (
-                <Eye className="size-4" />
-              )}
+            <Button variant="ghost" size="icon" onClick={() => setShowApiKey(!showApiKey)}>
+              {showApiKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
             </Button>
             <Button
               variant="ghost"
@@ -354,8 +323,7 @@ export default function SettingsPage() {
             variant="outline"
             size="sm"
             onClick={() => {
-              if (currentProjectId)
-                regenerateKeyMutation.mutate({ projectId: currentProjectId });
+              if (currentProjectId) regenerateKeyMutation.mutate({ projectId: currentProjectId });
             }}
             disabled={regenerateKeyMutation.isPending}
           >
@@ -372,9 +340,7 @@ export default function SettingsPage() {
       {/* ── Danger Zone ── */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-red-600 dark:text-red-400">
-            Danger Zone
-          </CardTitle>
+          <CardTitle className="text-red-600 dark:text-red-400">Danger Zone</CardTitle>
           <CardDescription>Irreversible actions</CardDescription>
         </CardHeader>
         <CardContent>
@@ -389,10 +355,9 @@ export default function SettingsPage() {
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete project?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  This will permanently delete{' '}
-                  <strong>{project?.name}</strong> and all its data including
-                  code nodes, edges, traces, and error snapshots. This action
-                  cannot be undone.
+                  This will permanently delete <strong>{project?.name}</strong> and all its data
+                  including code nodes, edges, traces, and error snapshots. This action cannot be
+                  undone.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -400,8 +365,7 @@ export default function SettingsPage() {
                 <AlertDialogAction
                   className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                   onClick={() => {
-                    if (currentProjectId)
-                      deleteMutation.mutate({ projectId: currentProjectId });
+                    if (currentProjectId) deleteMutation.mutate({ projectId: currentProjectId });
                   }}
                   disabled={deleteMutation.isPending}
                 >

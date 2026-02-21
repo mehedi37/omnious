@@ -1,6 +1,6 @@
 'use client';
 
-import { Zap, Bug, Shield, Languages, HelpCircle, GitBranch } from 'lucide-react';
+import { Bug, GitBranch, HelpCircle, Languages, Shield, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { AISessionType } from '@/lib/oir/types';
 
@@ -18,7 +18,8 @@ const QUICK_ACTIONS: Array<{
   {
     type: 'explain_flow',
     label: 'Explain Flow',
-    prompt: 'Explain the main data flow through this project — from entry points to database operations.',
+    prompt:
+      'Explain the main data flow through this project — from entry points to database operations.',
     icon: GitBranch,
     color: 'text-blue-600 dark:text-blue-400',
   },

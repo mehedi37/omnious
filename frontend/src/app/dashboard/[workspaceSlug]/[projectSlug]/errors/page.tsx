@@ -1,7 +1,7 @@
 import { Suspense } from 'react';
-import { HydrateClient } from '@/trpc/server';
 import { ErrorList } from '@/components/error/error-list';
 import { TableSkeleton } from '@/components/shared/loading-skeleton';
+import { HydrateClient } from '@/trpc/server';
 
 export default async function ErrorsPage() {
   return (

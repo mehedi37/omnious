@@ -1,8 +1,13 @@
 'use client';
 
+import { Activity, AlertCircle, ArrowRight, Clock, Play } from 'lucide-react';
+import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { useRouter, useParams } from 'next/navigation';
-import { Activity, Clock, AlertCircle, ArrowRight, Play } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
   TableBody,
@@ -11,21 +16,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
-import { trpc } from '@/trpc/client';
-import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { HTTP_METHOD_COLORS, TRACE_STATUS_STYLES } from '@/lib/oir/constants';
 import { useUIStore } from '@/lib/stores/ui-store';
-import { TRACE_STATUS_STYLES, HTTP_METHOD_COLORS } from '@/lib/oir/constants';
+import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { formatDuration, formatRelativeTime } from '@/lib/utils/format';
+import { trpc } from '@/trpc/client';
 
 export function TraceList() {
   const router = useRouter();
@@ -95,16 +91,11 @@ export function TraceList() {
                 key={trace.id}
                 className="cursor-pointer hover:bg-muted/50"
                 onClick={() =>
-                  router.push(
-                    `/${params.workspaceSlug}/${params.projectSlug}/traces/${trace.id}`,
-                  )
+                  router.push(`/${params.workspaceSlug}/${params.projectSlug}/traces/${trace.id}`)
                 }
               >
                 <TableCell>
-                  <Badge
-                    variant="outline"
-                    className={TRACE_STATUS_STYLES[trace.status] ?? ''}
-                  >
+                  <Badge variant="outline" className={TRACE_STATUS_STYLES[trace.status] ?? ''}>
                     {trace.status === 'error' ? (
                       <AlertCircle className="h-3 w-3 mr-1" />
                     ) : (

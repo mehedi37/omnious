@@ -30,11 +30,12 @@ export class OmniousApiClient {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
+      // tRPC v11 + superjson: body must be wrapped as { json: <input> }
+      body: JSON.stringify({ json: input }),
     });
 
     const json = (await res.json()) as {
-      result?: { data: T };
+      result?: { data: { json: T } };
       error?: { message: string; data?: { code: string } };
     };
 
@@ -44,7 +45,8 @@ export class OmniousApiClient {
       throw new ApiError(msg, res.status, code);
     }
 
-    return json.result!.data;
+    // tRPC v11 + superjson: unwrap { json: <data> } envelope
+    return json.result!.data.json;
   }
 
   /**
@@ -52,7 +54,8 @@ export class OmniousApiClient {
    * tRPC HTTP protocol: GET /trpc/{procedure}?input={json}
    */
   async query<T>(procedure: string, input: unknown): Promise<T> {
-    const encoded = encodeURIComponent(JSON.stringify(input));
+    // tRPC v11 + superjson: input must be wrapped as { json: <input> }
+    const encoded = encodeURIComponent(JSON.stringify({ json: input }));
     const url = `${this.baseUrl}/trpc/${procedure}?input=${encoded}`;
     const res = await fetch(url, {
       method: 'GET',
@@ -60,7 +63,7 @@ export class OmniousApiClient {
     });
 
     const json = (await res.json()) as {
-      result?: { data: T };
+      result?: { data: { json: T } };
       error?: { message: string; data?: { code: string } };
     };
 
@@ -70,7 +73,8 @@ export class OmniousApiClient {
       throw new ApiError(msg, res.status, code);
     }
 
-    return json.result!.data;
+    // tRPC v11 + superjson: unwrap { json: <data> } envelope
+    return json.result!.data.json;
   }
 
   /** Validate API key and get project info */
@@ -93,6 +97,7 @@ export class OmniousApiClient {
       author_email?: string;
       commit_message?: string;
     },
+    indexHash?: string,
   ): Promise<PushResult> {
     return this.mutate('graph.pushFromCLI', {
       projectApiKey: this.apiKey,
@@ -115,6 +120,7 @@ export class OmniousApiClient {
         metadata: e.metadata,
       })),
       git_context: gitContext,
+      index_hash: indexHash,
     });
   }
 

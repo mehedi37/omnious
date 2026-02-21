@@ -128,6 +128,7 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
         batchNodes,
         batchEdges,
         i === 0 ? gitContext ?? undefined : undefined, // send git context only on first batch
+        i === 0 ? index.project_hash : undefined, // send index hash only on first batch
       );
       totalNodesUpserted += result.nodes_upserted;
       totalEdgesUpserted += result.edges_upserted;

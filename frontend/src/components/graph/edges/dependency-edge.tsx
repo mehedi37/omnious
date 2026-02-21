@@ -1,9 +1,9 @@
 'use client';
 
+import { BaseEdge, type EdgeProps, getSmoothStepPath } from '@xyflow/react';
 import { memo } from 'react';
-import { BaseEdge, getSmoothStepPath, type EdgeProps } from '@xyflow/react';
-import type { GraphEdgeData } from '@/lib/oir/transforms';
 import { EDGE_COLORS } from '@/lib/oir/constants';
+import type { GraphEdgeData } from '@/lib/oir/transforms';
 
 function DependencyEdgeComponent({
   id,

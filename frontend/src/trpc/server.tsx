@@ -1,17 +1,16 @@
 import 'server-only';
 
-import { cache } from 'react';
 import { createTRPCClient, httpBatchLink } from '@trpc/client';
 import { createHydrationHelpers } from '@trpc/react-query/rsc';
+import { cache } from 'react';
 import superjson from 'superjson';
-import { makeQueryClient } from './query-client';
-import type { AppRouter } from './init';
 import { createClient as createServerSupabase } from '@/lib/supabase/server';
+import type { AppRouter } from './init';
+import { makeQueryClient } from './query-client';
 
 export const getQueryClient = cache(makeQueryClient);
 
-const getApiUrl = () =>
-  `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'}/trpc`;
+const getApiUrl = () => `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'}/trpc`;
 
 const serverClient = createTRPCClient<AppRouter>({
   links: [
@@ -22,9 +21,7 @@ const serverClient = createTRPCClient<AppRouter>({
         const supabase = await createServerSupabase();
         const { data } = await supabase.auth.getSession();
         return {
-          Authorization: data.session
-            ? `Bearer ${data.session.access_token}`
-            : '',
+          Authorization: data.session ? `Bearer ${data.session.access_token}` : '',
         };
       },
     }),

@@ -1,20 +1,9 @@
 'use client';
 
-import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { trpc } from '@/trpc/client';
-import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { useState } from 'react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -24,7 +13,18 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { toast } from 'sonner';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
+import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { trpc } from '@/trpc/client';
 
 interface CreateProjectDialogProps {
   workspaceId: string;
@@ -71,7 +71,12 @@ export function CreateProjectDialog({
 
   function handleNameChange(value: string) {
     setName(value);
-    setSlug(value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''));
+    setSlug(
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, ''),
+    );
   }
 
   return (
@@ -92,7 +97,8 @@ export function CreateProjectDialog({
               name,
               slug,
               description: description || undefined,
-              gitProvider: (gitProvider as 'github' | 'gitlab' | 'bitbucket' | 'local') || undefined,
+              gitProvider:
+                (gitProvider as 'github' | 'gitlab' | 'bitbucket' | 'local') || undefined,
               gitUrl: gitUrl || undefined,
             });
           }}

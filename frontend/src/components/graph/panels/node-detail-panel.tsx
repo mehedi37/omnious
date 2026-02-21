@@ -1,19 +1,21 @@
 'use client';
 
-import { X, FileCode, Braces, ExternalLink } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import type { Node } from '@xyflow/react';
+import { Braces, Crosshair, ExternalLink, FileCode, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import { useGraphStore } from '@/lib/stores/graph-store';
-import { useUIStore } from '@/lib/stores/ui-store';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { NODE_BG_CLASSES, NODE_ICONS } from '@/lib/oir/constants';
 import type { GraphNodeData } from '@/lib/oir/transforms';
-import type { Node } from '@xyflow/react';
+import { useGraphStore } from '@/lib/stores/graph-store';
+import { useUIStore } from '@/lib/stores/ui-store';
 
 export function NodeDetailPanel() {
   const nodes = useGraphStore((s) => s.nodes);
   const selectedNodeIds = useGraphStore((s) => s.selectedNodeIds);
+  const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
 
   const selectedNode = nodes.find((n: Node) => selectedNodeIds.has(n.id));
   const data = selectedNode?.data as GraphNodeData | undefined;
@@ -31,6 +33,16 @@ export function NodeDetailPanel() {
     useUIStore.getState().setDetailPanelOpen(false);
   };
 
+  const isCurrentlyFocused = focusedNodeId === selectedNode?.id;
+
+  const handleFocus = () => {
+    if (isCurrentlyFocused) {
+      useGraphStore.getState().clearFocusMode();
+    } else if (selectedNode) {
+      useGraphStore.getState().setFocusMode(selectedNode.id);
+    }
+  };
+
   return (
     <ScrollArea className="h-full">
       <div className="p-4 space-y-4">
@@ -45,9 +57,26 @@ export function NodeDetailPanel() {
             </Badge>
             <h3 className="text-lg font-semibold truncate">{data.label}</h3>
           </div>
-          <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={handleClose}>
-            <X className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={isCurrentlyFocused ? 'secondary' : 'ghost'}
+                  size="icon"
+                  className={`h-7 w-7 ${isCurrentlyFocused ? 'bg-primary/10 text-primary' : ''}`}
+                  onClick={handleFocus}
+                >
+                  <Crosshair className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {isCurrentlyFocused ? 'Exit focus mode (Esc)' : 'Focus on connected nodes (N)'}
+              </TooltipContent>
+            </Tooltip>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleClose}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
         <Separator />
@@ -102,9 +131,14 @@ export function NodeDetailPanel() {
               Errors
             </p>
             <div className="flex items-center gap-2">
-              <Badge variant="destructive">{data.errorCount} error{data.errorCount > 1 ? 's' : ''}</Badge>
+              <Badge variant="destructive">
+                {data.errorCount} error{data.errorCount > 1 ? 's' : ''}
+              </Badge>
               {data.errorSeverity && (
-                <Badge variant="outline" className="border-red-500/30 text-red-600 dark:text-red-400">
+                <Badge
+                  variant="outline"
+                  className="border-red-500/30 text-red-600 dark:text-red-400"
+                >
                   {data.errorSeverity}
                 </Badge>
               )}

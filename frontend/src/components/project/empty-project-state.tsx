@@ -1,21 +1,21 @@
 'use client';
 
-import { useState } from 'react';
 import {
-  Terminal,
-  GitBranch,
-  Upload,
+  ArrowRight,
+  Check,
   CheckCircle2,
   Copy,
-  Check,
   FileCode,
-  ArrowRight,
+  GitBranch,
   Github,
+  Terminal,
+  Upload,
   Workflow,
 } from 'lucide-react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
@@ -73,12 +73,10 @@ export function EmptyProjectState({
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 border border-primary/20">
             <FileCode className="h-8 w-8 text-primary" />
           </div>
-          <h2 className="text-2xl font-bold tracking-tight">
-            Index your codebase
-          </h2>
+          <h2 className="text-2xl font-bold tracking-tight">Index your codebase</h2>
           <p className="text-muted-foreground max-w-md mx-auto">
-            <strong>{projectName}</strong> is ready. Push your code graph using the
-            CLI or GitHub Actions to see the visualization.
+            <strong>{projectName}</strong> is ready. Push your code graph using the CLI or GitHub
+            Actions to see the visualization.
           </p>
         </div>
 
@@ -122,28 +120,42 @@ export function EmptyProjectState({
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Quick Start</CardTitle>
                 <CardDescription>
-                  Run these commands in your project root. Your source code never leaves your machine —
-                  only the graph metadata is uploaded.
+                  Run these commands in your project root. Your source code never leaves your
+                  machine — only the graph metadata is uploaded.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm font-medium">
-                    <Badge variant="outline" className="h-5 w-5 rounded-full p-0 text-[10px] flex items-center justify-center">1</Badge>
+                    <Badge
+                      variant="outline"
+                      className="h-5 w-5 rounded-full p-0 text-[10px] flex items-center justify-center"
+                    >
+                      1
+                    </Badge>
                     Initialize your project
                   </div>
-                  <CodeBlock code={`npx @omnious/cli init \\
+                  <CodeBlock
+                    code={`npx @omnious/cli init \\
   --project ${projectSlug} \\
-  --workspace ${workspaceSlug}`} />
+  --workspace ${workspaceSlug}`}
+                  />
                 </div>
 
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm font-medium">
-                    <Badge variant="outline" className="h-5 w-5 rounded-full p-0 text-[10px] flex items-center justify-center">2</Badge>
+                    <Badge
+                      variant="outline"
+                      className="h-5 w-5 rounded-full p-0 text-[10px] flex items-center justify-center"
+                    >
+                      2
+                    </Badge>
                     Index & push your codebase
                   </div>
-                  <CodeBlock code={`npx @omnious/cli index
-npx @omnious/cli push`} />
+                  <CodeBlock
+                    code={`npx @omnious/cli index
+npx @omnious/cli push`}
+                  />
                 </div>
 
                 <Separator />
@@ -165,7 +177,9 @@ npx @omnious/cli push`} />
                   .omnious.yml
                 </CardTitle>
                 <CardDescription>
-                  Created by <code className="text-xs bg-muted px-1 py-0.5 rounded">omnious init</code> in your project root
+                  Created by{' '}
+                  <code className="text-xs bg-muted px-1 py-0.5 rounded">omnious init</code> in your
+                  project root
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -206,16 +220,25 @@ ci:
               <CardContent className="space-y-4">
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm font-medium">
-                    <Badge variant="outline" className="h-5 w-5 rounded-full p-0 text-[10px] flex items-center justify-center">1</Badge>
+                    <Badge
+                      variant="outline"
+                      className="h-5 w-5 rounded-full p-0 text-[10px] flex items-center justify-center"
+                    >
+                      1
+                    </Badge>
                     Add your project API key as a GitHub Secret
                   </div>
                   <p className="text-sm text-muted-foreground pl-7">
                     Go to <strong>Settings → Secrets → Actions</strong> and add{' '}
-                    <code className="text-xs bg-muted px-1 py-0.5 rounded">OMNIOUS_PROJECT_KEY</code>
+                    <code className="text-xs bg-muted px-1 py-0.5 rounded">
+                      OMNIOUS_PROJECT_KEY
+                    </code>
                   </p>
                   {apiKey && (
                     <div className="pl-7 flex items-center gap-2">
-                      <code className="text-xs bg-muted px-2 py-1 rounded font-mono">{maskedKey}</code>
+                      <code className="text-xs bg-muted px-2 py-1 rounded font-mono">
+                        {maskedKey}
+                      </code>
                       <CopyButton text={apiKey} />
                       <span className="text-xs text-muted-foreground">Copy full key</span>
                     </div>
@@ -224,7 +247,12 @@ ci:
 
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm font-medium">
-                    <Badge variant="outline" className="h-5 w-5 rounded-full p-0 text-[10px] flex items-center justify-center">2</Badge>
+                    <Badge
+                      variant="outline"
+                      className="h-5 w-5 rounded-full p-0 text-[10px] flex items-center justify-center"
+                    >
+                      2
+                    </Badge>
                     Create workflow file
                   </div>
                   <CodeBlock
@@ -262,8 +290,8 @@ jobs:
                   <div className="space-y-1">
                     <p className="text-sm font-medium">No source code leaves your CI</p>
                     <p className="text-sm text-muted-foreground">
-                      The CLI parses your AST locally and uploads only the graph structure
-                      (function names, file paths, relationships). Raw source code is never transmitted.
+                      The CLI parses your AST locally and uploads only the graph structure (function
+                      names, file paths, relationships). Raw source code is never transmitted.
                     </p>
                   </div>
                 </div>

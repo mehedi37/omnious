@@ -1,7 +1,7 @@
 'use client';
 
+import { BaseEdge, type EdgeProps, getSmoothStepPath } from '@xyflow/react';
 import { memo } from 'react';
-import { BaseEdge, getSmoothStepPath, type EdgeProps } from '@xyflow/react';
 import { useGraphStore } from '@/lib/stores/graph-store';
 
 /**

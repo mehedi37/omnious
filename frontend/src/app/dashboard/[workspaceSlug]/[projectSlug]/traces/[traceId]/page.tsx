@@ -1,5 +1,5 @@
-import { HydrateClient } from '@/trpc/server';
 import { TraceTimeline } from '@/components/trace/trace-timeline';
+import { HydrateClient } from '@/trpc/server';
 
 interface TraceDetailPageProps {
   params: Promise<{ workspaceSlug: string; projectSlug: string; traceId: string }>;

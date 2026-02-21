@@ -1,6 +1,6 @@
 'use client';
 
-import { User, Sparkles } from 'lucide-react';
+import { Sparkles, User } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 
 interface AIMessageProps {
@@ -24,15 +24,14 @@ export function AIMessage({ message }: AIMessageProps) {
       <div
         className={`
           max-w-[80%] rounded-lg px-4 py-2.5 text-sm leading-relaxed
-          ${isUser
-            ? 'bg-primary text-primary-foreground'
-            : 'bg-muted'
-          }
+          ${isUser ? 'bg-primary text-primary-foreground' : 'bg-muted'}
         `}
       >
         <div className="whitespace-pre-wrap break-words">{message.content}</div>
         {message.timestamp && (
-          <p className={`text-[10px] mt-1 ${isUser ? 'text-primary-foreground/60' : 'text-muted-foreground'}`}>
+          <p
+            className={`text-[10px] mt-1 ${isUser ? 'text-primary-foreground/60' : 'text-muted-foreground'}`}
+          >
             {new Date(message.timestamp).toLocaleTimeString('en-US', {
               hour: '2-digit',
               minute: '2-digit',

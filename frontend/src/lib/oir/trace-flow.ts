@@ -1,4 +1,4 @@
-import type { Span, CodeEdge } from './types';
+import type { CodeEdge, Span } from './types';
 
 /**
  * A single step in the flow animation.
@@ -16,7 +16,7 @@ export interface FlowStep {
   serviceName: string | null;
   errorMessage: string | null;
   startedAt: number; // ms timestamp
-  endedAt: number;   // ms timestamp
+  endedAt: number; // ms timestamp
 }
 
 /**
@@ -87,9 +87,7 @@ export function buildFlowSteps(
   const steps: FlowStep[] = spans
     .filter((s) => s.code_node_id) // only spans mapped to code nodes
     .map((span) => {
-      const parentSpan = span.parent_span_id
-        ? spanMap.get(span.parent_span_id)
-        : null;
+      const parentSpan = span.parent_span_id ? spanMap.get(span.parent_span_id) : null;
       const parentNodeId = parentSpan?.code_node_id ?? null;
       const nodeId = span.code_node_id!;
 

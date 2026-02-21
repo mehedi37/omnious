@@ -1,5 +1,5 @@
-import { trpc, HydrateClient } from '@/trpc/server';
 import { ProjectList } from '@/components/project/project-list';
+import { HydrateClient, trpc } from '@/trpc/server';
 
 export const metadata = { title: 'Projects' };
 

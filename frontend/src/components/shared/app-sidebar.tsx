@@ -1,28 +1,39 @@
 'use client';
 
-import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
 import {
-  GitGraph,
   Activity,
   AlertTriangle,
   Bot,
-  Settings,
-  ChevronUp,
   ChevronDown,
   ChevronRight,
+  ChevronsUpDown,
+  ChevronUp,
+  CreditCard,
+  FolderKanban,
+  GitGraph,
   LogOut,
   Moon,
-  Sun,
-  ChevronsUpDown,
-  FolderKanban,
   Plus,
+  Settings,
+  Sun,
   Users,
-  CreditCard,
-  Circle,
 } from 'lucide-react';
+import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { createClient } from '@/lib/supabase/client';
+import { CreateProjectDialog } from '@/components/project/create-project-dialog';
+import { deriveSyncState, SyncStatusBadge } from '@/components/project/sync-status-badge';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Sidebar,
   SidebarContent,
@@ -35,29 +46,14 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
-  SidebarMenuSubItem,
   SidebarMenuSubButton,
+  SidebarMenuSubItem,
   SidebarSeparator,
 } from '@/components/ui/sidebar';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Badge } from '@/components/ui/badge';
-import { useWorkspaceStore } from '@/lib/stores/workspace-store';
-import { trpc } from '@/trpc/client';
 import { CreateWorkspaceDialog } from '@/components/workspace/create-workspace-dialog';
-import { CreateProjectDialog } from '@/components/project/create-project-dialog';
+import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { createClient } from '@/lib/supabase/client';
+import { trpc } from '@/trpc/client';
 
 /** In-project navigation items */
 const projectNavItems = [
@@ -67,20 +63,6 @@ const projectNavItems = [
   { title: 'AI Sessions', icon: Bot, segment: 'ai' },
   { title: 'Settings', icon: Settings, segment: 'settings' },
 ];
-
-/** Status dot color for project status */
-function statusColor(status: string) {
-  switch (status) {
-    case 'active':
-      return 'text-green-500';
-    case 'importing':
-      return 'text-amber-500';
-    case 'error':
-      return 'text-red-500';
-    default:
-      return 'text-muted-foreground';
-  }
-}
 
 export function AppSidebar() {
   const pathname = usePathname();
@@ -120,17 +102,12 @@ export function AppSidebar() {
       .toUpperCase() || 'U';
 
   // Find current workspace name
-  const currentWorkspace = workspaces?.find(
-    (w) => w.workspace.id === workspaceId,
-  );
+  const currentWorkspace = workspaces?.find((w) => w.workspace.id === workspaceId);
   const workspaceName = currentWorkspace?.workspace.name ?? 'Select Workspace';
   const workspacePlan = currentWorkspace?.workspace.plan ?? '';
 
   const isInWorkspace = !!workspaceSlug && pathname.startsWith(`/dashboard/${workspaceSlug}`);
-  const basePath =
-    workspaceSlug && projectSlug
-      ? `/dashboard/${workspaceSlug}/${projectSlug}`
-      : '';
+  const basePath = workspaceSlug && projectSlug ? `/dashboard/${workspaceSlug}/${projectSlug}` : '';
 
   async function handleSignOut() {
     const supabase = createClient();
@@ -157,17 +134,12 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <SidebarMenuButton
-                  size="lg"
-                  className="data-[state=open]:bg-sidebar-accent"
-                >
+                <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent">
                   <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                     <GitGraph className="size-4" />
                   </div>
                   <div className="flex flex-1 flex-col gap-0.5 leading-none">
-                    <span className="font-semibold truncate">
-                      {workspaceName}
-                    </span>
+                    <span className="font-semibold truncate">{workspaceName}</span>
                     {workspacePlan && (
                       <span className="text-xs text-muted-foreground capitalize">
                         {workspacePlan} plan
@@ -184,21 +156,11 @@ export function AppSidebar() {
                 {workspaces?.map((item) => (
                   <DropdownMenuItem
                     key={item.workspace.id}
-                    onClick={() =>
-                      handleWorkspaceSelect(
-                        item.workspace.id,
-                        item.workspace.slug,
-                      )
-                    }
+                    onClick={() => handleWorkspaceSelect(item.workspace.id, item.workspace.slug)}
                   >
                     <FolderKanban className="mr-2 size-4" />
-                    <span className="flex-1 truncate">
-                      {item.workspace.name}
-                    </span>
-                    <Badge
-                      variant="outline"
-                      className="ml-2 text-[10px] capitalize"
-                    >
+                    <span className="flex-1 truncate">{item.workspace.name}</span>
+                    <Badge variant="outline" className="ml-2 text-[10px] capitalize">
                       {item.workspace.plan}
                     </Badge>
                   </DropdownMenuItem>
@@ -228,22 +190,17 @@ export function AppSidebar() {
                     const isActiveProject = project.slug === projectSlug;
 
                     return (
-                      <Collapsible
-                        key={project.id}
-                        defaultOpen={isActiveProject}
-                        asChild
-                      >
+                      <Collapsible key={project.id} defaultOpen={isActiveProject} asChild>
                         <SidebarMenuItem>
                           <CollapsibleTrigger asChild>
                             <SidebarMenuButton
                               isActive={isActiveProject}
                               tooltip={project.name}
-                              onClick={() =>
-                                handleProjectSelect(project.id, project.slug)
-                              }
+                              onClick={() => handleProjectSelect(project.id, project.slug)}
                             >
-                              <Circle
-                                className={`size-2.5 fill-current ${statusColor(project.status)}`}
+                              <SyncStatusBadge
+                                compact
+                                syncState={deriveSyncState(project.status)}
                               />
                               <span className="truncate">{project.name}</span>
                               {isActiveProject && (
@@ -261,15 +218,11 @@ export function AppSidebar() {
                               <SidebarMenuSub>
                                 {projectNavItems.map((item) => {
                                   const href = `${basePath}/${item.segment}`;
-                                  const isActive =
-                                    pathname.startsWith(href);
+                                  const isActive = pathname.startsWith(href);
 
                                   return (
                                     <SidebarMenuSubItem key={item.segment}>
-                                      <SidebarMenuSubButton
-                                        asChild
-                                        isActive={isActive}
-                                      >
+                                      <SidebarMenuSubButton asChild isActive={isActive}>
                                         <Link href={href}>
                                           <item.icon className="size-4" />
                                           <span>{item.title}</span>
@@ -289,10 +242,7 @@ export function AppSidebar() {
                   {/* New Project button */}
                   {workspaceId && workspaceSlug && (
                     <SidebarMenuItem>
-                      <CreateProjectDialog
-                        workspaceId={workspaceId}
-                        workspaceSlug={workspaceSlug}
-                      >
+                      <CreateProjectDialog workspaceId={workspaceId} workspaceSlug={workspaceSlug}>
                         <SidebarMenuButton className="text-muted-foreground">
                           <Plus className="size-4" />
                           <span>New Project</span>
@@ -353,9 +303,7 @@ export function AppSidebar() {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton>
                   <Avatar className="size-6">
-                    <AvatarFallback className="text-xs">
-                      {initials}
-                    </AvatarFallback>
+                    <AvatarFallback className="text-xs">{initials}</AvatarFallback>
                   </Avatar>
                   <span>{displayName}</span>
                   <ChevronUp className="ml-auto size-4" />
@@ -366,11 +314,7 @@ export function AppSidebar() {
                 align="start"
                 className="w-[--radix-dropdown-menu-trigger-width]"
               >
-                <DropdownMenuItem
-                  onClick={() =>
-                    setTheme(theme === 'dark' ? 'light' : 'dark')
-                  }
-                >
+                <DropdownMenuItem onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
                   {theme === 'dark' ? (
                     <Sun className="mr-2 size-4" />
                   ) : (

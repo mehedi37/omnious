@@ -1,9 +1,9 @@
 'use client';
 
+import { useStore } from '@xyflow/react';
 import { useCallback, useEffect } from 'react';
-import { useStore, useReactFlow } from '@xyflow/react';
-import { useGraphStore } from '@/lib/stores/graph-store';
 import { ZOOM_THRESHOLDS, type ZoomLevel } from '@/lib/oir/constants';
+import { useGraphStore } from '@/lib/stores/graph-store';
 
 /**
  * Tracks the React Flow viewport zoom level (transform[2])

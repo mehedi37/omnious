@@ -1,17 +1,17 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Sparkles, Bug, Zap, Shield, Languages, HelpCircle } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { Bug, HelpCircle, Languages, Loader2, Send, Shield, Sparkles, Zap } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Textarea } from '@/components/ui/textarea';
+import type { AISessionType } from '@/lib/oir/types';
 import { useAIStore } from '@/lib/stores/ai-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
 import { AIMessage } from './ai-message';
 import { AIQuickActions } from './ai-quick-actions';
-import type { AISessionType } from '@/lib/oir/types';
 
 export function AIChatPanel() {
   const [input, setInput] = useState('');
@@ -112,7 +112,8 @@ export function AIChatPanel() {
             <div className="text-center space-y-2">
               <h3 className="text-lg font-semibold">How can I help?</h3>
               <p className="text-sm text-muted-foreground max-w-md">
-                Ask about your codebase, debug errors, explain data flows, or scan for security issues.
+                Ask about your codebase, debug errors, explain data flows, or scan for security
+                issues.
               </p>
             </div>
             <AIQuickActions onAction={handleQuickAction} />

@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
-import { useTraceStore } from '@/lib/stores/trace-store';
-import { useGraphStore } from '@/lib/stores/graph-store';
-import { buildFlowSteps, getFlowTimeBounds, type FlowStep } from '@/lib/oir/trace-flow';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { buildFlowSteps, type FlowStep, getFlowTimeBounds } from '@/lib/oir/trace-flow';
 import type { CodeEdge } from '@/lib/oir/types';
+import { useGraphStore } from '@/lib/stores/graph-store';
+import { useTraceStore } from '@/lib/stores/trace-store';
 
 export type PlaybackMode = 'constant' | 'proportional';
 
@@ -32,7 +32,11 @@ interface UseTracePlaybackReturn {
   exitReplay: () => void;
 
   // Setup
-  startReplay: (traceId: string, spans: import('@/lib/oir/types').Span[], staticEdges: CodeEdge[]) => void;
+  startReplay: (
+    traceId: string,
+    spans: import('@/lib/oir/types').Span[],
+    staticEdges: CodeEdge[],
+  ) => void;
 }
 
 /**
@@ -57,10 +61,7 @@ export function useTracePlayback(): UseTracePlaybackReturn {
   const currentFlowStep = flowSteps[currentStep] ?? null;
   const callStack = useGraphStore((s) => s.callStack);
 
-  const progress =
-    flowSteps.length > 1
-      ? (currentStep / (flowSteps.length - 1)) * 100
-      : 0;
+  const progress = flowSteps.length > 1 ? (currentStep / (flowSteps.length - 1)) * 100 : 0;
 
   // Apply a flow step to the graph store
   const applyStep = useCallback(
@@ -74,9 +75,7 @@ export function useTracePlayback(): UseTracePlaybackReturn {
 
       // Highlight the node in the trace store too
       if (step.nodeId) {
-        useTraceStore
-          .getState()
-          .setHighlightedNodeIds(new Set([step.nodeId]));
+        useTraceStore.getState().setHighlightedNodeIds(new Set([step.nodeId]));
       }
     },
     [flowSteps],
@@ -204,9 +203,7 @@ export function useTracePlayback(): UseTracePlaybackReturn {
 
       const step = flowSteps[targetIndex];
       if (step?.nodeId) {
-        useTraceStore
-          .getState()
-          .setHighlightedNodeIds(new Set([step.nodeId]));
+        useTraceStore.getState().setHighlightedNodeIds(new Set([step.nodeId]));
       }
     },
     [flowSteps],
@@ -222,11 +219,7 @@ export function useTracePlayback(): UseTracePlaybackReturn {
   }, []);
 
   const startReplay = useCallback(
-    (
-      traceId: string,
-      spans: import('@/lib/oir/types').Span[],
-      staticEdges: CodeEdge[],
-    ) => {
+    (traceId: string, spans: import('@/lib/oir/types').Span[], staticEdges: CodeEdge[]) => {
       const { steps, runtimeEdges } = buildFlowSteps(spans, staticEdges);
 
       if (steps.length === 0) return;
@@ -244,9 +237,7 @@ export function useTracePlayback(): UseTracePlaybackReturn {
       // Apply first step
       useGraphStore.getState().setFlowStep(steps[0]);
       if (steps[0].nodeId) {
-        useTraceStore
-          .getState()
-          .setHighlightedNodeIds(new Set([steps[0].nodeId]));
+        useTraceStore.getState().setHighlightedNodeIds(new Set([steps[0].nodeId]));
       }
 
       // Start playing

@@ -13,7 +13,7 @@ const listNodesSchema = z.object({
     .optional(),
   filePath: z.string().optional(),
   search: z.string().max(200).optional(),
-  limit: z.number().int().min(1).max(500).default(100),
+  limit: z.number().int().min(1).max(2000).default(100),
   offset: z.number().int().min(0).default(0),
 });
 
@@ -115,6 +115,7 @@ const pushFromCLISchema = z.object({
       commit_message: z.string().optional(),
     })
     .optional(),
+  index_hash: z.string().optional(),
   dry_run: z.boolean().optional(),
 });
 
@@ -442,10 +443,18 @@ export const graphRouter = router({
         }
       }
 
-      // Step 3: Update project last_indexed_at
+      // Step 3: Update project status, last_indexed_at, and index_hash
+      const projectUpdate: Record<string, unknown> = {
+        status: 'active',
+        last_indexed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      if (input.index_hash) {
+        projectUpdate.last_index_hash = input.index_hash;
+      }
       await ctx.adminDb
         .from('projects')
-        .update({ updated_at: new Date().toISOString() })
+        .update(projectUpdate)
         .eq('id', project.id);
 
       return {
@@ -464,7 +473,7 @@ export const graphRouter = router({
       // Authenticate via project API key
       const { data: project, error: projectError } = await ctx.adminDb
         .from('projects')
-        .select('id, name, slug, status, updated_at')
+        .select('id, name, slug, status, last_indexed_at, last_index_hash, updated_at')
         .eq('api_key', input.projectApiKey)
         .single();
 
@@ -504,8 +513,8 @@ export const graphRouter = router({
         name: project.name,
         slug: project.slug,
         status: project.status ?? 'active',
-        last_indexed_at: project.updated_at,
-        last_index_hash: null,
+        last_indexed_at: project.last_indexed_at ?? project.updated_at,
+        last_index_hash: project.last_index_hash ?? null,
         node_count: nodeCount,
         edge_count: edgeCount,
         trace_count: traceCount,

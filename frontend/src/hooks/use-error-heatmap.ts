@@ -1,10 +1,10 @@
 'use client';
 
 import { useEffect } from 'react';
+import { applyErrorHeatmap } from '@/lib/oir/transforms';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
-import { applyErrorHeatmap } from '@/lib/oir/transforms';
 
 /**
  * Fetches error heatmap data and applies it to graph nodes

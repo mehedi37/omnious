@@ -2,9 +2,9 @@
 
 import { GraphCanvas } from '@/components/graph/graph-canvas';
 import { EmptyProjectState } from '@/components/project/empty-project-state';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
-import { Skeleton } from '@/components/ui/skeleton';
 
 export default function GraphPage() {
   const projectId = useWorkspaceStore((s) => s.currentProjectId);

@@ -1,25 +1,22 @@
 'use client';
 
-import { useCallback } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import {
-  ZoomIn,
-  ZoomOut,
-  Maximize,
-  Grid3X3,
-  Flame,
-  LayoutGrid,
   ArrowDownUp,
   ArrowLeftRight,
+  Crosshair,
+  Flame,
+  Maximize,
+  Search,
+  XCircle,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
+import { useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { Toggle } from '@/components/ui/toggle';
 import { Separator } from '@/components/ui/separator';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
+import { Toggle } from '@/components/ui/toggle';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useGraphStore } from '@/lib/stores/graph-store';
 
 export function GraphControls() {
@@ -27,6 +24,8 @@ export function GraphControls() {
   const heatmapActive = useGraphStore((s) => s.heatmapActive);
   const layoutMode = useGraphStore((s) => s.layoutMode);
   const isLayouting = useGraphStore((s) => s.isLayouting);
+  const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
+  const nodeCount = useGraphStore((s) => s.nodes.length);
 
   const handleFitView = useCallback(() => fitView({ duration: 400 }), [fitView]);
   const handleZoomIn = useCallback(() => zoomIn({ duration: 200 }), [zoomIn]);
@@ -42,6 +41,14 @@ export function GraphControls() {
 
   const handleLayoutLR = useCallback(() => {
     useGraphStore.getState().setLayoutMode('layered-lr');
+  }, []);
+
+  const handleSearch = useCallback(() => {
+    useGraphStore.getState().setNodeSearchOpen(true);
+  }, []);
+
+  const handleClearFocus = useCallback(() => {
+    useGraphStore.getState().clearFocusMode();
   }, []);
 
   return (
@@ -128,6 +135,42 @@ export function GraphControls() {
         </TooltipTrigger>
         <TooltipContent side="bottom">Toggle error heatmap</TooltipContent>
       </Tooltip>
+
+      <Separator orientation="vertical" className="mx-1 h-5" />
+
+      {/* Node search */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleSearch}>
+            <Search className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Search nodes (Ctrl+F)</TooltipContent>
+      </Tooltip>
+
+      {/* Focus mode indicator + clear */}
+      {focusedNodeId && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="h-7 px-2 gap-1 text-xs bg-primary/10 text-primary"
+              onClick={handleClearFocus}
+            >
+              <Crosshair className="h-3.5 w-3.5" />
+              Focus
+              <XCircle className="h-3 w-3 ml-0.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Exit focus mode (Esc)</TooltipContent>
+        </Tooltip>
+      )}
+
+      {/* Node count */}
+      <div className="ml-auto text-xs text-muted-foreground tabular-nums">
+        {nodeCount > 0 && <span>{nodeCount} nodes</span>}
+      </div>
     </div>
   );
 }

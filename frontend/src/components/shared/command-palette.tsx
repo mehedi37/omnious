@@ -1,6 +1,18 @@
 'use client';
 
-import { useEffect, useCallback } from 'react';
+import {
+  Activity,
+  AlertTriangle,
+  Bot,
+  GitGraph,
+  LayoutGrid,
+  Moon,
+  Settings,
+  Sun,
+} from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { useTheme } from 'next-themes';
+import { useCallback, useEffect } from 'react';
 import {
   CommandDialog,
   CommandEmpty,
@@ -10,18 +22,6 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command';
-import {
-  GitGraph,
-  Activity,
-  AlertTriangle,
-  Bot,
-  Settings,
-  Sun,
-  Moon,
-  LayoutGrid,
-} from 'lucide-react';
-import { useRouter } from 'next/navigation';
-import { useTheme } from 'next-themes';
 import { useUIStore } from '@/lib/stores/ui-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 
@@ -35,9 +35,7 @@ export function CommandPalette() {
   const projectSlug = useWorkspaceStore((s) => s.currentProjectSlug);
 
   const basePath =
-    workspaceSlug && projectSlug
-      ? `/dashboard/${workspaceSlug}/${projectSlug}`
-      : '/dashboard';
+    workspaceSlug && projectSlug ? `/dashboard/${workspaceSlug}/${projectSlug}` : '/dashboard';
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -100,11 +98,7 @@ export function CommandPalette() {
               closePalette();
             }}
           >
-            {theme === 'dark' ? (
-              <Sun className="mr-2 size-4" />
-            ) : (
-              <Moon className="mr-2 size-4" />
-            )}
+            {theme === 'dark' ? <Sun className="mr-2 size-4" /> : <Moon className="mr-2 size-4" />}
             Toggle theme
           </CommandItem>
         </CommandGroup>
