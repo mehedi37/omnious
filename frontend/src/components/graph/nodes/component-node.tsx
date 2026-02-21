@@ -2,12 +2,12 @@
 
 import { Handle, type NodeProps, Position } from '@xyflow/react';
 import { Component } from 'lucide-react';
-import { memo } from 'react';
+import { memo, useContext } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { getFlowStateClasses, useNodeFlowState } from '@/hooks/use-node-flow-state';
 import { NODE_BG_CLASSES } from '@/lib/oir/constants';
 import type { GraphNodeData } from '@/lib/oir/transforms';
-import { useGraphStore } from '@/lib/stores/graph-store';
+import { ZoomLevelContext } from '../graph-canvas';
 import { NodeFlowOverlay } from './node-flow-overlay';
 
 function ComponentNodeComponent({ id, data, selected }: NodeProps) {
@@ -16,7 +16,7 @@ function ComponentNodeComponent({ id, data, selected }: NodeProps) {
   const hasErrors = (d.errorCount ?? 0) > 0;
   const { flowState, isReplaying, activeStep, depth, isFocusDimmed } = useNodeFlowState(id);
   const flowClasses = getFlowStateClasses(flowState, isReplaying, isFocusDimmed);
-  const zoom = useGraphStore((s) => s.zoomLevel);
+  const zoom = useContext(ZoomLevelContext);
 
   // Minimal pill at service-level zoom
   if (zoom === 'service') {

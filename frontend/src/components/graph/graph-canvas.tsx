@@ -11,7 +11,7 @@ import {
   ReactFlowProvider,
   useReactFlow,
 } from '@xyflow/react';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 import { useTheme } from 'next-themes';
 import { useShallow } from 'zustand/react/shallow';
@@ -22,7 +22,8 @@ import { useGraphData } from '@/hooks/use-graph-data';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import { useTracePlayback } from '@/hooks/use-trace-playback';
 import { useZoomLevel } from '@/hooks/use-zoom-level';
-import { NODE_COLORS } from '@/lib/oir/constants';
+import { ZOOM_THRESHOLDS, NODE_COLORS } from '@/lib/oir/constants';
+import type { ZoomLevel } from '@/lib/oir/constants';
 import type { GraphNodeData } from '@/lib/oir/transforms';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
@@ -31,8 +32,13 @@ import { trpc } from '@/trpc/client';
 import { edgeTypes } from './edges';
 import { GraphControls } from './graph-controls';
 import { GraphSearch } from './graph-search';
+import { GraphContextMenu } from './panels/graph-context-menu';
 import { nodeTypes } from './nodes';
 import { NodeDetailPanel } from './panels/node-detail-panel';
+import { createContext } from 'react';
+
+/** Context so node components can read zoom level without individual Zustand subscriptions */
+export const ZoomLevelContext = createContext<ZoomLevel>('function');
 
 function GraphCanvasInner() {
   const { setCenter } = useReactFlow();
@@ -55,7 +61,49 @@ function GraphCanvasInner() {
   // Wire up layout engine, keyboard shortcuts, and zoom tracking
   useAutoLayout();
   useKeyboardShortcuts();
-  useZoomLevel();
+  const currentZoomLevel = useZoomLevel();
+
+  // Switch between grouped ↔ individual view based on zoom level.
+  // Below the module threshold → show grouped (directory-level summary).
+  // Above module threshold → show individual nodes.
+  // Debounced via ref to avoid rapid switching near the threshold.
+  const viewSwitchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastZoomRef = useRef(currentZoomLevel);
+
+  useEffect(() => {
+    // Don't switch view during trace replay — always show individuals
+    const store = useGraphStore.getState();
+    if (store.flowMode === 'replay') return;
+
+    // Only trigger on actual zoom level change
+    if (lastZoomRef.current === currentZoomLevel) return;
+    lastZoomRef.current = currentZoomLevel;
+
+    if (viewSwitchTimerRef.current) {
+      clearTimeout(viewSwitchTimerRef.current);
+    }
+
+    viewSwitchTimerRef.current = setTimeout(() => {
+      const current = useGraphStore.getState();
+      // No grouped data available yet → skip
+      if (current.groupNodes.length === 0) return;
+
+      const shouldGroup = currentZoomLevel === 'service' || currentZoomLevel === 'module';
+      const targetMode = shouldGroup ? 'grouped' : 'individual';
+
+      if (current.viewMode !== targetMode) {
+        current.setViewMode(targetMode);
+        // Trigger re-layout for the new node set
+        setTimeout(() => current.requestLayout(), 50);
+      }
+    }, 300);
+
+    return () => {
+      if (viewSwitchTimerRef.current) {
+        clearTimeout(viewSwitchTimerRef.current);
+      }
+    };
+  }, [currentZoomLevel]);
 
   // Focus mode — single combined selector to avoid extra subscriptions
   // shallow equality required: selector returns a plain object (object identity always differs)
@@ -137,49 +185,88 @@ function GraphCanvasInner() {
     useUIStore.getState().setDetailPanelOpen(false);
   }, []);
 
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<{
+    nodeId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  const onNodeContextMenu: NodeMouseHandler = useCallback((event, node) => {
+    event.preventDefault();
+    setContextMenu({ nodeId: node.id, x: event.clientX, y: event.clientY });
+  }, []);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  // Imperative fitView on initial data load only
+  const { fitView } = useReactFlow();
+  const hasFittedRef = useRef(false);
+  useEffect(() => {
+    if (nodes.length > 0 && !hasFittedRef.current) {
+      hasFittedRef.current = true;
+      // Wait for React Flow to measure and render nodes before fitting
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => fitView({ duration: 400 }));
+      });
+    }
+  }, [nodes.length, fitView]);
+
   return (
     <div className="flex h-full flex-col">
       <GraphControls />
-      {/* Re-key the panel group when detail panel opens/closes
-          so defaultSize is re-applied (uncontrolled component) */}
       <ResizablePanelGroup
-        key={detailPanelOpen ? 'open' : 'closed'}
         orientation="horizontal"
         className="flex-1"
       >
-        <ResizablePanel defaultSize={detailPanelOpen ? 70 : 100} minSize={40}>
+        <ResizablePanel defaultSize={70} minSize={40}>
           <div className="relative w-full h-full">
-            <ReactFlow
-              nodes={nodes}
-              edges={displayEdges}
-              nodeTypes={nodeTypes}
-              edgeTypes={edgeTypes}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onNodeClick={onNodeClick}
-              onPaneClick={onPaneClick}
-              colorMode={resolvedTheme === 'dark' ? 'dark' : 'light'}
-              fitView
-              minZoom={0.1}
-              maxZoom={4}
-              defaultEdgeOptions={{ animated: false }}
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background gap={16} size={1} />
-              <Controls showInteractive={false} />
-              <MiniMap
-                nodeColor={(node) => {
-                  const data = node.data as GraphNodeData;
-                  return NODE_COLORS[data.oirType] ?? '#888';
-                }}
-                maskColor="rgba(0,0,0,0.1)"
-                pannable
-                zoomable
-              />
-            </ReactFlow>
+            <ZoomLevelContext.Provider value={currentZoomLevel}>
+              <ReactFlow
+                nodes={nodes}
+                edges={displayEdges}
+                nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onNodeClick={onNodeClick}
+                onNodeContextMenu={onNodeContextMenu}
+                onPaneClick={onPaneClick}
+                colorMode={resolvedTheme === 'dark' ? 'dark' : 'light'}
+                minZoom={0.1}
+                maxZoom={4}
+                defaultEdgeOptions={{ animated: false }}
+                proOptions={{ hideAttribution: true }}
+                onlyRenderVisibleElements
+              >
+                <Background gap={16} size={1} />
+                <Controls showInteractive={false} />
+                <MiniMap
+                  nodeColor={(node) => {
+                    const data = node.data as any;
+                    // Group nodes use dominantType, individual nodes use oirType
+                    const type = data.oirType ?? data.dominantType;
+                    return type ? (NODE_COLORS[type as keyof typeof NODE_COLORS] ?? '#888') : '#888';
+                  }}
+                  maskColor="rgba(0,0,0,0.1)"
+                  pannable
+                  zoomable
+                />
+              </ReactFlow>
+            </ZoomLevelContext.Provider>
 
             {/* Floating node search */}
             <GraphSearch />
+
+            {/* Node context menu */}
+            {contextMenu && (
+              <GraphContextMenu
+                nodeId={contextMenu.nodeId}
+                x={contextMenu.x}
+                y={contextMenu.y}
+                onClose={closeContextMenu}
+              />
+            )}
 
             {/* Flow Controls overlay during trace replay */}
             {flowMode === 'replay' && (
@@ -206,14 +293,15 @@ function GraphCanvasInner() {
           </div>
         </ResizablePanel>
 
-        {detailPanelOpen && (
-          <>
-            <ResizableHandle withHandle />
-            <ResizablePanel defaultSize={30} minSize={20} maxSize={50}>
-              <NodeDetailPanel />
-            </ResizablePanel>
-          </>
-        )}
+        <ResizableHandle withHandle className={detailPanelOpen ? '' : 'hidden'} />
+        <ResizablePanel
+          defaultSize={30}
+          minSize={detailPanelOpen ? 20 : 0}
+          maxSize={detailPanelOpen ? 50 : 0}
+          className={detailPanelOpen ? '' : 'hidden'}
+        >
+          <NodeDetailPanel />
+        </ResizablePanel>
       </ResizablePanelGroup>
     </div>
   );

@@ -3,6 +3,7 @@
 import { useEffect, useMemo } from 'react';
 import {
   applyErrorHeatmap,
+  buildGroupedGraph,
   codeEdgesToReactFlow,
   codeNodesToReactFlow,
 } from '@/lib/oir/transforms';
@@ -83,14 +84,35 @@ export function useGraphData() {
       rfNodes = applyErrorHeatmap(rfNodes, heatmapQuery.data as any);
     }
 
-    useGraphStore.getState().setNodes(rfNodes);
-  }, [allNodes, activePageLoading, heatmapActive, heatmapQuery.data]);
+    // Also need edges for grouping — guard against missing edge data
+    const rfEdges = edgesQuery.data?.edges
+      ? codeEdgesToReactFlow(edgesQuery.data.edges as any)
+      : [];
 
-  // Push edges into store when data arrives
+    // Build grouped graph for directory-level summary view
+    const grouped = buildGroupedGraph(rfNodes, rfEdges);
+
+    // Push both individual + grouped data into store
+    useGraphStore.getState().setGroupedData({
+      individualNodes: rfNodes,
+      individualEdges: rfEdges,
+      groupNodes: grouped.groupNodes,
+      groupEdges: grouped.groupEdges,
+      nodeToGroupId: grouped.nodeToGroupId,
+    });
+  }, [allNodes, activePageLoading, heatmapActive, heatmapQuery.data, edgesQuery.data]);
+
+  // Push edges into store when edge data changes and we already have nodes
+  // (The effect above also handles edges, but this covers the case where
+  // edges arrive after the initial node+edge push)
   useEffect(() => {
     if (!edgesQuery.data?.edges) return;
-    const rfEdges = codeEdgesToReactFlow(edgesQuery.data.edges as any);
-    useGraphStore.getState().setEdges(rfEdges);
+    // Only update edges in individual mode — group edges were computed above
+    const store = useGraphStore.getState();
+    if (store.viewMode === 'individual') {
+      const rfEdges = codeEdgesToReactFlow(edgesQuery.data.edges as any);
+      store.setEdges(rfEdges);
+    }
   }, [edgesQuery.data]);
 
   return {

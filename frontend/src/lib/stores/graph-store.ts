@@ -5,10 +5,13 @@ import { subscribeWithSelector } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import type { ZoomLevel } from '../oir/constants';
 import type { FlowStep, RuntimeEdge } from '../oir/trace-flow';
-import type { GraphEdgeData, GraphNodeData } from '../oir/transforms';
+import type { GraphEdgeData, GraphNodeData, GroupNodeData } from '../oir/transforms';
 
 /** Node animation state during trace replay */
 export type NodeFlowState = 'idle' | 'active' | 'completed' | 'error';
+
+/** Display mode — grouped shows directory-level summary, individual shows all nodes */
+export type ViewMode = 'grouped' | 'individual';
 
 interface GraphState {
   nodes: Node<GraphNodeData>[];
@@ -19,6 +22,21 @@ interface GraphState {
   hiddenNodeIds: Set<string>;
   heatmapActive: boolean;
   isLayouting: boolean;
+  /** Incremented to signal a layout recalculation (Reset Layout) */
+  layoutVersion: number;
+
+  // ── View mode (grouped vs individual) ──
+  viewMode: ViewMode;
+  /** All individual nodes (preserved when showing groups) */
+  allIndividualNodes: Node<GraphNodeData>[];
+  /** All individual edges (preserved when showing groups) */
+  allIndividualEdges: Edge<GraphEdgeData>[];
+  /** Computed group summary nodes */
+  groupNodes: Node<GroupNodeData>[];
+  /** Aggregated inter-group edges */
+  groupEdges: Edge<GraphEdgeData>[];
+  /** Map from individual node ID → its group node ID */
+  nodeToGroupId: Map<string, string>;
 
   // ── Flow animation state ──
   flowMode: 'static' | 'replay';
@@ -50,6 +68,18 @@ interface GraphState {
   hideNodes: (nodeIds: string[]) => void;
   showAllNodes: () => void;
   updateNodePositions: (positions: Map<string, { x: number; y: number }>) => void;
+  /** Increment layoutVersion to trigger a re-layout (Reset Layout button) */
+  requestLayout: () => void;
+
+  // ── View mode actions ──
+  setViewMode: (mode: ViewMode) => void;
+  setGroupedData: (data: {
+    individualNodes: Node<GraphNodeData>[];
+    individualEdges: Edge<GraphEdgeData>[];
+    groupNodes: Node<GroupNodeData>[];
+    groupEdges: Edge<GraphEdgeData>[];
+    nodeToGroupId: Map<string, string>;
+  }) => void;
 
   // ── Flow animation actions ──
   startFlowReplay: (runtimeEdges: RuntimeEdge[]) => void;
@@ -74,6 +104,15 @@ export const useGraphStore = create<GraphState>()(
       hiddenNodeIds: new Set<string>(),
       heatmapActive: false,
       isLayouting: false,
+      layoutVersion: 0,
+
+      // ── View mode ──
+      viewMode: 'grouped' as ViewMode,
+      allIndividualNodes: [],
+      allIndividualEdges: [],
+      groupNodes: [],
+      groupEdges: [],
+      nodeToGroupId: new Map<string, string>(),
 
       // ── Flow animation state ──
       flowMode: 'static',
@@ -170,6 +209,47 @@ export const useGraphStore = create<GraphState>()(
             if (pos) {
               node.position = pos;
             }
+          }
+        }),
+
+      requestLayout: () =>
+        set((state) => {
+          state.layoutVersion += 1;
+        }),
+
+      // ── View mode actions ──
+
+      setViewMode: (mode) =>
+        set((state) => {
+          if (state.viewMode === mode) return;
+          state.viewMode = mode;
+
+          if (mode === 'grouped') {
+            // Swap in group nodes + edges for display
+            state.nodes = state.groupNodes as any;
+            state.edges = state.groupEdges;
+          } else {
+            // Swap in individual nodes + edges for display
+            state.nodes = state.allIndividualNodes as any;
+            state.edges = state.allIndividualEdges;
+          }
+        }),
+
+      setGroupedData: (data) =>
+        set((state) => {
+          state.allIndividualNodes = data.individualNodes;
+          state.allIndividualEdges = data.individualEdges;
+          state.groupNodes = data.groupNodes as any;
+          state.groupEdges = data.groupEdges;
+          state.nodeToGroupId = data.nodeToGroupId;
+
+          // Display based on current viewMode
+          if (state.viewMode === 'grouped') {
+            state.nodes = data.groupNodes as any;
+            state.edges = data.groupEdges;
+          } else {
+            state.nodes = data.individualNodes;
+            state.edges = data.individualEdges;
           }
         }),
 

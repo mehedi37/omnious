@@ -20,6 +20,9 @@ interface LayoutRequest {
   layoutMode: 'layered-tb' | 'layered-lr' | 'force' | 'stress';
 }
 
+/** Threshold above which we switch to faster algorithms */
+const LARGE_GRAPH_THRESHOLD = 200;
+
 const LAYOUT_OPTIONS: Record<string, Record<string, string>> = {
   'layered-tb': {
     'elk.algorithm': 'layered',
@@ -45,7 +48,7 @@ const LAYOUT_OPTIONS: Record<string, Record<string, string>> = {
     'elk.algorithm': 'force',
     'elk.spacing.nodeNode': '140',
     'elk.force.temperature': '0.001',
-    'elk.force.iterations': '300',
+    'elk.force.iterations': '100',
   },
   stress: {
     'elk.algorithm': 'stress',
@@ -54,9 +57,30 @@ const LAYOUT_OPTIONS: Record<string, Record<string, string>> = {
   },
 };
 
+/**
+ * For large graphs (>200 nodes) with layered layout, override to use faster
+ * INTERACTIVE crossing minimization and polyline edge routing.
+ */
+const LARGE_GRAPH_LAYERED_OVERRIDES: Record<string, string> = {
+  'elk.layered.crossingMinimization.strategy': 'INTERACTIVE',
+  'elk.edgeRouting': 'POLYLINE',
+  'elk.layered.nodePlacement.strategy': 'SIMPLE',
+};
+
+function getOptions(layoutMode: string, nodeCount: number): Record<string, string> {
+  const base = LAYOUT_OPTIONS[layoutMode] ?? LAYOUT_OPTIONS['layered-tb'];
+
+  // For large graphs with layered algorithm, use faster overrides
+  if (nodeCount > LARGE_GRAPH_THRESHOLD && (layoutMode === 'layered-tb' || layoutMode === 'layered-lr')) {
+    return { ...base, ...LARGE_GRAPH_LAYERED_OVERRIDES };
+  }
+
+  return base;
+}
+
 self.onmessage = async (event: MessageEvent<LayoutRequest>) => {
   const { nodes, edges, layoutMode } = event.data;
-  const options = LAYOUT_OPTIONS[layoutMode] ?? LAYOUT_OPTIONS['layered-tb'];
+  const options = getOptions(layoutMode, nodes.length);
 
   try {
     const graph = await elk.layout({

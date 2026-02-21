@@ -5,7 +5,7 @@ import { Search, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { NODE_BG_CLASSES } from '@/lib/oir/constants';
-import type { GraphNodeData } from '@/lib/oir/transforms';
+import type { GraphNodeData, GroupNodeData } from '@/lib/oir/transforms';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
@@ -28,11 +28,13 @@ export function GraphSearch() {
     const q = query.toLowerCase();
     return nodes
       .filter((n) => {
-        const d = n.data as GraphNodeData;
+        const d = n.data as GraphNodeData | GroupNodeData;
+        const typeStr = 'oirType' in d ? (d as GraphNodeData).oirType : (d as GroupNodeData).dominantType;
+        const pathStr = 'filePath' in d ? ((d as GraphNodeData).filePath ?? '') : ((d as GroupNodeData).directory ?? '');
         return (
           d.label.toLowerCase().includes(q) ||
-          (d.filePath ?? '').toLowerCase().includes(q) ||
-          d.oirType.toLowerCase().includes(q)
+          pathStr.toLowerCase().includes(q) ||
+          (typeStr ?? '').toLowerCase().includes(q)
         );
       })
       .slice(0, 30);
@@ -138,7 +140,9 @@ export function GraphSearch() {
               </p>
             ) : (
               results.map((node, i) => {
-                const d = node.data as GraphNodeData;
+                const d = node.data as GraphNodeData | GroupNodeData;
+                const typeStr: string = 'oirType' in d ? (d as GraphNodeData).oirType : (d as GroupNodeData).dominantType;
+                const pathStr: string | undefined = 'filePath' in d ? (d as GraphNodeData).filePath : (d as GroupNodeData).directory;
                 return (
                   <button
                     type="button"
@@ -152,14 +156,14 @@ export function GraphSearch() {
                   >
                     <Badge
                       variant="outline"
-                      className={`text-[9px] px-1.5 py-0 shrink-0 ${NODE_BG_CLASSES[d.oirType] ?? ''}`}
+                      className={`text-[9px] px-1.5 py-0 shrink-0 ${NODE_BG_CLASSES[typeStr as keyof typeof NODE_BG_CLASSES] ?? ''}`}
                     >
-                      {d.oirType.replace('_', ' ')}
+                      {node.type === 'group' ? 'group' : (typeStr ?? '').replace('_', ' ')}
                     </Badge>
                     <span className="font-medium truncate">{d.label}</span>
-                    {d.filePath && (
+                    {pathStr && (
                       <span className="text-[11px] text-muted-foreground truncate ml-auto pl-2">
-                        {d.filePath}
+                        {pathStr}
                       </span>
                     )}
                   </button>

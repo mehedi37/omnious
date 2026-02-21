@@ -6,7 +6,9 @@ import {
   ArrowLeftRight,
   Crosshair,
   Flame,
+  Layers,
   Maximize,
+  RotateCcw,
   Search,
   XCircle,
   ZoomIn,
@@ -26,10 +28,23 @@ export function GraphControls() {
   const isLayouting = useGraphStore((s) => s.isLayouting);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
   const nodeCount = useGraphStore((s) => s.nodes.length);
+  const viewMode = useGraphStore((s) => s.viewMode);
 
   const handleFitView = useCallback(() => fitView({ duration: 400 }), [fitView]);
   const handleZoomIn = useCallback(() => zoomIn({ duration: 200 }), [zoomIn]);
   const handleZoomOut = useCallback(() => zoomOut({ duration: 200 }), [zoomOut]);
+
+  const handleResetLayout = useCallback(() => {
+    useGraphStore.getState().requestLayout();
+  }, []);
+
+  const handleToggleViewMode = useCallback(() => {
+    const store = useGraphStore.getState();
+    const next = store.viewMode === 'grouped' ? 'individual' : 'grouped';
+    store.setViewMode(next);
+    // Trigger layout for the new node set
+    setTimeout(() => store.requestLayout(), 50);
+  }, []);
 
   const handleToggleHeatmap = useCallback(() => {
     useGraphStore.getState().toggleHeatmap();
@@ -117,6 +132,43 @@ export function GraphControls() {
       {isLayouting && (
         <span className="text-xs text-muted-foreground animate-pulse ml-1">Layouting…</span>
       )}
+
+      <Separator orientation="vertical" className="mx-1 h-5" />
+
+      {/* Reset Layout */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={handleResetLayout}
+            disabled={isLayouting}
+          >
+            <RotateCcw className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Reset layout</TooltipContent>
+      </Tooltip>
+
+      {/* View mode: grouped ↔ individual */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant={viewMode === 'grouped' ? 'secondary' : 'ghost'}
+            size="sm"
+            className="h-7 px-2 gap-1"
+            onClick={handleToggleViewMode}
+            disabled={isLayouting}
+          >
+            <Layers className="h-3.5 w-3.5" />
+            <span className="text-xs">{viewMode === 'grouped' ? 'Grouped' : 'All'}</span>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          {viewMode === 'grouped' ? 'Show all individual nodes' : 'Show grouped by directory'}
+        </TooltipContent>
+      </Tooltip>
 
       <Separator orientation="vertical" className="mx-1 h-5" />
 

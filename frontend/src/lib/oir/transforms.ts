@@ -22,15 +22,24 @@ export interface GraphEdgeData extends Record<string, unknown> {
   animated?: boolean;
 }
 
+/** Grid columns used for initial node placement before ELK runs */
+const INITIAL_GRID_COLS = 8;
+const INITIAL_GRID_SPACING_X = 280;
+const INITIAL_GRID_SPACING_Y = 120;
+
 /**
  * Transform backend code_nodes → React Flow Nodes.
  * Pure function — no side effects, easily testable.
+ * Nodes get initial grid positions so they don't pile at (0,0) before ELK completes.
  */
 export function codeNodesToReactFlow(codeNodes: CodeNode[]): Node<GraphNodeData>[] {
-  return codeNodes.map((node) => ({
+  return codeNodes.map((node, index) => ({
     id: node.id,
     type: mapNodeType(node.type),
-    position: { x: 0, y: 0 }, // positioned by ELK layout
+    position: {
+      x: (index % INITIAL_GRID_COLS) * INITIAL_GRID_SPACING_X,
+      y: Math.floor(index / INITIAL_GRID_COLS) * INITIAL_GRID_SPACING_Y,
+    },
     data: {
       label: node.name,
       oirType: node.type,
@@ -104,6 +113,122 @@ export function groupNodesByModule(
     groups.set(dir, existing);
   }
   return groups;
+}
+
+/** Data shape for group summary nodes */
+export interface GroupNodeData extends Record<string, unknown> {
+  label: string;
+  directory: string;
+  childCount: number;
+  childNodeIds: string[];
+  typeBreakdown: Record<string, number>;
+  dominantType: string;
+}
+
+/** Result of building a grouped graph */
+export interface GroupedGraph {
+  groupNodes: Node<GroupNodeData>[];
+  groupEdges: Edge<GraphEdgeData>[];
+  /** Map from group node ID → list of individual child node IDs */
+  nodeToGroupId: Map<string, string>;
+}
+
+/**
+ * Build a grouped graph from individual nodes and edges.
+ * Groups nodes by directory (filePath dirname), creates summary group nodes,
+ * and aggregates edges between groups.
+ */
+export function buildGroupedGraph(
+  nodes: Node<GraphNodeData>[],
+  edges: Edge<GraphEdgeData>[],
+): GroupedGraph {
+  // Step 1: Group nodes by directory
+  const dirGroups = groupNodesByModule(nodes);
+
+  // Step 2: Build group summary nodes
+  const groupNodes: Node<GroupNodeData>[] = [];
+  const nodeToGroupId = new Map<string, string>();
+  let groupIndex = 0;
+
+  for (const [dir, children] of dirGroups.entries()) {
+    const groupId = `group:${dir}`;
+
+    // Count types
+    const typeBreakdown: Record<string, number> = {};
+    for (const child of children) {
+      const t = child.data.oirType;
+      typeBreakdown[t] = (typeBreakdown[t] ?? 0) + 1;
+    }
+
+    // Find dominant type
+    let dominantType = 'module';
+    let maxCount = 0;
+    for (const [type, count] of Object.entries(typeBreakdown)) {
+      if (count > maxCount) {
+        maxCount = count;
+        dominantType = type;
+      }
+    }
+
+    // Derive a short label from the directory path
+    const segments = dir.split('/').filter(Boolean);
+    const label = segments.length > 0 ? segments[segments.length - 1] : 'root';
+
+    groupNodes.push({
+      id: groupId,
+      type: 'group',
+      position: {
+        x: (groupIndex % 5) * 320,
+        y: Math.floor(groupIndex / 5) * 180,
+      },
+      data: {
+        label,
+        directory: dir,
+        childCount: children.length,
+        childNodeIds: children.map((c) => c.id),
+        typeBreakdown,
+        dominantType,
+      },
+    });
+
+    // Map each child to this group
+    for (const child of children) {
+      nodeToGroupId.set(child.id, groupId);
+    }
+
+    groupIndex++;
+  }
+
+  // Step 3: Aggregate edges between groups
+  const edgeSet = new Set<string>();
+  const groupEdges: Edge<GraphEdgeData>[] = [];
+
+  for (const edge of edges) {
+    const sourceGroup = nodeToGroupId.get(edge.source);
+    const targetGroup = nodeToGroupId.get(edge.target);
+
+    if (!sourceGroup || !targetGroup) continue;
+    // Skip intra-group edges
+    if (sourceGroup === targetGroup) continue;
+
+    // Deduplicate: one edge per group pair per edge type
+    const edgeType = edge.data?.edgeType ?? 'uses';
+    const key = `${sourceGroup}→${targetGroup}:${edgeType}`;
+    if (edgeSet.has(key)) continue;
+    edgeSet.add(key);
+
+    groupEdges.push({
+      id: `ge:${sourceGroup}→${targetGroup}:${edgeType}`,
+      source: sourceGroup,
+      target: targetGroup,
+      type: isRuntimeEdge(edgeType) ? 'dataFlow' : 'dependency',
+      animated: false,
+      data: { edgeType },
+      style: { stroke: EDGE_COLORS[edgeType] },
+    });
+  }
+
+  return { groupNodes, groupEdges, nodeToGroupId };
 }
 
 /** Map OIR node type to React Flow custom node type name */

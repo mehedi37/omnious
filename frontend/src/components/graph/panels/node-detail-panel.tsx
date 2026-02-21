@@ -1,16 +1,21 @@
 'use client';
 
 import type { Node } from '@xyflow/react';
-import { Braces, Crosshair, ExternalLink, FileCode, X } from 'lucide-react';
+import { Braces, Crosshair, FolderOpen, FileCode, Layers, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { NODE_BG_CLASSES, NODE_ICONS } from '@/lib/oir/constants';
-import type { GraphNodeData } from '@/lib/oir/transforms';
+import { NODE_BG_CLASSES } from '@/lib/oir/constants';
+import type { GraphNodeData, GroupNodeData } from '@/lib/oir/transforms';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
+
+/** Type guard — group nodes have `dominantType` but no `oirType` */
+function isGroupNode(node: Node): node is Node<GroupNodeData> {
+  return node.type === 'group';
+}
 
 export function NodeDetailPanel() {
   const nodes = useGraphStore((s) => s.nodes);
@@ -18,9 +23,8 @@ export function NodeDetailPanel() {
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
 
   const selectedNode = nodes.find((n: Node) => selectedNodeIds.has(n.id));
-  const data = selectedNode?.data as GraphNodeData | undefined;
 
-  if (!selectedNode || !data) {
+  if (!selectedNode) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-muted-foreground text-sm">
         Select a node to view details
@@ -33,15 +37,116 @@ export function NodeDetailPanel() {
     useUIStore.getState().setDetailPanelOpen(false);
   };
 
-  const isCurrentlyFocused = focusedNodeId === selectedNode?.id;
+  const isCurrentlyFocused = focusedNodeId === selectedNode.id;
 
   const handleFocus = () => {
     if (isCurrentlyFocused) {
       useGraphStore.getState().clearFocusMode();
-    } else if (selectedNode) {
+    } else {
       useGraphStore.getState().setFocusMode(selectedNode.id);
     }
   };
+
+  // --- Group node detail view ---
+  if (isGroupNode(selectedNode)) {
+    const gd = selectedNode.data as GroupNodeData;
+    return (
+      <ScrollArea className="h-full">
+        <div className="p-4 space-y-4">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <Badge
+                variant="outline"
+                className={`text-[10px] mb-2 ${NODE_BG_CLASSES[gd.dominantType as keyof typeof NODE_BG_CLASSES] ?? ''}`}
+              >
+                group · {gd.dominantType.replace('_', ' ')}
+              </Badge>
+              <h3 className="text-lg font-semibold truncate">{gd.label}</h3>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={isCurrentlyFocused ? 'secondary' : 'ghost'}
+                    size="icon"
+                    className={`h-7 w-7 ${isCurrentlyFocused ? 'bg-primary/10 text-primary' : ''}`}
+                    onClick={handleFocus}
+                  >
+                    <Crosshair className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {isCurrentlyFocused ? 'Exit focus mode (Esc)' : 'Focus on connected nodes (N)'}
+                </TooltipContent>
+              </Tooltip>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleClose}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Directory */}
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              Directory
+            </p>
+            <div className="flex items-center gap-2 text-sm">
+              <FolderOpen className="h-4 w-4 text-muted-foreground shrink-0" />
+              <span className="font-mono text-xs truncate">{gd.directory || '/'}</span>
+            </div>
+          </div>
+
+          {/* Child count */}
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              Nodes in group
+            </p>
+            <div className="flex items-center gap-2 text-sm">
+              <Layers className="h-4 w-4 text-muted-foreground shrink-0" />
+              <span>{gd.childCount} node{gd.childCount !== 1 ? 's' : ''}</span>
+            </div>
+          </div>
+
+          {/* Type breakdown */}
+          {Object.keys(gd.typeBreakdown).length > 0 && (
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Type breakdown
+              </p>
+              <div className="rounded-md bg-muted p-2 space-y-1">
+                {Object.entries(gd.typeBreakdown)
+                  .sort(([, a], [, b]) => b - a)
+                  .map(([type, count]) => (
+                    <div key={type} className="flex justify-between text-xs">
+                      <Badge
+                        variant="outline"
+                        className={`text-[9px] px-1.5 py-0 ${NODE_BG_CLASSES[type as keyof typeof NODE_BG_CLASSES] ?? ''}`}
+                      >
+                        {type.replace('_', ' ')}
+                      </Badge>
+                      <span className="font-mono text-muted-foreground">{count}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </ScrollArea>
+    );
+  }
+
+  // --- Individual node detail view ---
+  const data = selectedNode.data as GraphNodeData;
+
+  if (!data.oirType) {
+    return (
+      <div className="flex h-full items-center justify-center p-6 text-muted-foreground text-sm">
+        Select a node to view details
+      </div>
+    );
+  }
 
   return (
     <ScrollArea className="h-full">

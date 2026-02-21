@@ -2,6 +2,7 @@
 
 import { BaseEdge, type EdgeProps, getSmoothStepPath } from '@xyflow/react';
 import { memo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { EDGE_COLORS } from '@/lib/oir/constants';
 import type { GraphEdgeData } from '@/lib/oir/transforms';
 import { useGraphStore } from '@/lib/stores/graph-store';
@@ -23,10 +24,13 @@ function DataFlowEdgeComponent({
   const edgeType = d?.edgeType ?? 'calls';
   const strokeColor = EDGE_COLORS[edgeType] ?? EDGE_COLORS.calls;
 
-  // Flow animation state — only subscribe to needed values
-  const flowMode = useGraphStore((s) => s.flowMode);
-  const isActive = useGraphStore((s) => s.activeEdgeIds.has(id));
-  const inReplay = flowMode === 'replay';
+  // Flow animation state — single combined subscription instead of 2 per edge
+  const { inReplay, isActive } = useGraphStore(
+    useShallow((s) => ({
+      inReplay: s.flowMode === 'replay',
+      isActive: s.activeEdgeIds.has(id),
+    })),
+  );
 
   const [edgePath] = getSmoothStepPath({
     sourceX,
