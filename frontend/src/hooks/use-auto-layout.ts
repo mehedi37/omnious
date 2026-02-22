@@ -1,29 +1,27 @@
 'use client';
 
-import type { Edge, Node } from '@xyflow/react';
-import { useReactFlow } from '@xyflow/react';
 import { useCallback, useEffect, useRef } from 'react';
-import { useGraphStore } from '@/lib/stores/graph-store';
+import { graphRef, sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
 
 /** Safety timeout — if ELK doesn't respond within this period, clear isLayouting */
 const LAYOUT_TIMEOUT_MS = 15_000;
 
+/** Fixed node sizes used when sending to ELK (no measured dimensions in Sigma) */
+const NODE_WIDTH = 200;
+const NODE_HEIGHT = 80;
+const GROUP_NODE_WIDTH = 240;
+const GROUP_NODE_HEIGHT = 100;
+
 /**
  * Bridge to the ELK.js Web Worker for auto-layout.
- * Waits for React Flow to measure node dimensions before computing.
+ * Uses fixed node sizes (Sigma doesn't measure nodes like React Flow).
+ * Positions are written directly to the graphology graph.
  */
 export function useAutoLayout() {
-  const { fitView } = useReactFlow();
   const workerRef = useRef<Worker | null>(null);
   const hasRunInitialLayout = useRef(false);
   const hasFittedAfterLayout = useRef(false);
-  const fitViewRef = useRef(fitView);
   const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Keep fitView ref up-to-date without triggering worker recreation
-  useEffect(() => {
-    fitViewRef.current = fitView;
-  }, [fitView]);
 
   const clearSafetyTimer = useCallback(() => {
     if (safetyTimerRef.current) {
@@ -32,7 +30,7 @@ export function useAutoLayout() {
     }
   }, []);
 
-  // Initialize worker once on mount (no deps that change identity)
+  // Initialize worker once on mount
   useEffect(() => {
     workerRef.current = new Worker(new URL('../../workers/elk-layout.worker.ts', import.meta.url), {
       type: 'module',
@@ -62,7 +60,9 @@ export function useAutoLayout() {
       if (!hasFittedAfterLayout.current) {
         hasFittedAfterLayout.current = true;
         requestAnimationFrame(() => {
-          requestAnimationFrame(() => fitViewRef.current({ duration: 400 }));
+          requestAnimationFrame(() => {
+            sigmaRef.current?.getCamera().animatedReset({ duration: 400 });
+          });
         });
       }
     };
@@ -74,7 +74,6 @@ export function useAutoLayout() {
     };
 
     return () => {
-      // Clear isLayouting on cleanup so it never gets stuck
       clearSafetyTimer();
       useGraphStore.getState().setIsLayouting(false);
       workerRef.current?.terminate();
@@ -83,29 +82,39 @@ export function useAutoLayout() {
   }, [clearSafetyTimer]);
 
   const runLayout = useCallback(() => {
-    const { nodes, edges, layoutMode } = useGraphStore.getState();
-    if (nodes.length === 0 || !workerRef.current) return;
+    const graph = graphRef.current;
+    if (!graph || graph.order === 0 || !workerRef.current) return;
 
+    const { layoutMode } = useGraphStore.getState();
     useGraphStore.getState().setIsLayouting(true);
 
-    // Safety timeout — if worker doesn't respond, unblock UI
+    // Safety timeout
     clearSafetyTimer();
     safetyTimerRef.current = setTimeout(() => {
       console.warn('[auto-layout] Layout timed out after', LAYOUT_TIMEOUT_MS, 'ms');
       useGraphStore.getState().setIsLayouting(false);
     }, LAYOUT_TIMEOUT_MS);
 
+    // Collect visible (non-hidden) nodes and their edges for ELK
+    const visibleNodeIds = graph.filterNodes((_, attrs) => !attrs.hidden);
+    const visibleNodeSet = new Set(visibleNodeIds);
+
     workerRef.current.postMessage({
-      nodes: nodes.map((n: Node) => ({
-        id: n.id,
-        width: n.measured?.width ?? 200,
-        height: n.measured?.height ?? 80,
-      })),
-      edges: edges.map((e: Edge) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-      })),
+      nodes: visibleNodeIds.map((id) => {
+        const attrs = graph.getNodeAttributes(id);
+        return {
+          id,
+          width: attrs.isGroup ? GROUP_NODE_WIDTH : NODE_WIDTH,
+          height: attrs.isGroup ? GROUP_NODE_HEIGHT : NODE_HEIGHT,
+        };
+      }),
+      edges: graph.filterEdges((_, attrs, src, tgt) =>
+        !attrs.hidden && visibleNodeSet.has(src) && visibleNodeSet.has(tgt),
+      ).map((edgeId) => {
+        const src = graph.source(edgeId);
+        const tgt = graph.target(edgeId);
+        return { id: edgeId, source: src, target: tgt };
+      }),
       layoutMode,
     });
   }, [clearSafetyTimer]);
@@ -126,45 +135,18 @@ export function useAutoLayout() {
     );
   }, [runLayout]);
 
-  // Auto-trigger layout once nodes are measured by React Flow.
-  // Polls every 200ms until ≥80% of nodes have measured dimensions,
-  // then runs layout. This avoids firing too early when nodes haven't
-  // been rendered yet (all at 0,0 with no dimensions).
+  // Auto-trigger layout once graphVersion bumps (new data pushed to graph)
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>;
-    let pollCount = 0;
-    const MAX_POLLS = 60; // 60 * 100ms = 6s safety limit
-
-    const unsub = useGraphStore.subscribe(
-      (s) => s.nodes.length,
-      (length) => {
-        if (length === 0 || hasRunInitialLayout.current) return;
-        clearTimeout(timer);
-        pollCount = 0;
-
-        const poll = () => {
-          const { nodes } = useGraphStore.getState();
-          const measuredCount = nodes.filter((n) => n.measured?.width).length;
-          const ratio = nodes.length > 0 ? measuredCount / nodes.length : 0;
-
-          if (ratio >= 0.6 || pollCount >= MAX_POLLS) {
-            hasRunInitialLayout.current = true;
-            runLayout();
-          } else {
-            pollCount++;
-            timer = setTimeout(poll, 100);
-          }
-        };
-
-        // Start polling after a short initial delay for React Flow to begin measuring
-        timer = setTimeout(poll, 150);
+    return useGraphStore.subscribe(
+      (s) => s.graphVersion,
+      (version) => {
+        if (version === 0 || hasRunInitialLayout.current) return;
+        hasRunInitialLayout.current = true;
+        runLayout();
       },
     );
-    return () => {
-      unsub();
-      clearTimeout(timer);
-    };
   }, [runLayout]);
 
   return { runLayout };
 }
+

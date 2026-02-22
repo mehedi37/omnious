@@ -1,6 +1,5 @@
 'use client';
 
-import { useReactFlow } from '@xyflow/react';
 import {
   ArrowDownUp,
   ArrowLeftRight,
@@ -19,20 +18,27 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Toggle } from '@/components/ui/toggle';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { useGraphStore } from '@/lib/stores/graph-store';
+import { sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
 
 export function GraphControls() {
-  const { zoomIn, zoomOut, fitView } = useReactFlow();
   const heatmapActive = useGraphStore((s) => s.heatmapActive);
   const layoutMode = useGraphStore((s) => s.layoutMode);
   const isLayouting = useGraphStore((s) => s.isLayouting);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
-  const nodeCount = useGraphStore((s) => s.nodes.length);
+  const nodeCount = useGraphStore((s) => s.nodeCount);
   const viewMode = useGraphStore((s) => s.viewMode);
 
-  const handleFitView = useCallback(() => fitView({ duration: 400 }), [fitView]);
-  const handleZoomIn = useCallback(() => zoomIn({ duration: 200 }), [zoomIn]);
-  const handleZoomOut = useCallback(() => zoomOut({ duration: 200 }), [zoomOut]);
+  const handleFitView = useCallback(() => {
+    sigmaRef.current?.getCamera().animatedReset({ duration: 400 });
+  }, []);
+
+  const handleZoomIn = useCallback(() => {
+    sigmaRef.current?.getCamera().animatedZoom({ factor: 1.5, duration: 200 });
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    sigmaRef.current?.getCamera().animatedUnzoom({ factor: 1.5, duration: 200 });
+  }, []);
 
   const handleResetLayout = useCallback(() => {
     useGraphStore.getState().requestLayout();

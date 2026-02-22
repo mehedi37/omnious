@@ -1,44 +1,60 @@
 'use client';
 
-import { useReactFlow } from '@xyflow/react';
 import { Search, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { NODE_BG_CLASSES } from '@/lib/oir/constants';
-import type { GraphNodeData, GroupNodeData } from '@/lib/oir/transforms';
-import { useGraphStore } from '@/lib/stores/graph-store';
+import { graphRef, sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
+import type { SigmaNodeAttributes } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
+
+interface SearchResult {
+  id: string;
+  label: string;
+  typeStr: string;
+  pathStr: string;
+  isGroup: boolean;
+}
 
 /**
  * Floating search popover for finding graph nodes by name, file path, or type.
- * Opens with Ctrl+F / Cmd+F, supports keyboard navigation (↑↓ Enter Esc).
+ * Opens with Ctrl+F / Cmd+F, supports keyboard navigation.
  */
 export function GraphSearch() {
   const open = useGraphStore((s) => s.nodeSearchOpen);
-  const nodes = useGraphStore((s) => s.nodes);
-  const { setCenter } = useReactFlow();
+  // Subscribe to graphVersion to rebuild results when graph changes
+  useGraphStore((s) => s.graphVersion);
+
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  // Filter nodes by name/file/type match
-  const results = useMemo(() => {
+  // Filter nodes by name/file/type match — read directly from graphology
+  const results: SearchResult[] = useMemo(() => {
     if (!query.trim()) return [];
+    const graph = graphRef.current;
+    if (!graph) return [];
+
     const q = query.toLowerCase();
-    return nodes
-      .filter((n) => {
-        const d = n.data as GraphNodeData | GroupNodeData;
-        const typeStr = 'oirType' in d ? (d as GraphNodeData).oirType : (d as GroupNodeData).dominantType;
-        const pathStr = 'filePath' in d ? ((d as GraphNodeData).filePath ?? '') : ((d as GroupNodeData).directory ?? '');
-        return (
-          d.label.toLowerCase().includes(q) ||
-          pathStr.toLowerCase().includes(q) ||
-          (typeStr ?? '').toLowerCase().includes(q)
-        );
-      })
-      .slice(0, 30);
-  }, [nodes, query]);
+    const matches: SearchResult[] = [];
+
+    graph.forEachNode((nodeId, attrs: SigmaNodeAttributes) => {
+      if (attrs.hidden) return; // skip hidden nodes
+      const typeStr = attrs.isGroup ? (attrs.dominantType ?? 'group') : (attrs.oirType ?? '');
+      const pathStr = attrs.isGroup ? (attrs.directory ?? '') : (attrs.filePath ?? '');
+
+      if (
+        attrs.label.toLowerCase().includes(q) ||
+        pathStr.toLowerCase().includes(q) ||
+        typeStr.toLowerCase().includes(q)
+      ) {
+        matches.push({ id: nodeId, label: attrs.label, typeStr, pathStr, isGroup: attrs.isGroup });
+      }
+    });
+
+    return matches.slice(0, 30);
+  }, [query]);
 
   // Auto-focus input when opened
   useEffect(() => {
@@ -63,19 +79,18 @@ export function GraphSearch() {
 
   const navigateToNode = useCallback(
     (nodeId: string) => {
-      const node = nodes.find((n) => n.id === nodeId);
-      if (!node) return;
+      const graph = graphRef.current;
+      const sigma = sigmaRef.current;
+      if (!graph || !sigma || !graph.hasNode(nodeId)) return;
 
       useGraphStore.getState().selectNode(nodeId);
       useUIStore.getState().setDetailPanelOpen(true);
 
-      const x = node.position.x + (node.measured?.width ?? 200) / 2;
-      const y = node.position.y + (node.measured?.height ?? 60) / 2;
-      setCenter(x, y, { duration: 400, zoom: 1.2 });
-
+      const attrs = graph.getNodeAttributes(nodeId);
+      sigma.getCamera().animate({ x: attrs.x, y: attrs.y, ratio: 0.3 }, { duration: 400 });
       close();
     },
-    [nodes, setCenter, close],
+    [close],
   );
 
   const handleKeyDown = useCallback(
@@ -139,51 +154,40 @@ export function GraphSearch() {
                 No nodes matching &ldquo;{query}&rdquo;
               </p>
             ) : (
-              results.map((node, i) => {
-                const d = node.data as GraphNodeData | GroupNodeData;
-                const typeStr: string = 'oirType' in d ? (d as GraphNodeData).oirType : (d as GroupNodeData).dominantType;
-                const pathStr: string | undefined = 'filePath' in d ? (d as GraphNodeData).filePath : (d as GroupNodeData).directory;
-                return (
-                  <button
-                    type="button"
-                    key={node.id}
-                    onClick={() => navigateToNode(node.id)}
-                    className={`w-full flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                      i === selectedIndex
-                        ? 'bg-primary/10 text-foreground'
-                        : 'hover:bg-muted text-foreground/80'
-                    }`}
+              results.map((result, i) => (
+                <button
+                  type="button"
+                  key={result.id}
+                  onClick={() => navigateToNode(result.id)}
+                  className={`w-full flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors ${
+                    i === selectedIndex
+                      ? 'bg-primary/10 text-foreground'
+                      : 'hover:bg-muted text-foreground/80'
+                  }`}
+                >
+                  <Badge
+                    variant="outline"
+                    className={`text-[9px] px-1.5 py-0 shrink-0 ${NODE_BG_CLASSES[result.typeStr as keyof typeof NODE_BG_CLASSES] ?? ''}`}
                   >
-                    <Badge
-                      variant="outline"
-                      className={`text-[9px] px-1.5 py-0 shrink-0 ${NODE_BG_CLASSES[typeStr as keyof typeof NODE_BG_CLASSES] ?? ''}`}
-                    >
-                      {node.type === 'group' ? 'group' : (typeStr ?? '').replace('_', ' ')}
-                    </Badge>
-                    <span className="font-medium truncate">{d.label}</span>
-                    {pathStr && (
-                      <span className="text-[11px] text-muted-foreground truncate ml-auto pl-2">
-                        {pathStr}
-                      </span>
-                    )}
-                  </button>
-                );
-              })
+                    {result.isGroup ? 'group' : result.typeStr.replace('_', ' ')}
+                  </Badge>
+                  <span className="font-medium truncate">{result.label}</span>
+                  {result.pathStr && (
+                    <span className="text-[11px] text-muted-foreground truncate ml-auto pl-2">
+                      {result.pathStr}
+                    </span>
+                  )}
+                </button>
+              ))
             )}
           </div>
         )}
 
         {/* Keyboard hints */}
         <div className="border-t px-3 py-1.5 flex items-center gap-3 text-[11px] text-muted-foreground">
-          <span>
-            <kbd className="px-1 rounded bg-muted font-mono text-[10px]">↑↓</kbd> Navigate
-          </span>
-          <span>
-            <kbd className="px-1 rounded bg-muted font-mono text-[10px]">Enter</kbd> Go to node
-          </span>
-          <span>
-            <kbd className="px-1 rounded bg-muted font-mono text-[10px]">Esc</kbd> Close
-          </span>
+          <span><kbd className="px-1 rounded bg-muted font-mono text-[10px]">↑↓</kbd> Navigate</span>
+          <span><kbd className="px-1 rounded bg-muted font-mono text-[10px]">Enter</kbd> Go to node</span>
+          <span><kbd className="px-1 rounded bg-muted font-mono text-[10px]">Esc</kbd> Close</span>
         </div>
       </div>
     </div>

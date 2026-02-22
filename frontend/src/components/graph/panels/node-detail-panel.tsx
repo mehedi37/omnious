@@ -1,6 +1,5 @@
 'use client';
 
-import type { Node } from '@xyflow/react';
 import { Braces, Crosshair, FolderOpen, FileCode, Layers, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -8,23 +7,31 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { NODE_BG_CLASSES } from '@/lib/oir/constants';
-import type { GraphNodeData, GroupNodeData } from '@/lib/oir/transforms';
-import { useGraphStore } from '@/lib/stores/graph-store';
+import { graphRef, useGraphStore } from '@/lib/stores/graph-store';
+import type { SigmaNodeAttributes } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
-/** Type guard — group nodes have `dominantType` but no `oirType` */
-function isGroupNode(node: Node): node is Node<GroupNodeData> {
-  return node.type === 'group';
+/** Read node attributes directly from graphology */
+function getSelectedAttrs(): SigmaNodeAttributes | null {
+  const { selectedNodeIds } = useGraphStore.getState();
+  if (selectedNodeIds.size === 0) return null;
+  const graph = graphRef.current;
+  if (!graph) return null;
+
+  const firstId = selectedNodeIds.values().next().value as string;
+  if (!graph.hasNode(firstId)) return null;
+  return graph.getNodeAttributes(firstId);
 }
 
 export function NodeDetailPanel() {
-  const nodes = useGraphStore((s) => s.nodes);
   const selectedNodeIds = useGraphStore((s) => s.selectedNodeIds);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
+  // Re-render when graphVersion changes (to pick up new attributes)
+  useGraphStore((s) => s.graphVersion);
 
-  const selectedNode = nodes.find((n: Node) => selectedNodeIds.has(n.id));
+  const attrs = getSelectedAttrs();
 
-  if (!selectedNode) {
+  if (!attrs) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-muted-foreground text-sm">
         Select a node to view details
@@ -32,24 +39,24 @@ export function NodeDetailPanel() {
     );
   }
 
+  const selectedNodeId = selectedNodeIds.values().next().value as string;
+  const isCurrentlyFocused = focusedNodeId === selectedNodeId;
+
   const handleClose = () => {
     useGraphStore.getState().deselectAll();
     useUIStore.getState().setDetailPanelOpen(false);
   };
 
-  const isCurrentlyFocused = focusedNodeId === selectedNode.id;
-
   const handleFocus = () => {
     if (isCurrentlyFocused) {
       useGraphStore.getState().clearFocusMode();
     } else {
-      useGraphStore.getState().setFocusMode(selectedNode.id);
+      useGraphStore.getState().setFocusMode(selectedNodeId);
     }
   };
 
   // --- Group node detail view ---
-  if (isGroupNode(selectedNode)) {
-    const gd = selectedNode.data as GroupNodeData;
+  if (attrs.isGroup) {
     return (
       <ScrollArea className="h-full">
         <div className="p-4 space-y-4">
@@ -57,11 +64,11 @@ export function NodeDetailPanel() {
             <div className="min-w-0 flex-1">
               <Badge
                 variant="outline"
-                className={`text-[10px] mb-2 ${NODE_BG_CLASSES[gd.dominantType as keyof typeof NODE_BG_CLASSES] ?? ''}`}
+                className={`text-[10px] mb-2 ${NODE_BG_CLASSES[(attrs.dominantType ?? 'module') as keyof typeof NODE_BG_CLASSES] ?? ''}`}
               >
-                group · {gd.dominantType.replace('_', ' ')}
+                group · {(attrs.dominantType ?? 'module').replace('_', ' ')}
               </Badge>
-              <h3 className="text-lg font-semibold truncate">{gd.label}</h3>
+              <h3 className="text-lg font-semibold truncate">{attrs.label}</h3>
             </div>
             <div className="flex items-center gap-0.5 shrink-0">
               <Tooltip>
@@ -89,34 +96,28 @@ export function NodeDetailPanel() {
 
           {/* Directory */}
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Directory
-            </p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Directory</p>
             <div className="flex items-center gap-2 text-sm">
               <FolderOpen className="h-4 w-4 text-muted-foreground shrink-0" />
-              <span className="font-mono text-xs truncate">{gd.directory || '/'}</span>
+              <span className="font-mono text-xs truncate">{attrs.directory || '/'}</span>
             </div>
           </div>
 
           {/* Child count */}
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Nodes in group
-            </p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Nodes in group</p>
             <div className="flex items-center gap-2 text-sm">
               <Layers className="h-4 w-4 text-muted-foreground shrink-0" />
-              <span>{gd.childCount} node{gd.childCount !== 1 ? 's' : ''}</span>
+              <span>{attrs.childCount ?? 0} node{(attrs.childCount ?? 0) !== 1 ? 's' : ''}</span>
             </div>
           </div>
 
           {/* Type breakdown */}
-          {Object.keys(gd.typeBreakdown).length > 0 && (
+          {attrs.typeBreakdown && Object.keys(attrs.typeBreakdown).length > 0 && (
             <div className="space-y-1">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                Type breakdown
-              </p>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Type breakdown</p>
               <div className="rounded-md bg-muted p-2 space-y-1">
-                {Object.entries(gd.typeBreakdown)
+                {Object.entries(attrs.typeBreakdown)
                   .sort(([, a], [, b]) => b - a)
                   .map(([type, count]) => (
                     <div key={type} className="flex justify-between text-xs">
@@ -138,9 +139,7 @@ export function NodeDetailPanel() {
   }
 
   // --- Individual node detail view ---
-  const data = selectedNode.data as GraphNodeData;
-
-  if (!data.oirType) {
+  if (!attrs.oirType) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-muted-foreground text-sm">
         Select a node to view details
@@ -156,11 +155,11 @@ export function NodeDetailPanel() {
           <div className="min-w-0 flex-1">
             <Badge
               variant="outline"
-              className={`text-[10px] mb-2 ${NODE_BG_CLASSES[data.oirType] ?? ''}`}
+              className={`text-[10px] mb-2 ${NODE_BG_CLASSES[attrs.oirType] ?? ''}`}
             >
-              {data.oirType.replace('_', ' ')}
+              {attrs.oirType.replace('_', ' ')}
             </Badge>
-            <h3 className="text-lg font-semibold truncate">{data.label}</h3>
+            <h3 className="text-lg font-semibold truncate">{attrs.label}</h3>
           </div>
           <div className="flex items-center gap-0.5 shrink-0">
             <Tooltip>
@@ -187,64 +186,53 @@ export function NodeDetailPanel() {
         <Separator />
 
         {/* File location */}
-        {data.filePath && (
+        {attrs.filePath && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              File
-            </p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">File</p>
             <div className="flex items-center gap-2 text-sm">
               <FileCode className="h-4 w-4 text-muted-foreground shrink-0" />
-              <span className="font-mono text-xs truncate">{data.filePath}</span>
+              <span className="font-mono text-xs truncate">{attrs.filePath}</span>
             </div>
-            {(data.lineStart || data.lineEnd) && (
+            {(attrs.lineStart || attrs.lineEnd) && (
               <p className="text-xs text-muted-foreground pl-6">
-                Lines {data.lineStart}–{data.lineEnd ?? '?'}
+                Lines {attrs.lineStart}–{attrs.lineEnd ?? '?'}
               </p>
             )}
           </div>
         )}
 
         {/* Signature */}
-        {data.signature && (
+        {attrs.signature && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Signature
-            </p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Signature</p>
             <div className="flex items-start gap-2">
               <Braces className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
               <pre className="text-xs font-mono bg-muted rounded-md p-2 overflow-x-auto whitespace-pre-wrap flex-1">
-                {data.signature}
+                {attrs.signature}
               </pre>
             </div>
           </div>
         )}
 
         {/* Doc comment */}
-        {data.docComment && (
+        {attrs.docComment && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Documentation
-            </p>
-            <p className="text-sm text-muted-foreground leading-relaxed">{data.docComment}</p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Documentation</p>
+            <p className="text-sm text-muted-foreground leading-relaxed">{attrs.docComment}</p>
           </div>
         )}
 
         {/* Error info */}
-        {data.errorCount != null && data.errorCount > 0 && (
+        {attrs.errorCount != null && attrs.errorCount > 0 && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Errors
-            </p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Errors</p>
             <div className="flex items-center gap-2">
               <Badge variant="destructive">
-                {data.errorCount} error{data.errorCount > 1 ? 's' : ''}
+                {attrs.errorCount} error{attrs.errorCount > 1 ? 's' : ''}
               </Badge>
-              {data.errorSeverity && (
-                <Badge
-                  variant="outline"
-                  className="border-red-500/30 text-red-600 dark:text-red-400"
-                >
-                  {data.errorSeverity}
+              {attrs.errorSeverity && (
+                <Badge variant="outline" className="border-red-500/30 text-red-600 dark:text-red-400">
+                  {attrs.errorSeverity}
                 </Badge>
               )}
             </div>
@@ -252,13 +240,11 @@ export function NodeDetailPanel() {
         )}
 
         {/* Metadata */}
-        {Object.keys(data.metadata ?? {}).length > 0 && (
+        {Object.keys(attrs.metadata ?? {}).length > 0 && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Metadata
-            </p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Metadata</p>
             <div className="rounded-md bg-muted p-2 space-y-1">
-              {Object.entries(data.metadata).map(([key, value]) => (
+              {Object.entries(attrs.metadata).map(([key, value]) => (
                 <div key={key} className="flex justify-between text-xs">
                   <span className="font-mono text-muted-foreground">{key}</span>
                   <span className="font-mono truncate ml-2 max-w-[60%] text-right">
