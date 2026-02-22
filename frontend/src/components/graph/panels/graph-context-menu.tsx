@@ -1,8 +1,8 @@
 'use client';
 
-import { Clipboard, Crosshair, Eye, EyeOff, Layers, Maximize } from 'lucide-react';
-import { useCallback, useEffect, useRef } from 'react';
-import { useGraphStore } from '@/lib/stores/graph-store';
+import { Clipboard, Crosshair, Eye, EyeOff, Layers } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { graphRef, sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
 interface GraphContextMenuProps {
@@ -15,8 +15,9 @@ interface GraphContextMenuProps {
 export function GraphContextMenu({ nodeId, x, y, onClose }: GraphContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
-  const node = useGraphStore.getState().nodes.find((n) => n.id === nodeId);
-  const isGroup = node?.type === 'group';
+  const graph = graphRef.current;
+  const attrs = graph?.hasNode(nodeId) ? graph.getNodeAttributes(nodeId) : null;
+  const isGroup = attrs?.isGroup ?? false;
 
   // Close on click outside / Escape
   useEffect(() => {
@@ -54,23 +55,25 @@ export function GraphContextMenu({ nodeId, x, y, onClose }: GraphContextMenuProp
   }, [onClose]);
 
   const handleHideNode = useCallback(() => {
-    const store = useGraphStore.getState();
-    const filtered = store.nodes.filter((n) => n.id !== nodeId);
-    store.setNodes(filtered);
-    store.deselectAll();
+    const g = graphRef.current;
+    if (g?.hasNode(nodeId)) {
+      g.setNodeAttribute(nodeId, 'hidden', true);
+    }
+    sigmaRef.current?.refresh();
+    useGraphStore.getState().deselectAll();
     useUIStore.getState().setDetailPanelOpen(false);
     onClose();
   }, [nodeId, onClose]);
 
   const handleCopyName = useCallback(() => {
-    const label = node?.data?.label;
+    const label = attrs?.label;
     if (typeof label === 'string') {
       navigator.clipboard.writeText(label);
     }
     onClose();
-  }, [node, onClose]);
+  }, [attrs, onClose]);
 
-  const items = [
+  const items = useMemo(() => [
     { icon: Eye, label: 'View Details', action: handleViewDetails },
     { icon: Crosshair, label: 'Focus on Node', action: handleFocus },
     ...(isGroup
@@ -78,7 +81,7 @@ export function GraphContextMenu({ nodeId, x, y, onClose }: GraphContextMenuProp
       : []),
     { icon: Clipboard, label: 'Copy Name', action: handleCopyName },
     { icon: EyeOff, label: 'Hide Node', action: handleHideNode, destructive: true },
-  ];
+  ], [handleViewDetails, handleFocus, isGroup, handleExpandGroup, handleCopyName, handleHideNode]);
 
   return (
     <div

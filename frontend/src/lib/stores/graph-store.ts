@@ -1,93 +1,143 @@
-import type { Edge, EdgeChange, Node, NodeChange } from '@xyflow/react';
-import { applyEdgeChanges, applyNodeChanges } from '@xyflow/react';
+import { MultiDirectedGraph } from 'graphology';
+import type Sigma from 'sigma';
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import type { ZoomLevel } from '../oir/constants';
+import { EDGE_COLORS, NODE_COLORS } from '../oir/constants';
 import type { FlowStep, RuntimeEdge } from '../oir/trace-flow';
-import type { GraphEdgeData, GraphNodeData, GroupNodeData } from '../oir/transforms';
+import type { OIREdgeType, OIRNodeType } from '../oir/types';
 
-/** Node animation state during trace replay */
+// ─── Sigma / Graphology attribute types ──────────────────────────────────────
+
+/** Attributes stored on every graphology node (individual + group nodes) */
+export interface SigmaNodeAttributes {
+  // Sigma rendering
+  x: number;
+  y: number;
+  size: number;
+  color: string;
+  label: string;
+  hidden?: boolean;
+
+  // OIR data (individual nodes)
+  oirType: OIRNodeType | null;
+  filePath: string | null;
+  lineStart: number | null;
+  lineEnd: number | null;
+  signature: string | null;
+  docComment: string | null;
+  metadata: Record<string, unknown>;
+  errorCount?: number;
+  errorSeverity?: string;
+
+  // Group node data
+  isGroup: boolean;
+  directory?: string;
+  childCount?: number;
+  childNodeIds?: string[];
+  typeBreakdown?: Record<string, number>;
+  dominantType?: string;
+
+  /** Whether this node belongs to the individual (non-grouped) graph */
+  isIndividual: boolean;
+}
+
+/** Attributes stored on every graphology edge */
+export interface SigmaEdgeAttributes {
+  color: string;
+  size: number;
+  hidden?: boolean;
+  label?: string;
+  edgeType: OIREdgeType | 'runtime_call';
+  isRuntime?: boolean; // edges added during trace replay
+}
+
+// ─── Module-level refs (outside Zustand to avoid immer serialization) ─────────
+
+/** Live graphology graph instance — shared by sigma canvas and all hooks */
+export const graphRef: {
+  current: MultiDirectedGraph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
+} = { current: null };
+
+/** Live Sigma instance — shared by graph controls, search, and nav hooks */
+export const sigmaRef: {
+  current: Sigma<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
+} = { current: null };
+
+/** Initialise (or return existing) graphology graph */
+export function getOrCreateGraph(): MultiDirectedGraph<SigmaNodeAttributes, SigmaEdgeAttributes> {
+  if (!graphRef.current) {
+    graphRef.current = new MultiDirectedGraph<SigmaNodeAttributes, SigmaEdgeAttributes>();
+  }
+  return graphRef.current;
+}
+
+// ─── Node animation state ─────────────────────────────────────────────────────
+
 export type NodeFlowState = 'idle' | 'active' | 'completed' | 'error';
-
-/** Display mode — grouped shows directory-level summary, individual shows all nodes */
 export type ViewMode = 'grouped' | 'individual';
 
+// ─── Zustand store ────────────────────────────────────────────────────────────
+
 interface GraphState {
-  nodes: Node<GraphNodeData>[];
-  edges: Edge<GraphEdgeData>[];
+  // Reactive graph counters (increment to trigger re-renders)
+  graphVersion: number;
+  nodeCount: number;
+  edgeCount: number;
+
   selectedNodeIds: Set<string>;
   zoomLevel: ZoomLevel;
   layoutMode: 'layered-tb' | 'layered-lr' | 'force' | 'stress';
-  hiddenNodeIds: Set<string>;
   heatmapActive: boolean;
   isLayouting: boolean;
-  /** Incremented to signal a layout recalculation (Reset Layout) */
   layoutVersion: number;
 
-  // ── View mode (grouped vs individual) ──
+  // View mode
   viewMode: ViewMode;
-  /** All individual nodes (preserved when showing groups) */
-  allIndividualNodes: Node<GraphNodeData>[];
-  /** All individual edges (preserved when showing groups) */
-  allIndividualEdges: Edge<GraphEdgeData>[];
-  /** Computed group summary nodes */
-  groupNodes: Node<GroupNodeData>[];
-  /** Aggregated inter-group edges */
-  groupEdges: Edge<GraphEdgeData>[];
-  /** Map from individual node ID → its group node ID */
-  nodeToGroupId: Map<string, string>;
+  expandedGroupIds: Set<string>;
 
-  // ── Flow animation state ──
+  // Flow animation state
   flowMode: 'static' | 'replay';
   activeFlowStep: FlowStep | null;
   activeNodeId: string | null;
   activeEdgeIds: Set<string>;
   completedNodeIds: Set<string>;
   errorNodeIds: Set<string>;
-  runtimeEdges: Edge<GraphEdgeData>[];
   callStack: FlowStep[];
 
-  // ── Focus mode ──
+  // Focus mode
   focusedNodeId: string | null;
   connectedNodeIds: Set<string>;
   nodeSearchOpen: boolean;
 
-  // Actions
-  setNodes: (nodes: Node<GraphNodeData>[]) => void;
-  setEdges: (edges: Edge<GraphEdgeData>[]) => void;
-  applyNodeChanges: (changes: NodeChange[]) => void;
-  applyEdgeChanges: (changes: EdgeChange[]) => void;
+  // Keyboard navigation
+  keyboardFocusedNodeId: string | null;
+
+  // ── Actions ──────────────────────────────────────────────────────────────────
+
+  bumpGraphVersion: (counts?: { nodeCount: number; edgeCount: number }) => void;
+  updateNodePositions: (positions: Map<string, { x: number; y: number }>) => void;
   selectNode: (nodeId: string) => void;
   deselectAll: () => void;
   toggleNodeSelection: (nodeId: string) => void;
+  selectAllVisible: () => void;
   setZoomLevel: (level: ZoomLevel) => void;
   setLayoutMode: (mode: GraphState['layoutMode']) => void;
   toggleHeatmap: () => void;
   setIsLayouting: (val: boolean) => void;
-  hideNodes: (nodeIds: string[]) => void;
-  showAllNodes: () => void;
-  updateNodePositions: (positions: Map<string, { x: number; y: number }>) => void;
-  /** Increment layoutVersion to trigger a re-layout (Reset Layout button) */
   requestLayout: () => void;
-
-  // ── View mode actions ──
   setViewMode: (mode: ViewMode) => void;
-  setGroupedData: (data: {
-    individualNodes: Node<GraphNodeData>[];
-    individualEdges: Edge<GraphEdgeData>[];
-    groupNodes: Node<GroupNodeData>[];
-    groupEdges: Edge<GraphEdgeData>[];
-    nodeToGroupId: Map<string, string>;
-  }) => void;
+  toggleGroupExpanded: (groupId: string) => void;
+  setKeyboardFocusedNode: (nodeId: string | null) => void;
 
-  // ── Flow animation actions ──
+  // Flow animation actions
   startFlowReplay: (runtimeEdges: RuntimeEdge[]) => void;
   setFlowStep: (step: FlowStep) => void;
   clearFlowReplay: () => void;
   getNodeFlowState: (nodeId: string) => NodeFlowState;
 
-  // ── Focus + Search ──
+  // Focus + Search
   setFocusMode: (nodeId: string) => void;
   clearFocusMode: () => void;
   setNodeSearchOpen: (open: boolean) => void;
@@ -96,58 +146,67 @@ interface GraphState {
 export const useGraphStore = create<GraphState>()(
   subscribeWithSelector(
     immer((set) => ({
-      nodes: [],
-      edges: [],
+      graphVersion: 0,
+      nodeCount: 0,
+      edgeCount: 0,
+
       selectedNodeIds: new Set<string>(),
       zoomLevel: 'function' as ZoomLevel,
       layoutMode: 'layered-tb',
-      hiddenNodeIds: new Set<string>(),
       heatmapActive: false,
       isLayouting: false,
       layoutVersion: 0,
 
-      // ── View mode ──
       viewMode: 'grouped' as ViewMode,
-      allIndividualNodes: [],
-      allIndividualEdges: [],
-      groupNodes: [],
-      groupEdges: [],
-      nodeToGroupId: new Map<string, string>(),
+      expandedGroupIds: new Set<string>(),
 
-      // ── Flow animation state ──
       flowMode: 'static',
       activeFlowStep: null,
       activeNodeId: null,
       activeEdgeIds: new Set<string>(),
       completedNodeIds: new Set<string>(),
       errorNodeIds: new Set<string>(),
-      runtimeEdges: [],
       callStack: [],
 
-      // ── Focus mode ──
       focusedNodeId: null,
       connectedNodeIds: new Set<string>(),
       nodeSearchOpen: false,
 
-      setNodes: (nodes) =>
+      keyboardFocusedNodeId: null,
+
+      // ── Graph version / counters ────────────────────────────────────────────
+
+      bumpGraphVersion: (counts) =>
         set((state) => {
-          state.nodes = nodes;
+          state.graphVersion += 1;
+          if (counts) {
+            state.nodeCount = counts.nodeCount;
+            state.edgeCount = counts.edgeCount;
+          } else {
+            const g = graphRef.current;
+            if (g) {
+              state.nodeCount = g.order;
+              state.edgeCount = g.size;
+            }
+          }
         }),
 
-      setEdges: (edges) =>
+      updateNodePositions: (positions) => {
+        const graph = graphRef.current;
+        if (!graph) return;
+        positions.forEach((pos, id) => {
+          if (graph.hasNode(id)) {
+            graph.setNodeAttribute(id, 'x', pos.x);
+            graph.setNodeAttribute(id, 'y', pos.y);
+          }
+        });
+        // Sigma auto-refreshes via graphology events; just bump version
         set((state) => {
-          state.edges = edges;
-        }),
+          state.graphVersion += 1;
+        });
+      },
 
-      applyNodeChanges: (changes) =>
-        set((state) => {
-          state.nodes = applyNodeChanges(changes, state.nodes) as Node<GraphNodeData>[];
-        }),
-
-      applyEdgeChanges: (changes) =>
-        set((state) => {
-          state.edges = applyEdgeChanges(changes, state.edges) as Edge<GraphEdgeData>[];
-        }),
+      // ── Selection ──────────────────────────────────────────────────────────
 
       selectNode: (nodeId) =>
         set((state) => {
@@ -162,13 +221,20 @@ export const useGraphStore = create<GraphState>()(
       toggleNodeSelection: (nodeId) =>
         set((state) => {
           const next = new Set(state.selectedNodeIds);
-          if (next.has(nodeId)) {
-            next.delete(nodeId);
-          } else {
-            next.add(nodeId);
-          }
+          if (next.has(nodeId)) next.delete(nodeId);
+          else next.add(nodeId);
           state.selectedNodeIds = next;
         }),
+
+      selectAllVisible: () =>
+        set((state) => {
+          const graph = graphRef.current;
+          if (!graph) return;
+          const visible = graph.nodes().filter((n) => !graph.getNodeAttribute(n, 'hidden'));
+          state.selectedNodeIds = new Set(visible);
+        }),
+
+      // ── Graph settings ─────────────────────────────────────────────────────
 
       setZoomLevel: (level) =>
         set((state) => {
@@ -190,72 +256,86 @@ export const useGraphStore = create<GraphState>()(
           state.isLayouting = val;
         }),
 
-      hideNodes: (nodeIds) =>
-        set((state) => {
-          for (const id of nodeIds) {
-            state.hiddenNodeIds.add(id);
-          }
-        }),
-
-      showAllNodes: () =>
-        set((state) => {
-          state.hiddenNodeIds = new Set();
-        }),
-
-      updateNodePositions: (positions) =>
-        set((state) => {
-          for (const node of state.nodes) {
-            const pos = positions.get(node.id);
-            if (pos) {
-              node.position = pos;
-            }
-          }
-        }),
-
       requestLayout: () =>
         set((state) => {
           state.layoutVersion += 1;
         }),
 
-      // ── View mode actions ──
+      // ── View mode ──────────────────────────────────────────────────────────
 
-      setViewMode: (mode) =>
-        set((state) => {
-          if (state.viewMode === mode) return;
-          state.viewMode = mode;
+      setViewMode: (mode) => {
+        const graph = graphRef.current;
+        if (!graph) return;
 
+        // Show/hide individual vs group nodes
+        graph.nodes().forEach((node) => {
+          const attrs = graph.getNodeAttributes(node);
           if (mode === 'grouped') {
-            // Swap in group nodes + edges for display
-            state.nodes = state.groupNodes as any;
-            state.edges = state.groupEdges;
+            // Show group nodes, hide individual nodes
+            graph.setNodeAttribute(node, 'hidden', attrs.isIndividual);
           } else {
-            // Swap in individual nodes + edges for display
-            state.nodes = state.allIndividualNodes as any;
-            state.edges = state.allIndividualEdges;
+            // Show individual nodes, hide group nodes
+            graph.setNodeAttribute(node, 'hidden', attrs.isGroup);
           }
-        }),
+        });
+        // Hide intra-group edges in grouped mode, show in individual
+        graph.edges().forEach((edge) => {
+          if (graph.getEdgeAttribute(edge, 'isRuntime')) return;
+          if (mode === 'grouped') {
+            const src = graph.source(edge);
+            const tgt = graph.target(edge);
+            const srcGroup = graph.getNodeAttribute(src, 'isGroup');
+            const tgtGroup = graph.getNodeAttribute(tgt, 'isGroup');
+            // Hide edges connecting individual nodes (only show group-level)
+            graph.setEdgeAttribute(edge, 'hidden', !srcGroup && !tgtGroup);
+          } else {
+            const srcGroup = graph.getNodeAttribute(graph.source(edge), 'isGroup');
+            const tgtGroup = graph.getNodeAttribute(graph.target(edge), 'isGroup');
+            // Hide edges connecting group nodes (only show individual-level)
+            graph.setEdgeAttribute(edge, 'hidden', srcGroup || tgtGroup);
+          }
+        });
 
-      setGroupedData: (data) =>
         set((state) => {
-          state.allIndividualNodes = data.individualNodes;
-          state.allIndividualEdges = data.individualEdges;
-          state.groupNodes = data.groupNodes as any;
-          state.groupEdges = data.groupEdges;
-          state.nodeToGroupId = data.nodeToGroupId;
+          state.viewMode = mode;
+          state.graphVersion += 1;
+        });
+      },
 
-          // Display based on current viewMode
-          if (state.viewMode === 'grouped') {
-            state.nodes = data.groupNodes as any;
-            state.edges = data.groupEdges;
-          } else {
-            state.nodes = data.individualNodes;
-            state.edges = data.individualEdges;
-          }
+      toggleGroupExpanded: (groupId) =>
+        set((state) => {
+          const next = new Set(state.expandedGroupIds);
+          if (next.has(groupId)) next.delete(groupId);
+          else next.add(groupId);
+          state.expandedGroupIds = next;
         }),
 
-      // ── Flow animation actions ──
+      setKeyboardFocusedNode: (nodeId) =>
+        set((state) => {
+          state.keyboardFocusedNodeId = nodeId;
+        }),
 
-      startFlowReplay: (runtimeEdges) =>
+      // ── Flow animation actions ─────────────────────────────────────────────
+
+      startFlowReplay: (runtimeEdges) => {
+        const graph = graphRef.current;
+        if (graph) {
+          // Add runtime edges directly to the graphology graph
+          for (const re of runtimeEdges) {
+            if (
+              graph.hasNode(re.sourceNodeId) &&
+              graph.hasNode(re.targetNodeId) &&
+              !graph.hasEdge(re.id)
+            ) {
+              graph.addEdgeWithKey(re.id, re.sourceNodeId, re.targetNodeId, {
+                color: 'oklch(0.7 0.2 195)',
+                size: 2,
+                edgeType: 'runtime_call',
+                isRuntime: true,
+              });
+            }
+          }
+        }
         set((state) => {
           state.flowMode = 'replay';
           state.activeFlowStep = null;
@@ -264,27 +344,13 @@ export const useGraphStore = create<GraphState>()(
           state.completedNodeIds = new Set();
           state.errorNodeIds = new Set();
           state.callStack = [];
-          // Inject runtime edges as React Flow edges
-          state.runtimeEdges = runtimeEdges.map((re) => ({
-            id: re.id,
-            source: re.sourceNodeId,
-            target: re.targetNodeId,
-            type: 'runtime' as const,
-            animated: true,
-            data: { edgeType: 'calls' as const, isRuntime: true },
-            style: {
-              stroke: 'oklch(0.7 0.2 195)', // cyan
-              strokeDasharray: '5 3',
-              strokeWidth: 2,
-            },
-          }));
-        }),
+        });
+      },
 
       setFlowStep: (step) =>
         set((state) => {
           const prev = state.activeFlowStep;
 
-          // Mark previous node as completed (or error)
           if (prev?.nodeId) {
             if (prev.status === 'error') {
               state.errorNodeIds.add(prev.nodeId);
@@ -296,24 +362,29 @@ export const useGraphStore = create<GraphState>()(
           state.activeFlowStep = step;
           state.activeNodeId = step.nodeId;
 
-          // Activate the edge from parent → current
           state.activeEdgeIds = new Set<string>();
           if (step.edgeId) {
             state.activeEdgeIds.add(step.edgeId);
           }
 
-          // Mark error node
           if (step.status === 'error' && step.nodeId) {
             state.errorNodeIds.add(step.nodeId);
           }
 
-          // Update call stack
-          // Trim stack to current depth then push
           state.callStack = state.callStack.slice(0, step.depth);
           state.callStack.push(step);
         }),
 
-      clearFlowReplay: () =>
+      clearFlowReplay: () => {
+        const graph = graphRef.current;
+        if (graph) {
+          // Remove all runtime edges
+          graph.edges().forEach((edge) => {
+            if (graph.getEdgeAttribute(edge, 'isRuntime')) {
+              graph.dropEdge(edge);
+            }
+          });
+        }
         set((state) => {
           state.flowMode = 'static';
           state.activeFlowStep = null;
@@ -321,9 +392,9 @@ export const useGraphStore = create<GraphState>()(
           state.activeEdgeIds = new Set();
           state.completedNodeIds = new Set();
           state.errorNodeIds = new Set();
-          state.runtimeEdges = [];
           state.callStack = [];
-        }),
+        });
+      },
 
       getNodeFlowState: (nodeId) => {
         const s = useGraphStore.getState();
@@ -334,14 +405,14 @@ export const useGraphStore = create<GraphState>()(
         return 'idle';
       },
 
-      // ── Focus + Search ──
+      // ── Focus + Search ─────────────────────────────────────────────────────
 
       setFocusMode: (nodeId) =>
         set((state) => {
+          const graph = graphRef.current;
           const connected = new Set<string>([nodeId]);
-          for (const edge of state.edges) {
-            if (edge.source === nodeId) connected.add(edge.target);
-            if (edge.target === nodeId) connected.add(edge.source);
+          if (graph && graph.hasNode(nodeId)) {
+            graph.neighbors(nodeId).forEach((n) => connected.add(n));
           }
           state.focusedNodeId = nodeId;
           state.connectedNodeIds = connected;

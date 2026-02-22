@@ -2,12 +2,10 @@
 
 import { useEffect, useMemo } from 'react';
 import {
-  applyErrorHeatmap,
-  buildGroupedGraph,
-  codeEdgesToReactFlow,
-  codeNodesToReactFlow,
+  applyErrorHeatmapToGraph,
+  pushCodesToGraph,
 } from '@/lib/oir/transforms';
-import { useGraphStore } from '@/lib/stores/graph-store';
+import { getOrCreateGraph, sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
 
@@ -15,12 +13,13 @@ import { trpc } from '@/trpc/client';
 const PAGE_SIZE = 500;
 
 /**
- * Fetches graph nodes + edges from backend, transforms to React Flow format,
- * and pushes into the graph store. Paginates nodes in PAGE_SIZE batches.
+ * Fetches graph nodes + edges from backend, transforms to graphology format,
+ * and pushes into the graphology graph + Zustand store. Paginates nodes in PAGE_SIZE batches.
  */
 export function useGraphData() {
   const currentProjectId = useWorkspaceStore((s) => s.currentProjectId);
   const heatmapActive = useGraphStore((s) => s.heatmapActive);
+  const viewMode = useGraphStore((s) => s.viewMode);
 
   // ── Page 1 (always fetched) ──
   const page1 = trpc.graph.listNodes.useQuery(
@@ -74,46 +73,49 @@ export function useGraphData() {
     (extraPageCount >= 2 && page3.isLoading) ||
     (extraPageCount >= 3 && page4.isLoading);
 
-  // Push nodes into store when all pages are loaded
+  // Push nodes + edges into graphology when all pages are loaded
   useEffect(() => {
     if (activePageLoading || allNodes.length === 0) return;
-
-    let rfNodes = codeNodesToReactFlow(allNodes as any);
-
-    if (heatmapActive && heatmapQuery.data) {
-      rfNodes = applyErrorHeatmap(rfNodes, heatmapQuery.data as any);
-    }
-
-    // Also need edges for grouping — guard against missing edge data
-    const rfEdges = edgesQuery.data?.edges
-      ? codeEdgesToReactFlow(edgesQuery.data.edges as any)
-      : [];
-
-    // Build grouped graph for directory-level summary view
-    const grouped = buildGroupedGraph(rfNodes, rfEdges);
-
-    // Push both individual + grouped data into store
-    useGraphStore.getState().setGroupedData({
-      individualNodes: rfNodes,
-      individualEdges: rfEdges,
-      groupNodes: grouped.groupNodes,
-      groupEdges: grouped.groupEdges,
-      nodeToGroupId: grouped.nodeToGroupId,
-    });
-  }, [allNodes, activePageLoading, heatmapActive, heatmapQuery.data, edgesQuery.data]);
-
-  // Push edges into store when edge data changes and we already have nodes
-  // (The effect above also handles edges, but this covers the case where
-  // edges arrive after the initial node+edge push)
-  useEffect(() => {
     if (!edgesQuery.data?.edges) return;
-    // Only update edges in individual mode — group edges were computed above
-    const store = useGraphStore.getState();
-    if (store.viewMode === 'individual') {
-      const rfEdges = codeEdgesToReactFlow(edgesQuery.data.edges as any);
-      store.setEdges(rfEdges);
+
+    const graph = getOrCreateGraph();
+    const codeEdges = edgesQuery.data.edges as import('@/lib/oir/types').CodeEdge[];
+    const codeNodes = allNodes as import('@/lib/oir/types').CodeNode[];
+    const currentViewMode = useGraphStore.getState().viewMode;
+
+    pushCodesToGraph(codeNodes, codeEdges, graph, currentViewMode);
+
+    // Apply heatmap if active
+    if (heatmapActive && heatmapQuery.data) {
+      applyErrorHeatmapToGraph(
+        heatmapQuery.data as import('@/lib/oir/types').ErrorHeatmapEntry[],
+        graph,
+      );
     }
-  }, [edgesQuery.data]);
+
+    useGraphStore.getState().bumpGraphVersion({
+      nodeCount: graph.order,
+      edgeCount: graph.size,
+    });
+
+    // Request layout after data has been pushed
+    setTimeout(() => useGraphStore.getState().requestLayout(), 50);
+  }, [allNodes, activePageLoading, edgesQuery.data, heatmapActive, heatmapQuery.data]);
+
+  // Re-apply heatmap when it is toggled on while data is already present
+  useEffect(() => {
+    if (!heatmapActive || !heatmapQuery.data) return;
+    const graph = getOrCreateGraph();
+    if (graph.order === 0) return;
+
+    applyErrorHeatmapToGraph(
+      heatmapQuery.data as import('@/lib/oir/types').ErrorHeatmapEntry[],
+      graph,
+    );
+    // Trigger visual refresh via sigma
+    sigmaRef.current?.refresh();
+    sigmaRef.current?.refresh();
+  }, [heatmapActive, heatmapQuery.data]);
 
   return {
     isLoading: activePageLoading || edgesQuery.isLoading,

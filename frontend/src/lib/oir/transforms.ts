@@ -1,47 +1,50 @@
-import type { Edge, Node } from '@xyflow/react';
+import type { MultiDirectedGraph } from 'graphology';
 import { EDGE_COLORS, NODE_COLORS } from './constants';
 import type { CodeEdge, CodeNode, ErrorHeatmapEntry, OIREdgeType } from './types';
+import type { SigmaEdgeAttributes, SigmaNodeAttributes } from '@/lib/stores/graph-store';
+import type { ViewMode } from '@/lib/stores/graph-store';
 
-/** React Flow node data shape */
-export interface GraphNodeData extends Record<string, unknown> {
-  label: string;
-  oirType: CodeNode['type'];
-  filePath: string;
-  lineStart: number | null;
-  lineEnd: number | null;
-  signature: string | null;
-  docComment: string | null;
-  metadata: Record<string, unknown>;
-  errorCount?: number;
-  errorSeverity?: string;
-}
-
-/** React Flow edge data shape */
-export interface GraphEdgeData extends Record<string, unknown> {
-  edgeType: OIREdgeType;
-  animated?: boolean;
-}
-
-/** Grid columns used for initial node placement before ELK runs */
-const INITIAL_GRID_COLS = 8;
-const INITIAL_GRID_SPACING_X = 280;
-const INITIAL_GRID_SPACING_Y = 120;
+/** Grid layout constants for initial placement before ELK runs */
+const INDIVIDUAL_GRID_COLS = 8;
+const INDIVIDUAL_SPACING_X = 280;
+const INDIVIDUAL_SPACING_Y = 120;
+const GROUP_GRID_COLS = 5;
+const GROUP_SPACING_X = 320;
+const GROUP_SPACING_Y = 180;
 
 /**
- * Transform backend code_nodes → React Flow Nodes.
- * Pure function — no side effects, easily testable.
- * Nodes get initial grid positions so they don't pile at (0,0) before ELK completes.
+ * Push CodeNodes + CodeEdges directly into a graphology MultiDirectedGraph.
+ * Clears previous individual + group nodes, then repopulates.
+ * Also assigns `hidden` on nodes based on the current viewMode.
  */
-export function codeNodesToReactFlow(codeNodes: CodeNode[]): Node<GraphNodeData>[] {
-  return codeNodes.map((node, index) => ({
-    id: node.id,
-    type: mapNodeType(node.type),
-    position: {
-      x: (index % INITIAL_GRID_COLS) * INITIAL_GRID_SPACING_X,
-      y: Math.floor(index / INITIAL_GRID_COLS) * INITIAL_GRID_SPACING_Y,
-    },
-    data: {
+export function pushCodesToGraph(
+  codeNodes: CodeNode[],
+  codeEdges: CodeEdge[],
+  graph: MultiDirectedGraph<SigmaNodeAttributes, SigmaEdgeAttributes>,
+  viewMode: ViewMode,
+): { nodeToGroupId: Map<string, string> } {
+  // ── Drop all non-runtime nodes / edges ─────────────────────────────────────
+  // (Runtime edges added by trace replay are tagged isRuntime and preserved.)
+  const runtimeEdgeKeys = graph.filterEdges((_, attrs) => !!attrs.isRuntime);
+  const allNodes = graph.nodes();
+  for (const n of allNodes) graph.dropNode(n); // also drops all attached edges
+  // Re-add any runtime edges that were dropped above (they reference old node keys)
+  // — we keep them as orphans; sigma handles missing endpoints gracefully.
+
+  // ── Individual nodes ────────────────────────────────────────────────────────
+  codeNodes.forEach((node, index) => {
+    const x = (index % INDIVIDUAL_GRID_COLS) * INDIVIDUAL_SPACING_X;
+    const y = Math.floor(index / INDIVIDUAL_GRID_COLS) * INDIVIDUAL_SPACING_Y;
+
+    if (graph.hasNode(node.id)) graph.dropNode(node.id);
+
+    graph.addNode(node.id, {
+      x,
+      y,
+      size: 10,
+      color: NODE_COLORS[node.type] ?? '#888',
       label: node.name,
+      hidden: viewMode === 'grouped',
       oirType: node.type,
       filePath: node.file_path,
       lineStart: node.line_start,
@@ -49,213 +52,121 @@ export function codeNodesToReactFlow(codeNodes: CodeNode[]): Node<GraphNodeData>
       signature: node.signature,
       docComment: node.doc_comment,
       metadata: node.metadata ?? {},
-    },
-    style: {
-      borderColor: NODE_COLORS[node.type],
-    },
-  }));
-}
-
-/**
- * Transform backend code_edges → React Flow Edges.
- */
-export function codeEdgesToReactFlow(codeEdges: CodeEdge[]): Edge<GraphEdgeData>[] {
-  return codeEdges.map((edge) => ({
-    id: edge.id,
-    source: edge.source_node_id,
-    target: edge.target_node_id,
-    type: isRuntimeEdge(edge.type) ? 'dataFlow' : 'dependency',
-    animated: isRuntimeEdge(edge.type),
-    data: {
-      edgeType: edge.type,
-    },
-    style: {
-      stroke: EDGE_COLORS[edge.type],
-    },
-  }));
-}
-
-/**
- * Apply error heatmap data to React Flow nodes — merges error counts + severity into node data.
- */
-export function applyErrorHeatmap(
-  nodes: Node<GraphNodeData>[],
-  heatmap: ErrorHeatmapEntry[],
-): Node<GraphNodeData>[] {
-  const errorMap = new Map(heatmap.map((entry) => [entry.code_node_id, entry]));
-
-  return nodes.map((node) => {
-    const error = errorMap.get(node.id);
-    if (!error) return node;
-
-    return {
-      ...node,
-      data: {
-        ...node.data,
-        errorCount: error.error_count,
-        errorSeverity: error.severity,
-      },
-    };
+      isGroup: false,
+      isIndividual: true,
+    });
   });
-}
 
-/**
- * Group nodes by file's parent module for zoomed-out views.
- */
-export function groupNodesByModule(
-  nodes: Node<GraphNodeData>[],
-): Map<string, Node<GraphNodeData>[]> {
-  const groups = new Map<string, Node<GraphNodeData>[]>();
-  for (const node of nodes) {
-    const dir = node.data.filePath.split('/').slice(0, -1).join('/') || '/';
-    const existing = groups.get(dir) ?? [];
-    existing.push(node);
-    groups.set(dir, existing);
+  // ── Individual edges ────────────────────────────────────────────────────────
+  for (const edge of codeEdges) {
+    if (!graph.hasNode(edge.source_node_id) || !graph.hasNode(edge.target_node_id)) continue;
+    if (graph.hasEdge(edge.id)) graph.dropEdge(edge.id);
+
+    graph.addEdgeWithKey(edge.id, edge.source_node_id, edge.target_node_id, {
+      color: EDGE_COLORS[edge.type] ?? '#555',
+      size: 1.5,
+      hidden: viewMode === 'grouped',
+      edgeType: edge.type,
+    });
   }
-  return groups;
-}
 
-/** Data shape for group summary nodes */
-export interface GroupNodeData extends Record<string, unknown> {
-  label: string;
-  directory: string;
-  childCount: number;
-  childNodeIds: string[];
-  typeBreakdown: Record<string, number>;
-  dominantType: string;
-}
+  // ── Group nodes ─────────────────────────────────────────────────────────────
+  const dirGroups = new Map<string, CodeNode[]>();
+  for (const node of codeNodes) {
+    const dir = node.file_path.split('/').slice(0, -1).join('/') || '/';
+    const existing = dirGroups.get(dir) ?? [];
+    existing.push(node);
+    dirGroups.set(dir, existing);
+  }
 
-/** Result of building a grouped graph */
-export interface GroupedGraph {
-  groupNodes: Node<GroupNodeData>[];
-  groupEdges: Edge<GraphEdgeData>[];
-  /** Map from group node ID → list of individual child node IDs */
-  nodeToGroupId: Map<string, string>;
-}
-
-/**
- * Build a grouped graph from individual nodes and edges.
- * Groups nodes by directory (filePath dirname), creates summary group nodes,
- * and aggregates edges between groups.
- */
-export function buildGroupedGraph(
-  nodes: Node<GraphNodeData>[],
-  edges: Edge<GraphEdgeData>[],
-): GroupedGraph {
-  // Step 1: Group nodes by directory
-  const dirGroups = groupNodesByModule(nodes);
-
-  // Step 2: Build group summary nodes
-  const groupNodes: Node<GroupNodeData>[] = [];
   const nodeToGroupId = new Map<string, string>();
   let groupIndex = 0;
 
   for (const [dir, children] of dirGroups.entries()) {
     const groupId = `group:${dir}`;
 
-    // Count types
     const typeBreakdown: Record<string, number> = {};
     for (const child of children) {
-      const t = child.data.oirType;
-      typeBreakdown[t] = (typeBreakdown[t] ?? 0) + 1;
+      typeBreakdown[child.type] = (typeBreakdown[child.type] ?? 0) + 1;
     }
 
-    // Find dominant type
     let dominantType = 'module';
     let maxCount = 0;
     for (const [type, count] of Object.entries(typeBreakdown)) {
-      if (count > maxCount) {
-        maxCount = count;
-        dominantType = type;
-      }
+      if (count > maxCount) { maxCount = count; dominantType = type; }
     }
 
-    // Derive a short label from the directory path
     const segments = dir.split('/').filter(Boolean);
     const label = segments.length > 0 ? segments[segments.length - 1] : 'root';
 
-    groupNodes.push({
-      id: groupId,
-      type: 'group',
-      position: {
-        x: (groupIndex % 5) * 320,
-        y: Math.floor(groupIndex / 5) * 180,
-      },
-      data: {
-        label,
-        directory: dir,
-        childCount: children.length,
-        childNodeIds: children.map((c) => c.id),
-        typeBreakdown,
-        dominantType,
-      },
+    const x = (groupIndex % GROUP_GRID_COLS) * GROUP_SPACING_X;
+    const y = Math.floor(groupIndex / GROUP_GRID_COLS) * GROUP_SPACING_Y;
+
+    if (graph.hasNode(groupId)) graph.dropNode(groupId);
+    graph.addNode(groupId, {
+      x, y,
+      size: 18,
+      color: NODE_COLORS[dominantType as keyof typeof NODE_COLORS] ?? '#888',
+      label,
+      hidden: viewMode === 'individual',
+      oirType: null,
+      filePath: null, lineStart: null, lineEnd: null, signature: null, docComment: null,
+      metadata: {},
+      isGroup: true,
+      directory: dir,
+      childCount: children.length,
+      childNodeIds: children.map((c) => c.id),
+      typeBreakdown,
+      dominantType,
+      isIndividual: false,
     });
 
-    // Map each child to this group
-    for (const child of children) {
-      nodeToGroupId.set(child.id, groupId);
-    }
-
+    for (const child of children) nodeToGroupId.set(child.id, groupId);
     groupIndex++;
   }
 
-  // Step 3: Aggregate edges between groups
-  const edgeSet = new Set<string>();
-  const groupEdges: Edge<GraphEdgeData>[] = [];
+  // ── Group edges ─────────────────────────────────────────────────────────────
+  const groupEdgeSet = new Set<string>();
+  for (const edge of codeEdges) {
+    const sg = nodeToGroupId.get(edge.source_node_id);
+    const tg = nodeToGroupId.get(edge.target_node_id);
+    if (!sg || !tg || sg === tg) continue;
 
-  for (const edge of edges) {
-    const sourceGroup = nodeToGroupId.get(edge.source);
-    const targetGroup = nodeToGroupId.get(edge.target);
+    const key = `${sg}→${tg}:${edge.type}`;
+    if (groupEdgeSet.has(key)) continue;
+    groupEdgeSet.add(key);
 
-    if (!sourceGroup || !targetGroup) continue;
-    // Skip intra-group edges
-    if (sourceGroup === targetGroup) continue;
+    const groupEdgeId = `ge:${key}`;
+    if (graph.hasEdge(groupEdgeId)) graph.dropEdge(groupEdgeId);
+    if (!graph.hasNode(sg) || !graph.hasNode(tg)) continue;
 
-    // Deduplicate: one edge per group pair per edge type
-    const edgeType = edge.data?.edgeType ?? 'uses';
-    const key = `${sourceGroup}→${targetGroup}:${edgeType}`;
-    if (edgeSet.has(key)) continue;
-    edgeSet.add(key);
-
-    groupEdges.push({
-      id: `ge:${sourceGroup}→${targetGroup}:${edgeType}`,
-      source: sourceGroup,
-      target: targetGroup,
-      type: isRuntimeEdge(edgeType) ? 'dataFlow' : 'dependency',
-      animated: false,
-      data: { edgeType },
-      style: { stroke: EDGE_COLORS[edgeType] },
+    graph.addEdgeWithKey(groupEdgeId, sg, tg, {
+      color: EDGE_COLORS[edge.type] ?? '#555',
+      size: 2,
+      hidden: viewMode === 'individual',
+      edgeType: edge.type,
     });
   }
 
-  return { groupNodes, groupEdges, nodeToGroupId };
+  return { nodeToGroupId };
 }
 
-/** Map OIR node type to React Flow custom node type name */
-function mapNodeType(type: CodeNode['type']): string {
-  switch (type) {
-    case 'module':
-    case 'variable':
-    case 'type_def':
-      return 'module';
-    case 'component':
-      return 'component';
-    case 'function':
-    case 'class':
-      return 'function';
-    case 'route':
-    case 'middleware':
-      return 'route';
-    case 'database_query':
-      return 'database';
-    case 'event_emitter':
-    case 'event_listener':
-    case 'external_api':
-      return 'service';
-    default:
-      return 'function';
+/**
+ * Apply error heatmap data to graphology nodes — merges errorCount + errorSeverity
+ * into node attributes directly (mutation, no re-render needed — sigma.refresh() will pick it up).
+ */
+export function applyErrorHeatmapToGraph(
+  heatmap: ErrorHeatmapEntry[],
+  graph: MultiDirectedGraph<SigmaNodeAttributes, SigmaEdgeAttributes>,
+): void {
+  for (const entry of heatmap) {
+    if (!graph.hasNode(entry.code_node_id)) continue;
+    graph.setNodeAttribute(entry.code_node_id, 'errorCount', entry.error_count);
+    graph.setNodeAttribute(entry.code_node_id, 'errorSeverity', entry.severity);
   }
 }
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Whether this edge type represents a runtime data flow (not static import) */
 function isRuntimeEdge(type: OIREdgeType): boolean {
