@@ -1,34 +1,36 @@
 'use client';
 
-import { useCallback, useEffect, useRef } from 'react';
-import { graphRef, sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
+import { useEffect, useRef } from 'react';
+import { useReactFlow } from '@xyflow/react';
+import { graphRef, useGraphStore } from '@/lib/stores/graph-store';
 
 /** Safety timeout — if ELK doesn't respond within this period, clear isLayouting */
 const LAYOUT_TIMEOUT_MS = 15_000;
 
-/** Fixed node sizes used when sending to ELK (no measured dimensions in Sigma) */
-const NODE_WIDTH = 200;
-const NODE_HEIGHT = 80;
-const GROUP_NODE_WIDTH = 240;
-const GROUP_NODE_HEIGHT = 100;
+/** Fixed node sizes used when sending to ELK */
+const NODE_WIDTH = 220;
+const NODE_HEIGHT = 100;
+const GROUP_NODE_WIDTH = 260;
+const GROUP_NODE_HEIGHT = 120;
 
 /**
  * Bridge to the ELK.js Web Worker for auto-layout.
- * Uses fixed node sizes (Sigma doesn't measure nodes like React Flow).
- * Positions are written directly to the graphology graph.
+ * Uses fixed node sizes.
+ * Positions are written directly to the graphology graph, then synced to React Flow.
  */
 export function useAutoLayout() {
   const workerRef = useRef<Worker | null>(null);
   const hasRunInitialLayout = useRef(false);
   const hasFittedAfterLayout = useRef(false);
   const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reactFlow = useReactFlow();
 
-  const clearSafetyTimer = useCallback(() => {
+  function clearSafetyTimer() {
     if (safetyTimerRef.current) {
       clearTimeout(safetyTimerRef.current);
       safetyTimerRef.current = null;
     }
-  }, []);
+  }
 
   // Initialize worker once on mount
   useEffect(() => {
@@ -37,8 +39,9 @@ export function useAutoLayout() {
     });
 
     workerRef.current.onmessage = (event: MessageEvent) => {
-      const { positions, error } = event.data as {
+      const { positions, edgeRoutes, error } = event.data as {
         positions: Array<{ id: string; x: number; y: number }>;
+        edgeRoutes?: Array<{ id: string; points: Array<{ x: number; y: number }> }>;
         error?: string;
       };
 
@@ -50,19 +53,25 @@ export function useAutoLayout() {
         return;
       }
 
+      // Store ELK-computed edge routes BEFORE updating positions,
+      // so buildRFNodesAndEdges can embed them directly into edge data props.
+      if (edgeRoutes && edgeRoutes.length > 0) {
+        const routeMap = new Map(edgeRoutes.map((r) => [r.id, r.points]));
+        useGraphStore.getState().setEdgeRoutes(routeMap);
+      }
+
       if (positions.length > 0) {
         const posMap = new Map(positions.map((p) => [p.id, { x: p.x, y: p.y }]));
         useGraphStore.getState().updateNodePositions(posMap);
       }
+
       useGraphStore.getState().setIsLayouting(false);
 
       // Only fitView on the very first layout to avoid resetting user's zoom
       if (!hasFittedAfterLayout.current) {
         hasFittedAfterLayout.current = true;
         requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            sigmaRef.current?.getCamera().animatedReset({ duration: 400 });
-          });
+          reactFlow.fitView({ duration: 400 });
         });
       }
     };
@@ -79,9 +88,9 @@ export function useAutoLayout() {
       workerRef.current?.terminate();
       workerRef.current = null;
     };
-  }, [clearSafetyTimer]);
+  }, [reactFlow]);
 
-  const runLayout = useCallback(() => {
+  function runLayout() {
     const graph = graphRef.current;
     if (!graph || graph.order === 0 || !workerRef.current) return;
 
@@ -102,10 +111,15 @@ export function useAutoLayout() {
     workerRef.current.postMessage({
       nodes: visibleNodeIds.map((id) => {
         const attrs = graph.getNodeAttributes(id);
+        // For individual (non-group) nodes, pass directory group for compound layout
+        const group = !attrs.isGroup && attrs.filePath
+          ? attrs.filePath.split('/').slice(0, -1).join('/') || '/'
+          : undefined;
         return {
           id,
           width: attrs.isGroup ? GROUP_NODE_WIDTH : NODE_WIDTH,
           height: attrs.isGroup ? GROUP_NODE_HEIGHT : NODE_HEIGHT,
+          group,
         };
       }),
       edges: graph.filterEdges((_, attrs, src, tgt) =>
@@ -117,7 +131,7 @@ export function useAutoLayout() {
       }),
       layoutMode,
     });
-  }, [clearSafetyTimer]);
+  }
 
   // Re-layout when layout mode changes
   useEffect(() => {
@@ -125,7 +139,7 @@ export function useAutoLayout() {
       (s) => s.layoutMode,
       () => runLayout(),
     );
-  }, [runLayout]);
+  }, []);
 
   // Re-layout when layoutVersion bumps (Reset Layout button)
   useEffect(() => {
@@ -133,7 +147,7 @@ export function useAutoLayout() {
       (s) => s.layoutVersion,
       () => runLayout(),
     );
-  }, [runLayout]);
+  }, []);
 
   // Auto-trigger layout once graphVersion bumps (new data pushed to graph)
   useEffect(() => {
@@ -145,7 +159,7 @@ export function useAutoLayout() {
         runLayout();
       },
     );
-  }, [runLayout]);
+  }, []);
 
   return { runLayout };
 }

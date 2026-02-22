@@ -1,18 +1,25 @@
 'use client';
 
-import { Braces, Crosshair, FolderOpen, FileCode, Layers, X } from 'lucide-react';
+import {
+  ArrowDownToLine, ArrowUpFromLine, Braces, Component, Route, Database, FileCode, Box,
+  Layers, Radio, Antenna, Globe, Variable, Type, Crosshair, FolderOpen, X,
+  ChevronDown, ChevronRight,
+} from 'lucide-react';
+import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { NODE_BG_CLASSES } from '@/lib/oir/constants';
 import { graphRef, useGraphStore } from '@/lib/stores/graph-store';
-import type { SigmaNodeAttributes } from '@/lib/stores/graph-store';
+import type { GraphNodeAttributes, GraphEdgeAttributes } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
+import { cn } from '@/lib/utils';
 
 /** Read node attributes directly from graphology */
-function getSelectedAttrs(): SigmaNodeAttributes | null {
+function getSelectedAttrs(): GraphNodeAttributes | null {
   const { selectedNodeIds } = useGraphStore.getState();
   if (selectedNodeIds.size === 0) return null;
   const graph = graphRef.current;
@@ -21,6 +28,75 @@ function getSelectedAttrs(): SigmaNodeAttributes | null {
   const firstId = selectedNodeIds.values().next().value as string;
   if (!graph.hasNode(firstId)) return null;
   return graph.getNodeAttributes(firstId);
+}
+
+const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
+  function: Braces,
+  component: Component,
+  route: Route,
+  database_query: Database,
+  module: FileCode,
+  class: Box,
+  middleware: Layers,
+  event_emitter: Radio,
+  event_listener: Antenna,
+  external_api: Globe,
+  variable: Variable,
+  type_def: Type,
+};
+
+interface ConnectedNode {
+  id: string;
+  label: string;
+  oirType: string;
+  edgeType: string;
+}
+
+function getConnectedNodes(nodeId: string): { incoming: ConnectedNode[]; outgoing: ConnectedNode[] } {
+  const graph = graphRef.current;
+  if (!graph || !graph.hasNode(nodeId)) return { incoming: [], outgoing: [] };
+
+  const incoming: ConnectedNode[] = [];
+  const outgoing: ConnectedNode[] = [];
+
+  graph.forEachInEdge(nodeId, (_edgeId, edgeAttrs: GraphEdgeAttributes, source) => {
+    if (source === nodeId) return;
+    if (!graph.hasNode(source)) return;
+    const srcAttrs = graph.getNodeAttributes(source);
+    if (srcAttrs.hidden || srcAttrs.isGroup) return;
+    incoming.push({
+      id: source,
+      label: srcAttrs.label,
+      oirType: srcAttrs.oirType ?? 'module',
+      edgeType: edgeAttrs.edgeType,
+    });
+  });
+
+  graph.forEachOutEdge(nodeId, (_edgeId, edgeAttrs: GraphEdgeAttributes, _source, target) => {
+    if (target === nodeId) return;
+    if (!graph.hasNode(target)) return;
+    const tgtAttrs = graph.getNodeAttributes(target);
+    if (tgtAttrs.hidden || tgtAttrs.isGroup) return;
+    outgoing.push({
+      id: target,
+      label: tgtAttrs.label,
+      oirType: tgtAttrs.oirType ?? 'module',
+      edgeType: edgeAttrs.edgeType,
+    });
+  });
+
+  // Deduplicate (multi-graph can have multiple edges between same nodes)
+  const dedup = (arr: ConnectedNode[]) => {
+    const seen = new Set<string>();
+    return arr.filter((n) => {
+      const key = `${n.id}:${n.edgeType}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  return { incoming: dedup(incoming), outgoing: dedup(outgoing) };
 }
 
 export function NodeDetailPanel() {
@@ -112,23 +188,20 @@ export function NodeDetailPanel() {
             </div>
           </div>
 
-          {/* Type breakdown */}
+          {/* Type breakdown — expandable to show individual child nodes */}
           {attrs.typeBreakdown && Object.keys(attrs.typeBreakdown).length > 0 && (
             <div className="space-y-1">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Type breakdown</p>
-              <div className="rounded-md bg-muted p-2 space-y-1">
+              <div className="rounded-md bg-muted p-2 space-y-0.5">
                 {Object.entries(attrs.typeBreakdown)
                   .sort(([, a], [, b]) => b - a)
                   .map(([type, count]) => (
-                    <div key={type} className="flex justify-between text-xs">
-                      <Badge
-                        variant="outline"
-                        className={`text-[9px] px-1.5 py-0 ${NODE_BG_CLASSES[type as keyof typeof NODE_BG_CLASSES] ?? ''}`}
-                      >
-                        {type.replace('_', ' ')}
-                      </Badge>
-                      <span className="font-mono text-muted-foreground">{count}</span>
-                    </div>
+                    <TypeBreakdownRow
+                      key={type}
+                      type={type}
+                      count={count}
+                      groupNodeId={selectedNodeId}
+                    />
                   ))}
               </div>
             </div>
@@ -255,7 +328,260 @@ export function NodeDetailPanel() {
             </div>
           </div>
         )}
+
+        {/* Connected Nodes */}
+        <ConnectedNodesList nodeId={selectedNodeId} />
       </div>
     </ScrollArea>
+  );
+}
+
+// ─── Type Breakdown Row (expandable) ─────────────────────────────────────────
+
+function getChildNodesOfType(groupNodeId: string, type: string): { id: string; label: string }[] {
+  const graph = graphRef.current;
+  if (!graph || !graph.hasNode(groupNodeId)) return [];
+  const childIds = graph.getNodeAttributes(groupNodeId).childNodeIds ?? [];
+  const result: { id: string; label: string }[] = [];
+  for (const id of childIds) {
+    if (!graph.hasNode(id)) continue;
+    const attrs = graph.getNodeAttributes(id);
+    if (attrs.oirType === type) {
+      result.push({ id, label: attrs.label });
+    }
+  }
+  return result.sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function TypeBreakdownRow({ type, count, groupNodeId }: { type: string; count: number; groupNodeId: string }) {
+  const [open, setOpen] = useState(false);
+  const Icon = ICON_MAP[type] ?? FileCode;
+  const bgClass = NODE_BG_CLASSES[type as keyof typeof NODE_BG_CLASSES] ?? '';
+
+  function handleChildClick(childId: string) {
+    // Switch to individual mode and focus on the child node
+    useGraphStore.getState().setViewMode('individual');
+    setTimeout(() => {
+      useGraphStore.getState().requestLayout();
+      setTimeout(() => {
+        useGraphStore.getState().selectNode(childId);
+        useGraphStore.getState().setFocusMode(childId);
+        useUIStore.getState().setDetailPanelOpen(true);
+        const graph = graphRef.current;
+        if (graph && graph.hasNode(childId)) {
+          const attrs = graph.getNodeAttributes(childId);
+          window.dispatchEvent(
+            new CustomEvent('omnious:center-node', { detail: { x: attrs.x, y: attrs.y } }),
+          );
+        }
+      }, 200);
+    }, 50);
+  }
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex items-center justify-between w-full text-xs rounded px-1 py-0.5 hover:bg-background/50 transition-colors"
+        >
+          <div className="flex items-center gap-1.5">
+            {open ? (
+              <ChevronDown className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+            ) : (
+              <ChevronRight className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+            )}
+            <Badge
+              variant="outline"
+              className={`text-[9px] px-1.5 py-0 ${bgClass}`}
+            >
+              {type.replace('_', ' ')}
+            </Badge>
+          </div>
+          <span className="font-mono text-muted-foreground">{count}</span>
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pl-4 space-y-0.5 mt-0.5">
+        {open && getChildNodesOfType(groupNodeId, type).map((child) => (
+          <button
+            key={child.id}
+            type="button"
+            onClick={() => handleChildClick(child.id)}
+            className="flex items-center gap-1.5 w-full rounded px-1.5 py-1 text-xs text-left hover:bg-background/70 transition-colors group"
+          >
+            <div className={cn('flex items-center justify-center rounded p-0.5 shrink-0', bgClass)}>
+              <Icon className="h-2.5 w-2.5" />
+            </div>
+            <span className="truncate group-hover:text-foreground">{child.label}</span>
+          </button>
+        ))}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+// ─── Connected Nodes Sub-component ──────────────────────────────────────────
+
+const COLLAPSE_THRESHOLD = 6;
+
+function ConnectedNodesList({ nodeId }: { nodeId: string }) {
+  const { incoming, outgoing } = getConnectedNodes(nodeId);
+  const [incomingSectionOpen, setIncomingSectionOpen] = useState(true);
+  const [outgoingSectionOpen, setOutgoingSectionOpen] = useState(true);
+  const [incomingOpen, setIncomingOpen] = useState(true);
+  const [outgoingOpen, setOutgoingOpen] = useState(true);
+
+  if (incoming.length === 0 && outgoing.length === 0) return null;
+
+  function handleNavigate(targetId: string) {
+    // Enter focus mode on the clicked node (shows only its connections)
+    useGraphStore.getState().setFocusMode(targetId);
+    useGraphStore.getState().highlightConnectedEdges(targetId);
+    useUIStore.getState().setDetailPanelOpen(true);
+    // Scroll to the node on the canvas (left-side positioning)
+    const graph = graphRef.current;
+    if (graph && graph.hasNode(targetId)) {
+      const attrs = graph.getNodeAttributes(targetId);
+      window.dispatchEvent(
+        new CustomEvent('omnious:center-node', { detail: { x: attrs.x, y: attrs.y } }),
+      );
+    }
+  }
+
+  return (
+    <>
+      <Separator />
+
+      {/* Incoming connections */}
+      {incoming.length > 0 && (
+        <Collapsible open={incomingSectionOpen} onOpenChange={setIncomingSectionOpen}>
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex items-center gap-1.5 w-full hover:bg-muted/50 rounded-md px-1 py-0.5 transition-colors"
+            >
+              {incomingSectionOpen ? (
+                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-3 w-3 text-muted-foreground" />
+              )}
+              <ArrowDownToLine className="h-3.5 w-3.5 text-muted-foreground" />
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Incoming ({incoming.length})
+              </p>
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-1.5 mt-1">
+            {incoming.length <= COLLAPSE_THRESHOLD ? (
+              <div className="space-y-0.5">
+                {incoming.map((node) => (
+                  <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
+                ))}
+              </div>
+            ) : (
+              <Collapsible open={incomingOpen} onOpenChange={setIncomingOpen}>
+                <div className="space-y-0.5">
+                  {incoming.slice(0, COLLAPSE_THRESHOLD).map((node) => (
+                    <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
+                  ))}
+                </div>
+                <CollapsibleContent className="space-y-0.5 mt-0.5">
+                  {incoming.slice(COLLAPSE_THRESHOLD).map((node) => (
+                    <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
+                  ))}
+                </CollapsibleContent>
+                <CollapsibleTrigger asChild>
+                  <Button variant="ghost" size="sm" className="w-full h-6 text-xs text-muted-foreground mt-1">
+                    {incomingOpen ? 'Show less' : `Show ${incoming.length - COLLAPSE_THRESHOLD} more…`}
+                  </Button>
+                </CollapsibleTrigger>
+              </Collapsible>
+            )}
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+
+      {/* Outgoing connections */}
+      {outgoing.length > 0 && (
+        <Collapsible open={outgoingSectionOpen} onOpenChange={setOutgoingSectionOpen}>
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex items-center gap-1.5 w-full hover:bg-muted/50 rounded-md px-1 py-0.5 transition-colors"
+            >
+              {outgoingSectionOpen ? (
+                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-3 w-3 text-muted-foreground" />
+              )}
+              <ArrowUpFromLine className="h-3.5 w-3.5 text-muted-foreground" />
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Outgoing ({outgoing.length})
+              </p>
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-1.5 mt-1">
+            {outgoing.length <= COLLAPSE_THRESHOLD ? (
+              <div className="space-y-0.5">
+                {outgoing.map((node) => (
+                  <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
+                ))}
+              </div>
+            ) : (
+              <Collapsible open={outgoingOpen} onOpenChange={setOutgoingOpen}>
+                <div className="space-y-0.5">
+                  {outgoing.slice(0, COLLAPSE_THRESHOLD).map((node) => (
+                    <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
+                  ))}
+                </div>
+                <CollapsibleContent className="space-y-0.5 mt-0.5">
+                  {outgoing.slice(COLLAPSE_THRESHOLD).map((node) => (
+                    <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
+                  ))}
+                </CollapsibleContent>
+                <CollapsibleTrigger asChild>
+                  <Button variant="ghost" size="sm" className="w-full h-6 text-xs text-muted-foreground mt-1">
+                    {outgoingOpen ? 'Show less' : `Show ${outgoing.length - COLLAPSE_THRESHOLD} more…`}
+                  </Button>
+                </CollapsibleTrigger>
+              </Collapsible>
+            )}
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </>
+  );
+}
+
+function ConnectedNodeItem({
+  node,
+  onNavigate,
+}: {
+  node: ConnectedNode;
+  onNavigate: (id: string) => void;
+}) {
+  const Icon = ICON_MAP[node.oirType] ?? FileCode;
+  const bgClass = NODE_BG_CLASSES[node.oirType as keyof typeof NODE_BG_CLASSES] ?? '';
+
+  return (
+    <button
+      type="button"
+      onClick={() => onNavigate(node.id)}
+      className={cn(
+        'flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors',
+        'hover:bg-muted group',
+      )}
+    >
+      <div className={cn('flex items-center justify-center rounded p-1 shrink-0', bgClass)}>
+        <Icon className="h-3 w-3" />
+      </div>
+      <span className="font-medium truncate flex-1 group-hover:text-foreground">{node.label}</span>
+      <Badge
+        variant="outline"
+        className="text-[8px] px-1 py-0 leading-tight opacity-60 shrink-0"
+      >
+        {node.edgeType.replace('_', ' ')}
+      </Badge>
+    </button>
   );
 }

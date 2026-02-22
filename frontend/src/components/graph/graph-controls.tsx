@@ -4,7 +4,9 @@ import {
   ArrowDownUp,
   ArrowLeftRight,
   Crosshair,
+  Filter,
   Flame,
+  Keyboard,
   Layers,
   Maximize,
   RotateCcw,
@@ -13,12 +15,13 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import { useCallback } from 'react';
+import { useReactFlow } from '@xyflow/react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Toggle } from '@/components/ui/toggle';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
+import { graphRef, useGraphStore } from '@/lib/stores/graph-store';
+import { useUIStore } from '@/lib/stores/ui-store';
 
 export function GraphControls() {
   const heatmapActive = useGraphStore((s) => s.heatmapActive);
@@ -27,50 +30,97 @@ export function GraphControls() {
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
   const nodeCount = useGraphStore((s) => s.nodeCount);
   const viewMode = useGraphStore((s) => s.viewMode);
+  const filtersOpen = useUIStore((s) => s.filtersOpen);
+  const reactFlow = useReactFlow();
 
-  const handleFitView = useCallback(() => {
-    sigmaRef.current?.getCamera().animatedReset({ duration: 400 });
-  }, []);
+  function handleFitView() {
+    reactFlow.fitView({ duration: 400 });
+  }
 
-  const handleZoomIn = useCallback(() => {
-    sigmaRef.current?.getCamera().animatedZoom({ factor: 1.5, duration: 200 });
-  }, []);
+  function handleZoomIn() {
+    reactFlow.zoomIn({ duration: 200 });
+  }
 
-  const handleZoomOut = useCallback(() => {
-    sigmaRef.current?.getCamera().animatedUnzoom({ factor: 1.5, duration: 200 });
-  }, []);
+  function handleZoomOut() {
+    reactFlow.zoomOut({ duration: 200 });
+  }
 
-  const handleResetLayout = useCallback(() => {
+  function handleResetLayout() {
     useGraphStore.getState().requestLayout();
-  }, []);
+  }
 
-  const handleToggleViewMode = useCallback(() => {
+  function handleToggleViewMode() {
     const store = useGraphStore.getState();
     const next = store.viewMode === 'grouped' ? 'individual' : 'grouped';
+    const currentFocusId = store.focusedNodeId;
+    const graph = graphRef.current;
+
     store.setViewMode(next);
-    // Trigger layout for the new node set
-    setTimeout(() => store.requestLayout(), 50);
-  }, []);
+    setTimeout(() => {
+      store.requestLayout();
 
-  const handleToggleHeatmap = useCallback(() => {
+      // If in focus mode, transition focus to the corresponding node in the new view
+      if (currentFocusId && graph) {
+        setTimeout(() => {
+          if (next === 'grouped') {
+            // All → Grouped: find the group containing the focused individual node
+            const attrs = graph.hasNode(currentFocusId)
+              ? graph.getNodeAttributes(currentFocusId)
+              : null;
+            let groupId: string | null = null;
+            if (attrs?.filePath) {
+              const dir = attrs.filePath.split('/').slice(0, -1).join('/') || '/';
+              groupId = `group:${dir}`;
+            }
+            // Fallback: scan groups for one containing this node
+            if (!groupId || !graph.hasNode(groupId)) {
+              graph.forEachNode((id, a) => {
+                if (a.isGroup && a.childNodeIds?.includes(currentFocusId)) {
+                  groupId = id;
+                }
+              });
+            }
+            if (groupId && graph.hasNode(groupId)) {
+              useGraphStore.getState().selectNode(groupId);
+              useGraphStore.getState().setFocusMode(groupId);
+              useUIStore.getState().setDetailPanelOpen(true);
+            }
+          } else {
+            // Grouped → All: focus the first child of the focused group
+            const groupAttrs = graph.hasNode(currentFocusId)
+              ? graph.getNodeAttributes(currentFocusId)
+              : null;
+            const firstChild = groupAttrs?.childNodeIds?.[0];
+            if (firstChild && graph.hasNode(firstChild)) {
+              useGraphStore.getState().selectNode(firstChild);
+              useGraphStore.getState().setFocusMode(firstChild);
+              useUIStore.getState().setDetailPanelOpen(true);
+            }
+          }
+        }, 150);
+      }
+    }, 50);
+  }
+
+  function handleToggleHeatmap() {
     useGraphStore.getState().toggleHeatmap();
-  }, []);
+  }
 
-  const handleLayoutTB = useCallback(() => {
+  function handleLayoutTB() {
     useGraphStore.getState().setLayoutMode('layered-tb');
-  }, []);
+  }
 
-  const handleLayoutLR = useCallback(() => {
+  function handleLayoutLR() {
     useGraphStore.getState().setLayoutMode('layered-lr');
-  }, []);
+  }
 
-  const handleSearch = useCallback(() => {
+  function handleSearch() {
     useGraphStore.getState().setNodeSearchOpen(true);
-  }, []);
+  }
 
-  const handleClearFocus = useCallback(() => {
+  function handleClearFocus() {
     useGraphStore.getState().clearFocusMode();
-  }, []);
+  }
 
   return (
     <div className="flex items-center gap-1 border-b bg-background/95 backdrop-blur-sm px-3 py-1.5">
@@ -225,9 +275,43 @@ export function GraphControls() {
         </Tooltip>
       )}
 
-      {/* Node count */}
-      <div className="ml-auto text-xs text-muted-foreground tabular-nums">
-        {nodeCount > 0 && <span>{nodeCount} nodes</span>}
+      <div className="ml-auto flex items-center gap-1">
+        {/* Filter toggle */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Toggle
+              size="sm"
+              pressed={filtersOpen}
+              onPressedChange={() => useUIStore.getState().toggleFilters()}
+              className="h-7 w-7 p-0"
+            >
+              <Filter className="h-4 w-4" />
+            </Toggle>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Toggle filters</TooltipContent>
+        </Tooltip>
+
+        {/* Keyboard shortcuts */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => useUIStore.getState().setKeyboardShortcutsOpen(true)}
+            >
+              <Keyboard className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Keyboard shortcuts (?)</TooltipContent>
+        </Tooltip>
+
+        {/* Node count */}
+        {nodeCount > 0 && (
+          <span className="text-xs text-muted-foreground tabular-nums ml-1">
+            {nodeCount} nodes
+          </span>
+        )}
       </div>
     </div>
   );

@@ -26,7 +26,7 @@ export default function GraphPage() {
 
   if (isLoading) {
     return (
-      <div className="h-[calc(100vh-6rem)] flex items-center justify-center">
+      <div className="h-[100dvh] flex items-center justify-center">
         <div className="space-y-4 text-center">
           <Skeleton className="h-16 w-16 rounded-full mx-auto" />
           <Skeleton className="h-4 w-48 mx-auto" />
@@ -38,7 +38,7 @@ export default function GraphPage() {
 
   if (!hasNodes) {
     return (
-      <div className="h-[calc(100vh-6rem)] overflow-auto">
+      <div className="h-[100dvh] overflow-auto">
         <EmptyProjectState
           projectName={projectQuery.data?.name ?? projectSlug ?? 'Project'}
           projectSlug={projectSlug ?? ''}
@@ -50,7 +50,7 @@ export default function GraphPage() {
   }
 
   return (
-    <div className="h-[calc(100vh-6rem)]">
+    <div className="h-[100dvh]">
       <GraphCanvas />
     </div>
   );

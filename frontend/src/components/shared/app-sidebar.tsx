@@ -13,6 +13,8 @@ import {
   GitGraph,
   LogOut,
   Moon,
+  PanelLeftClose,
+  PanelLeft,
   Plus,
   Settings,
   Sun,
@@ -22,7 +24,6 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import { CreateProjectDialog } from '@/components/project/create-project-dialog';
-import { deriveSyncState, SyncStatusBadge } from '@/components/project/sync-status-badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -48,7 +49,9 @@ import {
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
+  SidebarRail,
   SidebarSeparator,
+  useSidebar,
 } from '@/components/ui/sidebar';
 import { CreateWorkspaceDialog } from '@/components/workspace/create-workspace-dialog';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
@@ -68,6 +71,7 @@ export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { theme, setTheme } = useTheme();
+  const { toggleSidebar, state: sidebarState } = useSidebar();
 
   const workspaceId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const workspaceSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -184,7 +188,7 @@ export function AppSidebar() {
           <SidebarGroup>
             <SidebarGroupLabel>Projects</SidebarGroupLabel>
             <SidebarGroupContent>
-              <ScrollArea className="max-h-70">
+              <ScrollArea className="max-h-70 overflow-x-hidden">
                 <SidebarMenu>
                   {projects?.map((project) => {
                     const isActiveProject = project.slug === projectSlug;
@@ -198,10 +202,9 @@ export function AppSidebar() {
                               tooltip={project.name}
                               onClick={() => handleProjectSelect(project.id, project.slug)}
                             >
-                              <SyncStatusBadge
-                                compact
-                                syncState={deriveSyncState(project.status)}
-                              />
+                              <div className="flex aspect-square size-5 items-center justify-center rounded bg-muted text-[10px] font-semibold uppercase shrink-0">
+                                {project.name.charAt(0)}
+                              </div>
                               <span className="truncate">{project.name}</span>
                               {isActiveProject && (
                                 <ChevronDown className="ml-auto size-4 transition-transform" />
@@ -295,9 +298,20 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      {/* ── Footer: User Profile ── */}
+      {/* ── Footer: Collapse Toggle + User Profile ── */}
       <SidebarFooter>
         <SidebarMenu>
+          {/* Collapse/Expand toggle */}
+          <SidebarMenuItem>
+            <SidebarMenuButton onClick={toggleSidebar} tooltip="Toggle sidebar">
+              {sidebarState === 'collapsed' ? (
+                <PanelLeft className="size-6" />
+              ) : (
+                <PanelLeftClose className="size-6" />
+              )}
+              <span>Collapse</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -332,6 +346,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   );
 }

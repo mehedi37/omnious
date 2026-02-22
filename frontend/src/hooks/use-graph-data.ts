@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useMemo } from 'react';
+import { useEffect } from 'react';
 import {
   applyErrorHeatmapToGraph,
   pushCodesToGraph,
 } from '@/lib/oir/transforms';
-import { getOrCreateGraph, sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
+import { getOrCreateGraph, useGraphStore } from '@/lib/stores/graph-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
 
@@ -46,15 +46,12 @@ export function useGraphData() {
   );
 
   // Merge all pages into one flat array
-  const allNodes = useMemo(
-    () => [
-      ...(page1.data?.nodes ?? []),
-      ...(page2.data?.nodes ?? []),
-      ...(page3.data?.nodes ?? []),
-      ...(page4.data?.nodes ?? []),
-    ],
-    [page1.data, page2.data, page3.data, page4.data],
-  );
+  const allNodes = [
+    ...(page1.data?.nodes ?? []),
+    ...(page2.data?.nodes ?? []),
+    ...(page3.data?.nodes ?? []),
+    ...(page4.data?.nodes ?? []),
+  ];
 
   const edgesQuery = trpc.graph.listEdges.useQuery(
     { projectId: currentProjectId ?? '', limit: 1000, offset: 0 },
@@ -98,6 +95,9 @@ export function useGraphData() {
       edgeCount: graph.size,
     });
 
+    // Sync graphology → React Flow nodes/edges
+    useGraphStore.getState().syncFromGraphology();
+
     // Request layout after data has been pushed
     setTimeout(() => useGraphStore.getState().requestLayout(), 50);
   }, [allNodes, activePageLoading, edgesQuery.data, heatmapActive, heatmapQuery.data]);
@@ -112,9 +112,8 @@ export function useGraphData() {
       heatmapQuery.data as import('@/lib/oir/types').ErrorHeatmapEntry[],
       graph,
     );
-    // Trigger visual refresh via sigma
-    sigmaRef.current?.refresh();
-    sigmaRef.current?.refresh();
+    // Trigger visual refresh via React Flow sync
+    useGraphStore.getState().syncFromGraphology();
   }, [heatmapActive, heatmapQuery.data]);
 
   return {

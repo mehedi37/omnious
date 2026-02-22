@@ -1,11 +1,12 @@
 'use client';
 
 import { Search, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useReactFlow } from '@xyflow/react';
 import { Badge } from '@/components/ui/badge';
 import { NODE_BG_CLASSES } from '@/lib/oir/constants';
-import { graphRef, sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
-import type { SigmaNodeAttributes } from '@/lib/stores/graph-store';
+import { graphRef, useGraphStore } from '@/lib/stores/graph-store';
+import type { GraphNodeAttributes } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
 interface SearchResult {
@@ -25,13 +26,14 @@ export function GraphSearch() {
   // Subscribe to graphVersion to rebuild results when graph changes
   useGraphStore((s) => s.graphVersion);
 
+  const reactFlow = useReactFlow();
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   // Filter nodes by name/file/type match — read directly from graphology
-  const results: SearchResult[] = useMemo(() => {
+  const results: SearchResult[] = (() => {
     if (!query.trim()) return [];
     const graph = graphRef.current;
     if (!graph) return [];
@@ -39,7 +41,7 @@ export function GraphSearch() {
     const q = query.toLowerCase();
     const matches: SearchResult[] = [];
 
-    graph.forEachNode((nodeId, attrs: SigmaNodeAttributes) => {
+    graph.forEachNode((nodeId, attrs: GraphNodeAttributes) => {
       if (attrs.hidden) return; // skip hidden nodes
       const typeStr = attrs.isGroup ? (attrs.dominantType ?? 'group') : (attrs.oirType ?? '');
       const pathStr = attrs.isGroup ? (attrs.directory ?? '') : (attrs.filePath ?? '');
@@ -54,7 +56,7 @@ export function GraphSearch() {
     });
 
     return matches.slice(0, 30);
-  }, [query]);
+  })();
 
   // Auto-focus input when opened
   useEffect(() => {
@@ -72,50 +74,43 @@ export function GraphSearch() {
     item?.scrollIntoView({ block: 'nearest' });
   }, [selectedIndex]);
 
-  const close = useCallback(() => {
+  function close() {
     useGraphStore.getState().setNodeSearchOpen(false);
     setQuery('');
-  }, []);
+  }
 
-  const navigateToNode = useCallback(
-    (nodeId: string) => {
-      const graph = graphRef.current;
-      const sigma = sigmaRef.current;
-      if (!graph || !sigma || !graph.hasNode(nodeId)) return;
+  function navigateToNode(nodeId: string) {
+    const graph = graphRef.current;
+    if (!graph || !graph.hasNode(nodeId)) return;
 
-      useGraphStore.getState().selectNode(nodeId);
-      useUIStore.getState().setDetailPanelOpen(true);
+    useGraphStore.getState().selectNode(nodeId);
+    useUIStore.getState().setDetailPanelOpen(true);
 
-      const attrs = graph.getNodeAttributes(nodeId);
-      sigma.getCamera().animate({ x: attrs.x, y: attrs.y, ratio: 0.3 }, { duration: 400 });
-      close();
-    },
-    [close],
-  );
+    const attrs = graph.getNodeAttributes(nodeId);
+    reactFlow.setCenter(attrs.x, attrs.y, { zoom: 2, duration: 400 });
+    close();
+  }
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      switch (e.key) {
-        case 'Escape':
-          close();
-          break;
-        case 'ArrowDown':
-          e.preventDefault();
-          setSelectedIndex((i) => Math.min(i + 1, results.length - 1));
-          break;
-        case 'ArrowUp':
-          e.preventDefault();
-          setSelectedIndex((i) => Math.max(i - 1, 0));
-          break;
-        case 'Enter':
-          if (results[selectedIndex]) {
-            navigateToNode(results[selectedIndex].id);
-          }
-          break;
-      }
-    },
-    [results, selectedIndex, close, navigateToNode],
-  );
+  function handleKeyDown(e: React.KeyboardEvent) {
+    switch (e.key) {
+      case 'Escape':
+        close();
+        break;
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedIndex((i) => Math.min(i + 1, results.length - 1));
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedIndex((i) => Math.max(i - 1, 0));
+        break;
+      case 'Enter':
+        if (results[selectedIndex]) {
+          navigateToNode(results[selectedIndex].id);
+        }
+        break;
+    }
+  }
 
   if (!open) return null;
 
