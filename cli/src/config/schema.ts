@@ -12,7 +12,9 @@ export const configSchema = z.object({
   project: z
     .object({
       id: z.string().uuid().optional(),
+      name: z.string().optional(),
       workspace: z.string().optional(),
+      workspace_slug: z.string().optional(),
       slug: z.string().optional(),
     })
     .optional(),
@@ -27,13 +29,15 @@ export const configSchema = z.object({
     .object({
       include: z
         .array(z.string())
-        .default(['src/**/*.{ts,tsx,js,jsx}']),
+        .default(['**/*']),
       exclude: z
         .array(z.string())
         .default([
           '**/*.test.{ts,tsx,js,jsx}',
           '**/*.spec.{ts,tsx,js,jsx}',
           '**/*.d.ts',
+          '**/*_test.go',
+          '**/*_test.py',
           '**/node_modules/**',
           '**/dist/**',
           '**/build/**',
@@ -75,9 +79,10 @@ export function defaultConfigYaml(opts: {
   apiUrl: string;
   projectKey?: string;
   projectId?: string;
+  projectName?: string;
   workspace?: string;
+  workspaceSlug?: string;
   slug?: string;
-  include?: string[];
 }): string {
   const lines = [
     '# .omnious.yml — Omnious project configuration',
@@ -94,25 +99,27 @@ export function defaultConfigYaml(opts: {
 
   lines.push('');
 
-  if (opts.projectId || opts.workspace || opts.slug) {
+  if (opts.projectId || opts.projectName || opts.workspace || opts.workspaceSlug || opts.slug) {
     lines.push('# Project identification');
     lines.push('project:');
     if (opts.projectId) lines.push(`  id: "${opts.projectId}"`);
+    if (opts.projectName) lines.push(`  name: "${opts.projectName}"`);
     if (opts.workspace) lines.push(`  workspace: "${opts.workspace}"`);
+    if (opts.workspaceSlug) lines.push(`  workspace_slug: "${opts.workspaceSlug}"`);
     if (opts.slug) lines.push(`  slug: "${opts.slug}"`);
     lines.push('');
   }
 
   lines.push('# Indexing configuration');
+  lines.push('# Omnious automatically discovers all source files using .gitignore.');
+  lines.push('# No include patterns needed — just exclude what you don\'t want.');
   lines.push('index:');
-  lines.push('  include:');
-  for (const pattern of opts.include ?? ['src/**/*.{ts,tsx,js,jsx}']) {
-    lines.push(`    - "${pattern}"`);
-  }
   lines.push('  exclude:');
   lines.push('    - "**/*.test.{ts,tsx,js,jsx}"');
   lines.push('    - "**/*.spec.{ts,tsx,js,jsx}"');
   lines.push('    - "**/*.d.ts"');
+  lines.push('    - "**/*_test.go"');
+  lines.push('    - "**/*_test.py"');
   lines.push('    - "**/node_modules/**"');
   lines.push('    - "**/dist/**"');
   lines.push('    - "**/build/**"');

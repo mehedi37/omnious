@@ -46,7 +46,15 @@ export class OmniousApiClient {
     }
 
     // tRPC v11 + superjson: unwrap { json: <data> } envelope
-    return json.result!.data.json;
+    const data = json.result?.data?.json;
+    if (data === undefined) {
+      throw new ApiError(
+        `Unexpected response structure from ${procedure}`,
+        res.status,
+        'PARSE_ERROR',
+      );
+    }
+    return data;
   }
 
   /**
@@ -74,7 +82,15 @@ export class OmniousApiClient {
     }
 
     // tRPC v11 + superjson: unwrap { json: <data> } envelope
-    return json.result!.data.json;
+    const data = json.result?.data?.json;
+    if (data === undefined) {
+      throw new ApiError(
+        `Unexpected response structure from ${procedure}`,
+        res.status,
+        'PARSE_ERROR',
+      );
+    }
+    return data;
   }
 
   /** Validate API key and get project info */
@@ -98,6 +114,10 @@ export class OmniousApiClient {
       commit_message?: string;
     },
     indexHash?: string,
+    /** File paths deleted since last push — backend will clean up their nodes */
+    staleFilePaths: string[] = [],
+    /** File paths whose content changed — backend will drop their outgoing edges before re-inserting */
+    changedFilePaths: string[] = [],
   ): Promise<PushResult> {
     return this.mutate('graph.pushFromCLI', {
       projectApiKey: this.apiKey,
@@ -121,6 +141,8 @@ export class OmniousApiClient {
       })),
       git_context: gitContext,
       index_hash: indexHash,
+      stale_file_paths: staleFilePaths,
+      changed_file_paths: changedFilePaths,
     });
   }
 

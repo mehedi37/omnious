@@ -58,6 +58,18 @@ export function useGraphData() {
     { enabled: !!currentProjectId, staleTime: 30_000 },
   );
 
+  // Page 2 for edges (when total > 1000)
+  const edgesTotal = edgesQuery.data?.total ?? 0;
+  const edgesPage2 = trpc.graph.listEdges.useQuery(
+    { projectId: currentProjectId ?? '', limit: 1000, offset: 1000 },
+    { enabled: !!currentProjectId && edgesTotal > 1000, staleTime: 30_000 },
+  );
+
+  const allEdges = [
+    ...(edgesQuery.data?.edges ?? []),
+    ...(edgesPage2.data?.edges ?? []),
+  ];
+
   const heatmapQuery = trpc.error.heatmap.useQuery(
     { projectId: currentProjectId ?? '' },
     { enabled: !!currentProjectId && heatmapActive, staleTime: 15_000 },
@@ -73,10 +85,10 @@ export function useGraphData() {
   // Push nodes + edges into graphology when all pages are loaded
   useEffect(() => {
     if (activePageLoading || allNodes.length === 0) return;
-    if (!edgesQuery.data?.edges) return;
+    if (allEdges.length === 0 && edgesQuery.isLoading) return;
 
     const graph = getOrCreateGraph();
-    const codeEdges = edgesQuery.data.edges as import('@/lib/oir/types').CodeEdge[];
+    const codeEdges = allEdges as import('@/lib/oir/types').CodeEdge[];
     const codeNodes = allNodes as import('@/lib/oir/types').CodeNode[];
     const currentViewMode = useGraphStore.getState().viewMode;
 
@@ -100,7 +112,7 @@ export function useGraphData() {
 
     // Request layout after data has been pushed
     setTimeout(() => useGraphStore.getState().requestLayout(), 50);
-  }, [allNodes, activePageLoading, edgesQuery.data, heatmapActive, heatmapQuery.data]);
+  }, [allNodes, activePageLoading, allEdges, edgesQuery.isLoading, heatmapActive, heatmapQuery.data]);
 
   // Re-apply heatmap when it is toggled on while data is already present
   useEffect(() => {
@@ -121,8 +133,9 @@ export function useGraphData() {
     isError: page1.isError || edgesQuery.isError,
     error: page1.error ?? edgesQuery.error,
     nodeCount: allNodes.length,
-    edgeCount: edgesQuery.data?.edges?.length ?? 0,
+    edgeCount: allEdges.length,
+    edgesTotal,
     /** Raw code edges from the DB — used by trace replay to map spans to edges */
-    rawEdges: (edgesQuery.data?.edges ?? []) as import('@/lib/oir/types').CodeEdge[],
+    rawEdges: allEdges as import('@/lib/oir/types').CodeEdge[],
   };
 }

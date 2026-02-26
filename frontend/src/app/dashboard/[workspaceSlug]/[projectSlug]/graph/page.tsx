@@ -21,7 +21,13 @@ export default function GraphPage() {
     { enabled: !!projectId, staleTime: 30_000 },
   );
 
-  const isLoading = nodeCountQuery.isLoading || projectQuery.isLoading;
+  // While projectId is null the store hasn't hydrated yet from localStorage —
+  // treat that as loading to avoid a flash of the empty state.
+  const isLoading =
+    !projectId ||
+    nodeCountQuery.isLoading ||
+    projectQuery.isLoading;
+
   const hasNodes = (nodeCountQuery.data?.total ?? 0) > 0;
 
   if (isLoading) {

@@ -21,6 +21,8 @@ interface PushOptions {
   force?: boolean;
   dryRun?: boolean;
   verbose?: boolean;
+  /** Internal: suppress banner when called from `omnious sync` */
+  _skipBanner?: boolean;
 }
 
 interface PushState {
@@ -28,6 +30,8 @@ interface PushState {
   pushed_at: string;
   nodes_pushed: number;
   edges_pushed: number;
+  /** Per-file content hashes from the last successful push (enables differential push) */
+  file_hashes: Record<string, string>;
 }
 
 /**
@@ -37,6 +41,11 @@ interface PushState {
  */
 export async function pushCommand(opts: PushOptions): Promise<void> {
   const cwd = process.cwd();
+  if (!opts._skipBanner) {
+    logger.banner();
+    console.log('');
+  }
+
   const spinner = ora({ isSilent: !!process.env['CI'] });
 
   // Load config
@@ -51,7 +60,7 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   if (!apiKey) {
     logger.error('No API key found.');
     logger.dim(
-      'Set OMNIOUS_PROJECT_KEY env var, run `omnious login`, or add project_key to .omnious.yml',
+      '  Set OMNIOUS_PROJECT_KEY env var, run `omnious login`, or add project_key to .omnious.yml',
     );
     process.exitCode = 1;
     return;
@@ -65,13 +74,45 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
     return;
   }
 
-  // Check if push needed (unless --force)
-  if (!opts.force) {
-    const lastPush = loadPushState(cwd);
-    if (lastPush && lastPush.project_hash === index.project_hash) {
-      logger.info('Already up to date (project hash unchanged).');
-      logger.dim('Use --force to push anyway.');
-      return;
+  // ── Differential diff: determine changed / stale files ──
+  const lastPush = loadPushState(cwd);
+
+  // Fast-path: project hash matches and not --force
+  if (!opts.force && lastPush && lastPush.project_hash === index.project_hash) {
+    logger.infoBox(
+      [
+        'Project hash unchanged — already up to date.',
+        `${logger.theme.muted('Use')} ${logger.theme.accent('--force')} ${logger.theme.muted('to push anyway.')}`,
+      ],
+      '● Up to Date',
+    );
+    return;
+  }
+
+  const prevFileHashes: Record<string, string> = lastPush?.file_hashes ?? {};
+
+  // Files in current index whose hash differs from last push (new or modified)
+  const changedFilePaths = new Set<string>(
+    Object.entries(index.files)
+      .filter(([fp, hash]) => prevFileHashes[fp] !== hash)
+      .map(([fp]) => fp),
+  );
+
+  // Files that existed in the last push but are gone now (deleted/renamed)
+  const staleFilePaths = Object.keys(prevFileHashes).filter(
+    (fp) => !(fp in index.files),
+  );
+
+  // On first push (no history) or --force: treat every file as changed
+  const isFullPush = opts.force || !lastPush;
+
+  if (opts.verbose) {
+    if (!isFullPush) {
+      const changed = changedFilePaths.size;
+      const stale = staleFilePaths.length;
+      logger.dim(`  Differential: ${changed} changed file(s), ${stale} deleted file(s)`);
+    } else {
+      logger.dim('  Full push (no prior push state or --force)');
     }
   }
 
@@ -79,7 +120,7 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   const gitContext = getGitContext(cwd);
   if (gitContext && opts.verbose) {
     logger.dim(
-      `Git: ${gitContext.branch} @ ${gitContext.commit_hash?.slice(0, 7)}`,
+      `  Git: ${gitContext.branch} @ ${gitContext.commit_hash?.slice(0, 7)}`,
     );
   }
 
@@ -87,7 +128,7 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   const client = new OmniousApiClient(config.api.url, apiKey);
 
   // Health check
-  spinner.start('Connecting to Omnious...');
+  spinner.start('Connecting to Omnious…');
   const healthy = await client.healthCheck();
   if (!healthy) {
     spinner.fail(`Cannot reach API at ${config.api.url}`);
@@ -96,73 +137,138 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   }
   spinner.succeed('Connected');
 
+  // Select nodes/edges to push (differential or full)
+  const nodesToPush = isFullPush
+    ? index.nodes
+    : index.nodes.filter((n) => changedFilePaths.has(n.file_path));
+
+  // Edges to push: those originating from a changed node
+  const changedOirIds = new Set(nodesToPush.map((n) => n.oir_id));
+  const edgesToPush = isFullPush
+    ? index.edges
+    : index.edges.filter((e) => changedOirIds.has(e.source_oir_id));
+
   if (opts.dryRun) {
-    logger.info('');
-    logger.info(
-      `Would push ${index.nodes.length} nodes + ${index.edges.length} edges`,
-    );
-    logger.info('(dry run — nothing sent)');
+    console.log('');
+    const dryLines = [
+      `Would push ${logger.theme.brand(String(nodesToPush.length))} nodes + ${logger.theme.brand(String(edgesToPush.length))} edges`,
+    ];
+    if (!isFullPush) {
+      dryLines.push(`(${changedFilePaths.size} changed file(s) out of ${Object.keys(index.files).length} total)`);
+    }
+    if (staleFilePaths.length > 0) {
+      dryLines.push(`Would delete nodes from ${staleFilePaths.length} removed file(s)`);
+    }
+    dryLines.push('Nothing sent.');
+    logger.warnBox(dryLines, '⚠ Dry Run');
     return;
   }
 
-  // Push in batches
-  const totalNodes = index.nodes.length;
-  const totalEdges = index.edges.length;
+  const totalNodes = nodesToPush.length;
+  const totalEdges = edgesToPush.length;
   let totalNodesUpserted = 0;
   let totalEdgesUpserted = 0;
   let totalEdgesSkipped = 0;
 
-  spinner.start(`Pushing ${totalNodes} nodes + ${totalEdges} edges...`);
+  // Phase 1: Push changed nodes
+  // First batch also carries cleanup metadata (stale + changed file paths for the backend)
+  const nodeChunks = chunk(nodesToPush, BATCH_SIZE);
+  if (nodeChunks.length > 0) {
+    spinner.start(`Pushing ${totalNodes} node(s)…`);
+    for (let i = 0; i < nodeChunks.length; i++) {
+      try {
+        const result = await client.pushGraph(
+          nodeChunks[i],
+          [],
+          i === 0 ? gitContext ?? undefined : undefined,
+          i === 0 ? index.project_hash : undefined,
+          i === 0 ? staleFilePaths : [],
+          i === 0 ? [...changedFilePaths] : [],
+        );
+        totalNodesUpserted += result.nodes_upserted;
 
-  // Batch nodes and edges together for pushGraph calls
-  const nodeChunks = chunk(index.nodes, BATCH_SIZE);
-  const edgeChunks = chunk(index.edges, BATCH_SIZE);
-  const maxBatches = Math.max(nodeChunks.length, edgeChunks.length, 1);
-
-  for (let i = 0; i < maxBatches; i++) {
-    const batchNodes = nodeChunks[i] ?? [];
-    const batchEdges = edgeChunks[i] ?? [];
-
+        if (nodeChunks.length > 1) {
+          spinner.text = `Pushing nodes… batch ${i + 1}/${nodeChunks.length}`;
+        }
+      } catch (err) {
+        spinner.fail(`Node push failed on batch ${i + 1}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error(msg);
+        process.exitCode = 1;
+        return;
+      }
+    }
+    spinner.succeed(`${totalNodesUpserted} node(s) upserted`);
+  } else if (staleFilePaths.length > 0 || changedFilePaths.size > 0) {
+    // No nodes to push but cleanup is still needed (e.g. a file was deleted)
     try {
-      const result = await client.pushGraph(
-        batchNodes,
-        batchEdges,
-        i === 0 ? gitContext ?? undefined : undefined, // send git context only on first batch
-        i === 0 ? index.project_hash : undefined, // send index hash only on first batch
+      await client.pushGraph(
+        [],
+        [],
+        undefined,
+        index.project_hash,
+        staleFilePaths,
+        [...changedFilePaths],
       );
-      totalNodesUpserted += result.nodes_upserted;
-      totalEdgesUpserted += result.edges_upserted;
-      totalEdgesSkipped += result.edges_skipped;
-
-      spinner.text = `Pushing... batch ${i + 1}/${maxBatches}`;
     } catch (err) {
-      spinner.fail(`Push failed on batch ${i + 1}`);
       const msg = err instanceof Error ? err.message : String(err);
-      logger.error(msg);
+      logger.error(`Cleanup failed: ${msg}`);
       process.exitCode = 1;
       return;
     }
   }
 
-  spinner.succeed('Push complete');
+  // Phase 2: Push edges from changed nodes (all nodes are now in the DB)
+  const edgeChunks = chunk(edgesToPush, BATCH_SIZE);
+  if (edgeChunks.length > 0) {
+    spinner.start(`Pushing ${totalEdges} edge(s)…`);
+    for (let i = 0; i < edgeChunks.length; i++) {
+      try {
+        const result = await client.pushGraph(
+          [],
+          edgeChunks[i],
+          undefined,
+          undefined,
+        );
+        totalEdgesUpserted += result.edges_upserted;
+        totalEdgesSkipped += result.edges_skipped;
 
-  // Save push state
+        if (edgeChunks.length > 1) {
+          spinner.text = `Pushing edges… batch ${i + 1}/${edgeChunks.length}`;
+        }
+      } catch (err) {
+        spinner.fail(`Edge push failed on batch ${i + 1}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error(msg);
+        process.exitCode = 1;
+        return;
+      }
+    }
+    spinner.succeed(`${totalEdgesUpserted} edge(s) upserted`);
+  }
+
+  // Save push state (include current file hashes for next differential push)
+  const pushedAt = new Date().toISOString();
   savePushState(cwd, {
     project_hash: index.project_hash,
-    pushed_at: new Date().toISOString(),
+    pushed_at: pushedAt,
     nodes_pushed: totalNodesUpserted,
     edges_pushed: totalEdgesUpserted,
+    file_hashes: index.files,
   });
 
-  // Summary
-  logger.info('');
-  logger.info('Push Summary:');
-  logger.info(`  Nodes upserted:  ${totalNodesUpserted}`);
-  logger.info(`  Edges upserted:  ${totalEdgesUpserted}`);
+  // Summary box
+  const summaryLines = [
+    `${logger.label('Nodes')} ${totalNodesUpserted} upserted`,
+    `${logger.label('Edges')} ${totalEdgesUpserted} upserted`,
+  ];
   if (totalEdgesSkipped > 0) {
-    logger.warn(`  Edges skipped:   ${totalEdgesSkipped} (unresolved targets)`);
+    summaryLines.push(`${logger.label('Skipped')} ${logger.theme.highlight(String(totalEdgesSkipped))} edges (unresolved targets)`);
   }
-  logger.success('Graph synced to Omnious');
+  summaryLines.push(`${logger.label('Hash')} ${index.project_hash.slice(0, 12)}…`);
+  summaryLines.push(`${logger.label('Pushed at')} ${new Date(pushedAt).toLocaleString()}`);
+
+  logger.successBox(summaryLines, '✔ Graph Synced');
 }
 
 // ── Helpers ──

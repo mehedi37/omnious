@@ -1,3 +1,4 @@
+import ora from 'ora';
 import { password } from '@inquirer/prompts';
 import { saveCredentials, clearCredentials, loadCredentials } from '../api/auth.js';
 import { OmniousApiClient } from '../api/client.js';
@@ -29,12 +30,15 @@ export async function loginCommand(opts: LoginOptions): Promise<void> {
       logger.warn('Not authenticated. Run `omnious login` to authenticate.');
       return;
     }
-    logger.info(`Authenticated with key: ${maskKey(creds.api_key)}`);
-    if (creds.api_url) {
-      logger.dim(`API URL: ${creds.api_url}`);
-    }
+    logger.infoBox([
+      `${logger.label('Key')} ${maskKey(creds.api_key)}`,
+      creds.api_url ? `${logger.label('API URL')} ${creds.api_url}` : '',
+    ].filter(Boolean), '● Auth Status');
     return;
   }
+
+  logger.banner();
+  console.log('');
 
   // Resolve API URL
   let apiUrl = opts.apiUrl;
@@ -65,38 +69,44 @@ export async function loginCommand(opts: LoginOptions): Promise<void> {
   apiKey = apiKey.trim();
 
   // Validate key against backend
-  logger.step('Validating API key...');
+  const spinner = ora({ isSilent: !!process.env['CI'] });
+  spinner.start('Validating API key…');
 
   const client = new OmniousApiClient(apiUrl, apiKey);
 
   try {
     const healthy = await client.healthCheck();
     if (!healthy) {
-      logger.error(`Cannot reach API at ${apiUrl}`);
-      logger.dim('Is the backend running? Check the API URL in your config.');
+      spinner.fail(`Cannot reach API at ${apiUrl}`);
+      logger.dim('  Is the backend running? Check the API URL in your config.');
       process.exitCode = 1;
       return;
     }
 
     const result = await client.validateKey();
-    logger.success(
-      `Authenticated! Project: ${result.project_name} (${result.project_id})`,
-    );
+    spinner.succeed('Key validated');
 
     // Save credentials
     saveCredentials({
       api_key: apiKey,
       api_url: apiUrl,
     });
-    logger.dim('Credentials saved to ~/.omnious/credentials.json');
+
+    logger.successBox([
+      `${logger.label('Project')} ${result.project_name}`,
+      `${logger.label('ID')} ${result.project_id}`,
+      `${logger.label('Key')} ${maskKey(apiKey)}`,
+      `${logger.label('Saved to')} ${logger.theme.muted('~/.omnious/credentials.json')}`,
+    ], '✔ Authenticated');
   } catch (err: unknown) {
+    spinner.fail('Authentication failed');
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`Authentication failed: ${msg}`);
+    logger.error(msg);
     process.exitCode = 1;
   }
 }
 
 function maskKey(key: string): string {
   if (key.length <= 8) return '****';
-  return key.slice(0, 4) + '...' + key.slice(-4);
+  return key.slice(0, 4) + '…' + key.slice(-4);
 }

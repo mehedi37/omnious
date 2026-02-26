@@ -117,6 +117,10 @@ const pushFromCLISchema = z.object({
     .optional(),
   index_hash: z.string().optional(),
   dry_run: z.boolean().optional(),
+  /** File paths deleted since last push — their nodes (and cascaded edges) will be removed */
+  stale_file_paths: z.array(z.string()).optional(),
+  /** Changed file paths — outgoing edges from their nodes are deleted before re-inserting */
+  changed_file_paths: z.array(z.string()).optional(),
 });
 
 const getProjectStatusFromCLISchema = z.object({
@@ -339,6 +343,60 @@ export const graphRouter = router({
       let edgesUpserted = 0;
       let edgesSkipped = 0;
 
+      // ── Pre-push cleanup ──
+
+      // 1. Delete nodes from removed files (FK cascade removes their edges automatically)
+      const staleFilePaths = input.stale_file_paths ?? [];
+      if (staleFilePaths.length > 0) {
+        const { error: staleError } = await ctx.adminDb
+          .from('code_nodes')
+          .delete()
+          .eq('project_id', project.id)
+          .in('file_path', staleFilePaths);
+
+        if (staleError) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: `Stale node cleanup failed: ${staleError.message}`,
+          });
+        }
+      }
+
+      // 2. Delete outgoing edges from changed files so stale call relationships
+      //    are removed before we re-insert the current set.
+      const changedFilePaths = input.changed_file_paths ?? [];
+      if (changedFilePaths.length > 0) {
+        // Resolve node IDs for changed files first
+        const { data: changedNodeIds, error: changedNodesError } = await ctx.adminDb
+          .from('code_nodes')
+          .select('id')
+          .eq('project_id', project.id)
+          .in('file_path', changedFilePaths);
+
+        if (changedNodesError) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: `Changed node lookup failed: ${changedNodesError.message}`,
+          });
+        }
+
+        if (changedNodeIds && changedNodeIds.length > 0) {
+          const ids = changedNodeIds.map((r) => r.id);
+          const { error: edgeCleanupError } = await ctx.adminDb
+            .from('code_edges')
+            .delete()
+            .eq('project_id', project.id)
+            .in('source_node_id', ids);
+
+          if (edgeCleanupError) {
+            throw new TRPCError({
+              code: 'INTERNAL_SERVER_ERROR',
+              message: `Edge cleanup for changed files failed: ${edgeCleanupError.message}`,
+            });
+          }
+        }
+      }
+
       // Step 1: Upsert nodes
       if (input.nodes.length > 0) {
         const nodeRows = input.nodes.map((n) => ({
@@ -470,10 +528,10 @@ export const graphRouter = router({
   getProjectStatusFromCLI: publicProcedure
     .input(getProjectStatusFromCLISchema)
     .query(async ({ ctx, input }) => {
-      // Authenticate via project API key
+      // Authenticate via project API key — join workspace for slug
       const { data: project, error: projectError } = await ctx.adminDb
         .from('projects')
-        .select('id, name, slug, status, last_indexed_at, last_index_hash, updated_at')
+        .select('id, name, slug, status, last_indexed_at, last_index_hash, updated_at, workspace_id, workspaces(slug)')
         .eq('api_key', input.projectApiKey)
         .single();
 
@@ -483,6 +541,9 @@ export const graphRouter = router({
           message: 'Invalid project API key.',
         });
       }
+
+      // Extract workspace slug from the joined relation
+      const workspaceSlug = (project.workspaces as unknown as { slug: string } | null)?.slug ?? null;
 
       // Count nodes, edges, traces, errors
       const [nodeCount, edgeCount, traceCount, errorCount] = await Promise.all([
@@ -512,6 +573,7 @@ export const graphRouter = router({
         id: project.id,
         name: project.name,
         slug: project.slug,
+        workspace_slug: workspaceSlug,
         status: project.status ?? 'active',
         last_indexed_at: project.last_indexed_at ?? project.updated_at,
         last_index_hash: project.last_index_hash ?? null,
