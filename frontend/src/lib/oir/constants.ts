@@ -32,6 +32,38 @@ export const NODE_BG_CLASSES: Record<OIRNodeType, string> = {
   type_def: 'bg-violet-500/10 border-violet-500/30',
 };
 
+/** Stronger color classes for detail zoom — more visible type differentiation */
+export const NODE_BG_CLASSES_STRONG: Record<OIRNodeType, string> = {
+  function: 'bg-green-500/20 border-green-500/50',
+  component: 'bg-blue-500/20 border-blue-500/50',
+  route: 'bg-orange-500/20 border-orange-500/50',
+  database_query: 'bg-purple-500/20 border-purple-500/50',
+  module: 'bg-slate-500/20 border-slate-500/50',
+  class: 'bg-indigo-500/20 border-indigo-500/50',
+  middleware: 'bg-amber-500/20 border-amber-500/50',
+  event_emitter: 'bg-cyan-500/20 border-cyan-500/50',
+  event_listener: 'bg-teal-500/20 border-teal-500/50',
+  external_api: 'bg-pink-500/20 border-pink-500/50',
+  variable: 'bg-slate-400/20 border-slate-400/50',
+  type_def: 'bg-violet-500/20 border-violet-500/50',
+};
+
+/** Left border accent color for detail zoom nodes */
+export const NODE_ACCENT_BORDER: Record<OIRNodeType, string> = {
+  function: 'border-l-green-500',
+  component: 'border-l-blue-500',
+  route: 'border-l-orange-500',
+  database_query: 'border-l-purple-500',
+  module: 'border-l-slate-500',
+  class: 'border-l-indigo-500',
+  middleware: 'border-l-amber-500',
+  event_emitter: 'border-l-cyan-500',
+  event_listener: 'border-l-teal-500',
+  external_api: 'border-l-pink-500',
+  variable: 'border-l-slate-400',
+  type_def: 'border-l-violet-500',
+};
+
 /** Lucide icon name for each node type */
 export const NODE_ICONS: Record<OIRNodeType, string> = {
   function: 'Braces',

@@ -1,7 +1,6 @@
 'use client';
 
 import { Gauge, Layers, Pause, Play, SkipBack, SkipForward, Timer, X } from 'lucide-react';
-import { memo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -233,4 +232,4 @@ function FlowControlsComponent({
   );
 }
 
-export const FlowControls = memo(FlowControlsComponent);
+export const FlowControls = FlowControlsComponent;

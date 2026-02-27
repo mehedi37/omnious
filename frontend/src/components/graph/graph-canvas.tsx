@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useTheme } from 'next-themes';
+import { useEffect, useRef, useState } from 'react';
+import { ReactFlowProvider, useReactFlow } from '@xyflow/react';
+import { Loader2 } from 'lucide-react';
 import { FlowControls } from '@/components/trace/flow-controls';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { useAutoLayout } from '@/hooks/use-auto-layout';
@@ -10,7 +11,7 @@ import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import { useTracePlayback } from '@/hooks/use-trace-playback';
 import { useZoomLevel } from '@/hooks/use-zoom-level';
 import type { ZoomLevel } from '@/lib/oir/constants';
-import { sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
+import { graphRef, useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
@@ -18,22 +19,29 @@ import { GraphControls } from './graph-controls';
 import { GraphNavigationHud } from './graph-navigation-hud';
 import { GraphSearch } from './graph-search';
 import { GraphContextMenu } from './panels/graph-context-menu';
+import { GraphFilters } from './panels/graph-filters';
 import { NodeDetailPanel } from './panels/node-detail-panel';
-import { SigmaCanvas } from './sigma-canvas';
+import { FlowCanvas } from './flow-canvas';
+import { KeyboardShortcutsDialog } from '@/components/shared/keyboard-shortcuts-dialog';
 import { createContext } from 'react';
 
 /** Context so components can read zoom level without individual subscriptions */
 export const ZoomLevelContext = createContext<ZoomLevel>('function');
 
-export function GraphCanvas() {
+function GraphCanvasInner() {
   const flowMode = useGraphStore((s) => s.flowMode);
   const activeNodeId = useGraphStore((s) => s.activeNodeId);
+  const isLayouting = useGraphStore((s) => s.isLayouting);
   const detailPanelOpen = useUIStore((s) => s.detailPanelOpen);
+  const filtersOpen = useUIStore((s) => s.filtersOpen);
   const pendingReplayTraceId = useUIStore((s) => s.pendingReplayTraceId);
   const currentProjectId = useWorkspaceStore((s) => s.currentProjectId);
 
+  // React Flow API for camera control
+  const reactFlow = useReactFlow();
+
   // Fetch + transform graph data into graphology
-  const { rawEdges } = useGraphData();
+  const { rawEdges, isLoading: isDataLoading } = useGraphData();
 
   // Trace playback
   const playback = useTracePlayback();
@@ -43,33 +51,20 @@ export function GraphCanvas() {
   useKeyboardShortcuts();
   const currentZoomLevel = useZoomLevel();
 
-  // Auto switch between grouped / individual view based on zoom level.
-  const viewSwitchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Auto-switch between grouped/individual is now DISABLED.
+  // User switches manually via the Grouped/All toggle button.
+  // This avoids jarring re-layouts during zoom and allows caching of each view.
   const lastZoomRef = useRef(currentZoomLevel);
 
   useEffect(() => {
-    if (useGraphStore.getState().flowMode === 'replay') return;
     if (lastZoomRef.current === currentZoomLevel) return;
     lastZoomRef.current = currentZoomLevel;
-
-    if (viewSwitchTimerRef.current) clearTimeout(viewSwitchTimerRef.current);
-
-    viewSwitchTimerRef.current = setTimeout(() => {
-      const store = useGraphStore.getState();
-      const shouldGroup = currentZoomLevel === 'service' || currentZoomLevel === 'module';
-      const target = shouldGroup ? 'grouped' : 'individual';
-      if (store.viewMode !== target) {
-        store.setViewMode(target);
-        setTimeout(() => store.requestLayout(), 50);
-      }
-    }, 300);
-
-    return () => { if (viewSwitchTimerRef.current) clearTimeout(viewSwitchTimerRef.current); };
+    // View mode switching is manual — no auto-switch on zoom.
   }, [currentZoomLevel]);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
-  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const closeContextMenu = () => setContextMenu(null);
 
   // Fetch trace data when a pending replay is requested
   const traceQuery = trpc.trace.getById.useQuery(
@@ -95,17 +90,20 @@ export function GraphCanvas() {
   // Auto-pan camera to follow active node during replay
   useEffect(() => {
     if (flowMode !== 'replay' || !activeNodeId) return;
-    const sigma = sigmaRef.current;
-    if (!sigma) return;
-    const graph = sigma.getGraph();
-    if (!graph.hasNode(activeNodeId)) return;
+    const graph = graphRef.current;
+    if (!graph || !graph.hasNode(activeNodeId)) return;
     const attrs = graph.getNodeAttributes(activeNodeId);
-    sigma.getCamera().animate({ x: attrs.x, y: attrs.y, ratio: 0.4 }, { duration: 400 });
-  }, [activeNodeId, flowMode]);
+    reactFlow.setCenter(attrs.x, attrs.y, { zoom: 1.5, duration: 400 });
+  }, [activeNodeId, flowMode, reactFlow]);
 
-  // Pass setContextMenu down to SigmaCanvas via a stable ref
-  const contextMenuSetterRef = useRef(setContextMenu);
-  useEffect(() => { contextMenuSetterRef.current = setContextMenu; });
+  // Listen for Space key toggle-replay event from canvas-navigation
+  useEffect(() => {
+    function handleToggle() {
+      playback.togglePlay();
+    }
+    window.addEventListener('omnious:toggle-replay', handleToggle);
+    return () => window.removeEventListener('omnious:toggle-replay', handleToggle);
+  }, [playback]);
 
   return (
     <ZoomLevelContext.Provider value={currentZoomLevel}>
@@ -113,10 +111,23 @@ export function GraphCanvas() {
         <GraphControls />
 
         <div className="relative flex-1 overflow-hidden">
-          <SigmaCanvas onContextMenu={contextMenuSetterRef} />
+          <FlowCanvas onContextMenu={setContextMenu} />
 
           <GraphSearch />
           <GraphNavigationHud />
+          {filtersOpen && <GraphFilters />}
+
+          {/* Loading overlay — blocks canvas during layout/data processing */}
+          {(isLayouting || isDataLoading) && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/50 backdrop-blur-sm">
+              <div className="flex items-center gap-2 rounded-lg border bg-background/90 px-4 py-3 shadow-lg">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">
+                  {isDataLoading ? 'Loading graph\u2026' : 'Processing layout\u2026'}
+                </span>
+              </div>
+            </div>
+          )}
 
           {contextMenu && (
             <GraphContextMenu
@@ -153,21 +164,29 @@ export function GraphCanvas() {
         <Sheet
           open={detailPanelOpen}
           onOpenChange={(open) => {
-            if (!open) {
-              useGraphStore.getState().deselectAll();
-              useUIStore.getState().setDetailPanelOpen(false);
-            }
+            if (!open) useUIStore.getState().setDetailPanelOpen(false);
           }}
           modal={false}
         >
           <SheetContent
             side="right"
             className="w-[380px] sm:w-[420px] p-0 border-l"
+            showCloseButton={false}
           >
             <NodeDetailPanel />
           </SheetContent>
         </Sheet>
+
+        <KeyboardShortcutsDialog />
       </div>
     </ZoomLevelContext.Provider>
+  );
+}
+
+export function GraphCanvas() {
+  return (
+    <ReactFlowProvider>
+      <GraphCanvasInner />
+    </ReactFlowProvider>
   );
 }

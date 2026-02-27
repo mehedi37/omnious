@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useMemo } from 'react';
+import { useEffect } from 'react';
 import {
   applyErrorHeatmapToGraph,
   pushCodesToGraph,
 } from '@/lib/oir/transforms';
-import { getOrCreateGraph, sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
+import { getOrCreateGraph, useGraphStore } from '@/lib/stores/graph-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
 
@@ -46,20 +46,29 @@ export function useGraphData() {
   );
 
   // Merge all pages into one flat array
-  const allNodes = useMemo(
-    () => [
-      ...(page1.data?.nodes ?? []),
-      ...(page2.data?.nodes ?? []),
-      ...(page3.data?.nodes ?? []),
-      ...(page4.data?.nodes ?? []),
-    ],
-    [page1.data, page2.data, page3.data, page4.data],
-  );
+  const allNodes = [
+    ...(page1.data?.nodes ?? []),
+    ...(page2.data?.nodes ?? []),
+    ...(page3.data?.nodes ?? []),
+    ...(page4.data?.nodes ?? []),
+  ];
 
   const edgesQuery = trpc.graph.listEdges.useQuery(
     { projectId: currentProjectId ?? '', limit: 1000, offset: 0 },
     { enabled: !!currentProjectId, staleTime: 30_000 },
   );
+
+  // Page 2 for edges (when total > 1000)
+  const edgesTotal = edgesQuery.data?.total ?? 0;
+  const edgesPage2 = trpc.graph.listEdges.useQuery(
+    { projectId: currentProjectId ?? '', limit: 1000, offset: 1000 },
+    { enabled: !!currentProjectId && edgesTotal > 1000, staleTime: 30_000 },
+  );
+
+  const allEdges = [
+    ...(edgesQuery.data?.edges ?? []),
+    ...(edgesPage2.data?.edges ?? []),
+  ];
 
   const heatmapQuery = trpc.error.heatmap.useQuery(
     { projectId: currentProjectId ?? '' },
@@ -76,10 +85,10 @@ export function useGraphData() {
   // Push nodes + edges into graphology when all pages are loaded
   useEffect(() => {
     if (activePageLoading || allNodes.length === 0) return;
-    if (!edgesQuery.data?.edges) return;
+    if (allEdges.length === 0 && edgesQuery.isLoading) return;
 
     const graph = getOrCreateGraph();
-    const codeEdges = edgesQuery.data.edges as import('@/lib/oir/types').CodeEdge[];
+    const codeEdges = allEdges as import('@/lib/oir/types').CodeEdge[];
     const codeNodes = allNodes as import('@/lib/oir/types').CodeNode[];
     const currentViewMode = useGraphStore.getState().viewMode;
 
@@ -98,9 +107,12 @@ export function useGraphData() {
       edgeCount: graph.size,
     });
 
+    // Sync graphology → React Flow nodes/edges
+    useGraphStore.getState().syncFromGraphology();
+
     // Request layout after data has been pushed
     setTimeout(() => useGraphStore.getState().requestLayout(), 50);
-  }, [allNodes, activePageLoading, edgesQuery.data, heatmapActive, heatmapQuery.data]);
+  }, [allNodes, activePageLoading, allEdges, edgesQuery.isLoading, heatmapActive, heatmapQuery.data]);
 
   // Re-apply heatmap when it is toggled on while data is already present
   useEffect(() => {
@@ -112,9 +124,8 @@ export function useGraphData() {
       heatmapQuery.data as import('@/lib/oir/types').ErrorHeatmapEntry[],
       graph,
     );
-    // Trigger visual refresh via sigma
-    sigmaRef.current?.refresh();
-    sigmaRef.current?.refresh();
+    // Trigger visual refresh via React Flow sync
+    useGraphStore.getState().syncFromGraphology();
   }, [heatmapActive, heatmapQuery.data]);
 
   return {
@@ -122,8 +133,9 @@ export function useGraphData() {
     isError: page1.isError || edgesQuery.isError,
     error: page1.error ?? edgesQuery.error,
     nodeCount: allNodes.length,
-    edgeCount: edgesQuery.data?.edges?.length ?? 0,
+    edgeCount: allEdges.length,
+    edgesTotal,
     /** Raw code edges from the DB — used by trace replay to map spans to edges */
-    rawEdges: (edgesQuery.data?.edges ?? []) as import('@/lib/oir/types').CodeEdge[],
+    rawEdges: allEdges as import('@/lib/oir/types').CodeEdge[],
   };
 }

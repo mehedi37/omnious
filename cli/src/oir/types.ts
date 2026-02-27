@@ -102,6 +102,10 @@ export interface IndexSummary {
 
 /** Push result from the backend */
 export interface PushResult {
+  project_id: string;
+  project_name: string;
+  project_slug: string;
+  workspace_slug: string | null;
   nodes_upserted: number;
   edges_upserted: number;
   edges_skipped: number;
@@ -112,6 +116,7 @@ export interface ProjectStatus {
   id: string;
   name: string;
   slug: string;
+  workspace_slug: string | null;
   status: string;
   last_indexed_at: string | null;
   last_index_hash: string | null;

@@ -1,8 +1,8 @@
 'use client';
 
-import { Clipboard, Crosshair, Eye, EyeOff, Layers } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { graphRef, sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
+import { Clipboard, Crosshair, Eye, EyeOff, Layers, FolderUp } from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import { graphRef, useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
 interface GraphContextMenuProps {
@@ -18,6 +18,7 @@ export function GraphContextMenu({ nodeId, x, y, onClose }: GraphContextMenuProp
   const graph = graphRef.current;
   const attrs = graph?.hasNode(nodeId) ? graph.getNodeAttributes(nodeId) : null;
   const isGroup = attrs?.isGroup ?? false;
+  const viewMode = useGraphStore((s) => s.viewMode);
 
   // Close on click outside / Escape
   useEffect(() => {
@@ -37,56 +38,92 @@ export function GraphContextMenu({ nodeId, x, y, onClose }: GraphContextMenuProp
     };
   }, [onClose]);
 
-  const handleViewDetails = useCallback(() => {
+  function handleViewDetails() {
     useGraphStore.getState().selectNode(nodeId);
     useUIStore.getState().setDetailPanelOpen(true);
     onClose();
-  }, [nodeId, onClose]);
+  }
 
-  const handleFocus = useCallback(() => {
+  function handleFocus() {
     useGraphStore.getState().setFocusMode(nodeId);
     onClose();
-  }, [nodeId, onClose]);
+  }
 
-  const handleExpandGroup = useCallback(() => {
+  function handleExpandGroup() {
     useGraphStore.getState().setViewMode('individual');
     setTimeout(() => useGraphStore.getState().requestLayout(), 50);
     onClose();
-  }, [onClose]);
+  }
 
-  const handleHideNode = useCallback(() => {
+  function handleCombineGroup() {
+    // Find the group containing this node
+    const g = graphRef.current;
+    if (!g) { onClose(); return; }
+    let groupId: string | null = null;
+    // Derive group from filePath directory (matches transforms.ts group ID pattern)
+    const filePath = attrs?.filePath;
+    if (filePath) {
+      const dir = filePath.split('/').slice(0, -1).join('/') || '/';
+      groupId = `group:${dir}`;
+    }
+    // Fallback: search all group nodes for one containing this nodeId
+    if (!groupId || !g.hasNode(groupId)) {
+      g.forEachNode((id, a) => {
+        if (a.isGroup && a.childNodeIds?.includes(nodeId)) {
+          groupId = id;
+        }
+      });
+    }
+    if (groupId && g.hasNode(groupId)) {
+      useGraphStore.getState().setViewMode('grouped');
+      setTimeout(() => {
+        useGraphStore.getState().requestLayout();
+        setTimeout(() => {
+          useGraphStore.getState().selectNode(groupId!);
+          useGraphStore.getState().setFocusMode(groupId!);
+          useUIStore.getState().setDetailPanelOpen(true);
+        }, 100);
+      }, 50);
+    }
+    onClose();
+  }
+
+  function handleHideNode() {
     const g = graphRef.current;
     if (g?.hasNode(nodeId)) {
       g.setNodeAttribute(nodeId, 'hidden', true);
     }
-    sigmaRef.current?.refresh();
+    useGraphStore.getState().syncFromGraphology();
     useGraphStore.getState().deselectAll();
     useUIStore.getState().setDetailPanelOpen(false);
     onClose();
-  }, [nodeId, onClose]);
+  }
 
-  const handleCopyName = useCallback(() => {
+  function handleCopyName() {
     const label = attrs?.label;
     if (typeof label === 'string') {
       navigator.clipboard.writeText(label);
     }
     onClose();
-  }, [attrs, onClose]);
+  }
 
-  const items = useMemo(() => [
-    { icon: Eye, label: 'View Details', action: handleViewDetails },
-    { icon: Crosshair, label: 'Focus on Node', action: handleFocus },
+  const items = [
+    { icon: Eye, label: 'View Details', action: handleViewDetails, shortcut: 'Enter' },
+    { icon: Crosshair, label: 'Focus on Node', action: handleFocus, shortcut: 'N' },
     ...(isGroup
-      ? [{ icon: Layers, label: 'Expand Group', action: handleExpandGroup }]
+      ? [{ icon: Layers, label: 'Expand Group', action: handleExpandGroup, shortcut: 'E' }]
       : []),
-    { icon: Clipboard, label: 'Copy Name', action: handleCopyName },
-    { icon: EyeOff, label: 'Hide Node', action: handleHideNode, destructive: true },
-  ], [handleViewDetails, handleFocus, isGroup, handleExpandGroup, handleCopyName, handleHideNode]);
+    ...(!isGroup && viewMode === 'individual'
+      ? [{ icon: FolderUp, label: 'Combine Group', action: handleCombineGroup, shortcut: 'G' }]
+      : []),
+    { icon: Clipboard, label: 'Copy Name', action: handleCopyName, shortcut: '⌘C' },
+    { icon: EyeOff, label: 'Hide Node', action: handleHideNode, destructive: true, shortcut: 'Del' },
+  ];
 
   return (
     <div
       ref={menuRef}
-      className="fixed z-[100] min-w-[180px] rounded-md border bg-popover/95 backdrop-blur-md p-1 shadow-lg animate-in fade-in-0 zoom-in-95"
+      className="fixed z-[100] min-w-[200px] rounded-md border bg-popover/95 backdrop-blur-md p-1 shadow-lg animate-in fade-in-0 zoom-in-95"
       style={{ left: x, top: y }}
     >
       {items.map((item) => (
@@ -101,7 +138,12 @@ export function GraphContextMenu({ nodeId, x, y, onClose }: GraphContextMenuProp
           }`}
         >
           <item.icon className="h-4 w-4" />
-          {item.label}
+          <span className="flex-1 text-left">{item.label}</span>
+          {'shortcut' in item && item.shortcut && (
+            <kbd className="ml-auto text-[10px] text-muted-foreground font-mono bg-muted px-1 py-0.5 rounded">
+              {item.shortcut}
+            </kbd>
+          )}
         </button>
       ))}
     </div>

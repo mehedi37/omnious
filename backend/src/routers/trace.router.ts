@@ -132,6 +132,39 @@ export const traceRouter = router({
             message: spanError.message,
           });
         }
+
+        // ── Extract error snapshots from error spans ────────────────────────
+        // For each span with status='error' and code_node_id, upsert an error_snapshot
+        // so that the error heatmap / Red Zone feature has data to display.
+        const errorSpans = input.spans.filter(
+          (s) => s.status === 'error' && s.code_node_id && s.error_message,
+        );
+
+        if (errorSpans.length > 0) {
+          const errorPromises = errorSpans.map((s) => {
+            // Build fingerprint: hash of error_type + code_node_id + first line of message
+            const errorType = s.error_message?.split(':')[0]?.trim() ?? 'Error';
+            const firstLine = s.error_message?.split('\n')[0] ?? '';
+            const fingerprint = `${errorType}::${s.code_node_id}::${firstLine}`.slice(0, 255);
+
+            return ctx.adminDb.rpc('upsert_error_snapshot', {
+              p_project_id: project.id,
+              p_code_node_id: s.code_node_id!,
+              p_trace_id: trace.id,
+              p_span_id: s.span_id,
+              p_error_type: errorType,
+              p_error_message: s.error_message ?? '',
+              p_error_stack: s.error_stack ?? '',
+              p_fingerprint: fingerprint,
+              p_metadata: (s.attributes ?? {}) as import('../lib/supabase/database.types.js').Json,
+            });
+          });
+
+          // Fire-and-forget — don't block trace ingestion on error snapshot writes
+          Promise.allSettled(errorPromises).catch(() => {
+            // Silently ignore — error snapshots are best-effort
+          });
+        }
       }
 
       return { traceId: trace.id, spanCount: input.spans.length };

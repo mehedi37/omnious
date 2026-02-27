@@ -71,7 +71,7 @@ export function getFlowStateClasses(
 
   switch (flowState) {
     case 'active':
-      return 'ring-2 ring-cyan-400 ring-offset-2 ring-offset-background shadow-lg shadow-cyan-500/25 scale-105';
+      return 'ring-2 ring-amber-400 ring-offset-2 ring-offset-background shadow-lg shadow-amber-400/25 scale-105';
     case 'completed':
       return 'opacity-60';
     case 'error':

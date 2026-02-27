@@ -1,13 +1,13 @@
 'use client';
 
-import { useSigma } from '@react-sigma/core';
+import { useReactFlow } from '@xyflow/react';
 import { useEffect, useRef } from 'react';
-import { sigmaRef, useGraphStore } from '@/lib/stores/graph-store';
+import { graphRef, useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
 /**
- * Full canvas navigation hook for Sigma.js.
- * Must be called inside a SigmaContainer context.
+ * Full canvas navigation hook for React Flow.
+ * Must be called inside a ReactFlowProvider context.
  *
  * Keyboard shortcuts:
  *  Arrow keys     — pan (hold Shift for large jump)
@@ -28,18 +28,16 @@ import { useUIStore } from '@/lib/stores/ui-store';
  *  2              — layout left→right
  */
 
-const PAN_STEP = 0.08;           // fraction of viewport per keypress
-const PAN_STEP_LARGE = 0.25;     // with Shift held
+const PAN_STEP = 80;             // pixels per keypress
+const PAN_STEP_LARGE = 250;      // with Shift held
 const ZOOM_FACTOR = 1.4;
 const ANIM_MS = 150;
 
 export function useCanvasNavigation() {
-  const sigma = useSigma();
+  const reactFlow = useReactFlow();
   const focusedIndexRef = useRef<number>(-1);
 
   useEffect(() => {
-    if (!sigma) return;
-
     function handleKeyDown(e: KeyboardEvent) {
       // Don't intercept when typing in inputs / textareas
       const target = e.target as HTMLElement;
@@ -51,39 +49,39 @@ export function useCanvasNavigation() {
         return;
       }
 
-      const camera = sigma.getCamera();
       const step = e.shiftKey ? PAN_STEP_LARGE : PAN_STEP;
+      const viewport = reactFlow.getViewport();
 
       switch (e.key) {
         // ── Pan ────────────────────────────────────────────────────────────────
         case 'ArrowLeft': {
           e.preventDefault();
-          camera.animate(
-            { x: camera.x - step * camera.ratio, y: camera.y },
+          reactFlow.setViewport(
+            { x: viewport.x + step, y: viewport.y, zoom: viewport.zoom },
             { duration: ANIM_MS },
           );
           break;
         }
         case 'ArrowRight': {
           e.preventDefault();
-          camera.animate(
-            { x: camera.x + step * camera.ratio, y: camera.y },
+          reactFlow.setViewport(
+            { x: viewport.x - step, y: viewport.y, zoom: viewport.zoom },
             { duration: ANIM_MS },
           );
           break;
         }
         case 'ArrowUp': {
           e.preventDefault();
-          camera.animate(
-            { x: camera.x, y: camera.y - step * camera.ratio },
+          reactFlow.setViewport(
+            { x: viewport.x, y: viewport.y + step, zoom: viewport.zoom },
             { duration: ANIM_MS },
           );
           break;
         }
         case 'ArrowDown': {
           e.preventDefault();
-          camera.animate(
-            { x: camera.x, y: camera.y + step * camera.ratio },
+          reactFlow.setViewport(
+            { x: viewport.x, y: viewport.y - step, zoom: viewport.zoom },
             { duration: ANIM_MS },
           );
           break;
@@ -93,13 +91,13 @@ export function useCanvasNavigation() {
         case '+':
         case '=': {
           e.preventDefault();
-          camera.animatedZoom({ factor: ZOOM_FACTOR, duration: ANIM_MS });
+          reactFlow.zoomIn({ duration: ANIM_MS });
           break;
         }
         case '-':
         case '_': {
           e.preventDefault();
-          camera.animatedUnzoom({ factor: ZOOM_FACTOR, duration: ANIM_MS });
+          reactFlow.zoomOut({ duration: ANIM_MS });
           break;
         }
 
@@ -107,7 +105,7 @@ export function useCanvasNavigation() {
         case '0':
         case 'Home': {
           e.preventDefault();
-          camera.animatedReset({ duration: 400 });
+          reactFlow.fitView({ duration: 400 });
           break;
         }
 
@@ -119,9 +117,9 @@ export function useCanvasNavigation() {
             useGraphStore.getState().setNodeSearchOpen(true);
           } else if (e.shiftKey) {
             // Shift+F → fit selected
-            fitToSelection(sigma);
+            fitToSelection(reactFlow);
           } else {
-            camera.animatedReset({ duration: 400 });
+            reactFlow.fitView({ duration: 400 });
           }
           break;
         }
@@ -138,6 +136,7 @@ export function useCanvasNavigation() {
             gs.clearFocusMode();
           } else if (gs.selectedNodeIds.size > 0) {
             gs.deselectAll();
+            gs.highlightConnectedEdges(null);
             useUIStore.getState().setDetailPanelOpen(false);
           }
           break;
@@ -155,7 +154,7 @@ export function useCanvasNavigation() {
         // ── Tab: cycle keyboard focus through visible nodes ───────────────────
         case 'Tab': {
           e.preventDefault();
-          const graph = sigmaRef.current?.getGraph();
+          const graph = graphRef.current;
           if (!graph) break;
 
           const visibleNodes = graph.filterNodes(
@@ -174,10 +173,7 @@ export function useCanvasNavigation() {
 
           // Animate camera to that node
           const nodeAttrs = graph.getNodeAttributes(nodeId);
-          sigma.getCamera().animate(
-            { x: nodeAttrs.x, y: nodeAttrs.y, ratio: 0.4 },
-            { duration: 300 },
-          );
+          reactFlow.setCenter(nodeAttrs.x, nodeAttrs.y, { zoom: 1.5, duration: 300 });
           break;
         }
 
@@ -193,12 +189,10 @@ export function useCanvasNavigation() {
 
         // ── Space: play / pause trace replay ─────────────────────────────────
         case ' ': {
-          // Only active during replay — toggle isPlaying
           const gs = useGraphStore.getState();
           if (gs.flowMode === 'replay') {
             e.preventDefault();
-            // Replay playback is driven by use-trace-playback; space is a no-op
-            // until we wire up a shared isPlaying flag on the store.
+            window.dispatchEvent(new CustomEvent('omnious:toggle-replay'));
           }
           break;
         }
@@ -234,46 +228,35 @@ export function useCanvasNavigation() {
           }
           break;
         }
+
+        // ── ?: open keyboard shortcuts dialog ─────────────────────────────────
+        case '?': {
+          e.preventDefault();
+          useUIStore.getState().toggleKeyboardShortcuts();
+          break;
+        }
       }
     }
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [sigma]);
+  }, [reactFlow]);
 }
 
 /** Pan + zoom the camera to frame just the selected nodes. */
-function fitToSelection(sigma: ReturnType<typeof useSigma>) {
-  const graph = sigma.getGraph();
+function fitToSelection(reactFlow: ReturnType<typeof useReactFlow>) {
+  const graph = graphRef.current;
   const { selectedNodeIds } = useGraphStore.getState();
-  if (selectedNodeIds.size === 0) {
-    sigma.getCamera().animatedReset({ duration: 400 });
+  if (!graph || selectedNodeIds.size === 0) {
+    reactFlow.fitView({ duration: 400 });
     return;
   }
 
-  let minX = Infinity, maxX = -Infinity;
-  let minY = Infinity, maxY = -Infinity;
-
-  for (const nodeId of selectedNodeIds) {
-    if (!graph.hasNode(nodeId)) continue;
-    const attrs = graph.getNodeAttributes(nodeId);
-    if (attrs.hidden) continue;
-    minX = Math.min(minX, attrs.x);
-    maxX = Math.max(maxX, attrs.x);
-    minY = Math.min(minY, attrs.y);
-    maxY = Math.max(maxY, attrs.y);
-  }
-
-  if (!isFinite(minX)) return;
-
-  const cx = (minX + maxX) / 2;
-  const cy = (minY + maxY) / 2;
-  const spanX = maxX - minX + 100;
-  const spanY = maxY - minY + 100;
-
-  // Convert graph coordinates to camera ratio: larger span → larger ratio (more zoomed out)
-  const { width, height } = sigma.getDimensions();
-  const ratio = Math.max(spanX / width, spanY / height) * 1.1;
-
-  sigma.getCamera().animate({ x: cx, y: cy, ratio: Math.max(ratio, 0.1) }, { duration: 400 });
+  // Collect selected node IDs and use React Flow's fitView with node filter
+  const nodeIds = Array.from(selectedNodeIds);
+  reactFlow.fitView({
+    nodes: nodeIds.map((id) => ({ id })),
+    duration: 400,
+    padding: 0.2,
+  });
 }

@@ -8,11 +8,13 @@
   },
   "scripts": {
     "build": "tsup",
+    "build:prod": "OMNIOUS_PROD_URL=https://api.omnious.dev tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "lint": "echo 'no linter configured yet'",
     "clean": "rm -rf dist .omnious",
-    "test": "echo 'no tests yet'"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "files": [
     "dist/",
@@ -23,19 +25,25 @@
   },
   "dependencies": {
     "@inquirer/prompts": "^7.5.1",
+    "boxen": "^8.0.1",
     "chalk": "^5.4.1",
-    "cli-table3": "^0.6.5",
     "commander": "^13.1.0",
     "glob": "^11.0.1",
     "ignore": "^7.0.4",
     "ora": "^8.2.0",
-    "typescript": "^5.8.3",
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-c-sharp": "^0.23.1",
+    "tree-sitter-go": "^0.23.4",
+    "tree-sitter-java": "^0.23.5",
+    "tree-sitter-python": "^0.23.6",
+    "tree-sitter-typescript": "^0.23.2",
     "yaml": "^2.7.1",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
-    "tsup": "^8.5.0"
+    "tsup": "^8.5.0",
+    "vitest": "^4.0.18"
   },
   "keywords": [
     "omnious",

@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { useCallback, useEffect } from 'react';
+import { useEffect } from 'react';
 import {
   CommandDialog,
   CommandEmpty,
@@ -48,13 +48,10 @@ export function CommandPalette() {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [togglePalette]);
 
-  const navigate = useCallback(
-    (path: string) => {
-      closePalette();
-      router.push(path);
-    },
-    [closePalette, router],
-  );
+  function navigate(path: string) {
+    closePalette();
+    router.push(path);
+  }
 
   return (
     <CommandDialog open={open} onOpenChange={(val) => (val ? togglePalette() : closePalette())}>

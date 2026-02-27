@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { buildFlowSteps, type FlowStep, getFlowTimeBounds } from '@/lib/oir/trace-flow';
 import type { CodeEdge } from '@/lib/oir/types';
 import { useGraphStore } from '@/lib/stores/graph-store';
@@ -56,7 +56,7 @@ export function useTracePlayback(): UseTracePlaybackReturn {
   const lastTickRef = useRef<number>(0);
   const stepRef = useRef(0);
 
-  const timeBounds = useMemo(() => getFlowTimeBounds(flowSteps), [flowSteps]);
+  const timeBounds = getFlowTimeBounds(flowSteps);
 
   const currentFlowStep = flowSteps[currentStep] ?? null;
   const callStack = useGraphStore((s) => s.callStack);
@@ -64,52 +64,42 @@ export function useTracePlayback(): UseTracePlaybackReturn {
   const progress = flowSteps.length > 1 ? (currentStep / (flowSteps.length - 1)) * 100 : 0;
 
   // Apply a flow step to the graph store
-  const applyStep = useCallback(
-    (index: number) => {
-      const step = flowSteps[index];
-      if (!step) return;
+  function applyStep(index: number) {
+    const step = flowSteps[index];
+    if (!step) return;
 
-      stepRef.current = index;
-      setCurrentStep(index);
-      useGraphStore.getState().setFlowStep(step);
+    stepRef.current = index;
+    setCurrentStep(index);
+    useGraphStore.getState().setFlowStep(step);
 
-      // Highlight the node in the trace store too
-      if (step.nodeId) {
-        useTraceStore.getState().setHighlightedNodeIds(new Set([step.nodeId]));
-      }
-    },
-    [flowSteps],
-  );
+    // Highlight the node in the trace store too
+    if (step.nodeId) {
+      useTraceStore.getState().setHighlightedNodeIds(new Set([step.nodeId]));
+    }
+  }
 
   // Calculate delay between steps
-  const getStepDelay = useCallback(
-    (stepIndex: number): number => {
-      if (mode === 'constant') {
-        // Constant speed: fixed interval per step
-        return 800 / speed;
-      }
-      // Proportional mode: use actual span timing
-      const current = flowSteps[stepIndex];
-      const next = flowSteps[stepIndex + 1];
-      if (!current || !next) return 500 / speed;
+  function getStepDelay(stepIndex: number): number {
+    if (mode === 'constant') {
+      return 800 / speed;
+    }
+    const current = flowSteps[stepIndex];
+    const next = flowSteps[stepIndex + 1];
+    if (!current || !next) return 500 / speed;
 
-      const timeGap = next.startedAt - current.startedAt;
-      // Scale proportionally but clamp to reasonable range
-      const scaledGap = Math.max(50, Math.min(2000, timeGap)) / speed;
-      return scaledGap;
-    },
-    [flowSteps, speed, mode],
-  );
+    const timeGap = next.startedAt - current.startedAt;
+    const scaledGap = Math.max(50, Math.min(2000, timeGap)) / speed;
+    return scaledGap;
+  }
 
   // RAF animation loop
-  const tick = useCallback(() => {
+  function tick() {
     const now = performance.now();
     const delay = getStepDelay(stepRef.current);
 
     if (now - lastTickRef.current >= delay) {
       const nextStep = stepRef.current + 1;
       if (nextStep >= flowSteps.length) {
-        // End of replay
         setIsPlaying(false);
         return;
       }
@@ -118,7 +108,7 @@ export function useTracePlayback(): UseTracePlaybackReturn {
     }
 
     rafRef.current = requestAnimationFrame(tick);
-  }, [flowSteps, applyStep, getStepDelay]);
+  }
 
   // Start/stop RAF loop
   useEffect(() => {
@@ -136,115 +126,101 @@ export function useTracePlayback(): UseTracePlaybackReturn {
         rafRef.current = null;
       }
     };
-  }, [isPlaying, tick, flowSteps.length]);
+  }, [isPlaying, flowSteps.length]);
+
+  // Rebuild graph state up to a specific step (for seeking/stepping backward)
+  function replayUpTo(targetIndex: number) {
+    const gs = useGraphStore.getState();
+    gs.clearFlowReplay();
+    gs.startFlowReplay([]);
+
+    for (let i = 0; i <= targetIndex; i++) {
+      const step = flowSteps[i];
+      if (step) gs.setFlowStep(step);
+    }
+
+    stepRef.current = targetIndex;
+    setCurrentStep(targetIndex);
+
+    const step = flowSteps[targetIndex];
+    if (step?.nodeId) {
+      useTraceStore.getState().setHighlightedNodeIds(new Set([step.nodeId]));
+    }
+  }
 
   // ── Controls ──
 
-  const play = useCallback(() => {
+  function play() {
     if (flowSteps.length === 0) return;
-    // If at end, restart from beginning
     if (stepRef.current >= flowSteps.length - 1) {
-      // Reset graph state for replay restart
       useGraphStore.getState().startFlowReplay([]);
       applyStep(0);
     }
     setIsPlaying(true);
-  }, [flowSteps, applyStep]);
+  }
 
-  const pause = useCallback(() => {
+  function pause() {
     setIsPlaying(false);
-  }, []);
+  }
 
-  const togglePlay = useCallback(() => {
+  function togglePlay() {
     if (isPlaying) pause();
     else play();
-  }, [isPlaying, pause, play]);
+  }
 
-  const stepForward = useCallback(() => {
+  function stepForward() {
     if (stepRef.current < flowSteps.length - 1) {
       setIsPlaying(false);
       applyStep(stepRef.current + 1);
     }
-  }, [flowSteps, applyStep]);
+  }
 
-  const stepBackward = useCallback(() => {
+  function stepBackward() {
     if (stepRef.current > 0) {
       setIsPlaying(false);
-      // Need to rebuild completed/error state up to the target step
       const targetStep = stepRef.current - 1;
       replayUpTo(targetStep);
     }
-  }, [flowSteps]);
+  }
 
-  const seekTo = useCallback(
-    (stepIndex: number) => {
-      const clamped = Math.max(0, Math.min(stepIndex, flowSteps.length - 1));
-      setIsPlaying(false);
-      replayUpTo(clamped);
-    },
-    [flowSteps],
-  );
+  function seekTo(stepIndex: number) {
+    const clamped = Math.max(0, Math.min(stepIndex, flowSteps.length - 1));
+    setIsPlaying(false);
+    replayUpTo(clamped);
+  }
 
-  // Rebuild graph state up to a specific step (for seeking/stepping backward)
-  const replayUpTo = useCallback(
-    (targetIndex: number) => {
-      // Clear and rebuild
-      const gs = useGraphStore.getState();
-      gs.clearFlowReplay();
-      gs.startFlowReplay([]); // re-enter replay mode
-
-      for (let i = 0; i <= targetIndex; i++) {
-        const step = flowSteps[i];
-        if (step) gs.setFlowStep(step);
-      }
-
-      stepRef.current = targetIndex;
-      setCurrentStep(targetIndex);
-
-      const step = flowSteps[targetIndex];
-      if (step?.nodeId) {
-        useTraceStore.getState().setHighlightedNodeIds(new Set([step.nodeId]));
-      }
-    },
-    [flowSteps],
-  );
-
-  const exitReplay = useCallback(() => {
+  function exitReplay() {
     setIsPlaying(false);
     setFlowSteps([]);
     setCurrentStep(0);
     stepRef.current = 0;
     useGraphStore.getState().clearFlowReplay();
     useTraceStore.getState().clearActiveTrace();
-  }, []);
+  }
 
-  const startReplay = useCallback(
-    (traceId: string, spans: import('@/lib/oir/types').Span[], staticEdges: CodeEdge[]) => {
-      const { steps, runtimeEdges } = buildFlowSteps(spans, staticEdges);
+  function startReplay(
+    traceId: string,
+    spans: import('@/lib/oir/types').Span[],
+    staticEdges: CodeEdge[],
+  ) {
+    const { steps, runtimeEdges } = buildFlowSteps(spans, staticEdges);
 
-      if (steps.length === 0) return;
+    if (steps.length === 0) return;
 
-      setFlowSteps(steps);
-      stepRef.current = 0;
-      setCurrentStep(0);
+    setFlowSteps(steps);
+    stepRef.current = 0;
+    setCurrentStep(0);
 
-      // Set up graph store
-      useGraphStore.getState().startFlowReplay(runtimeEdges);
+    useGraphStore.getState().startFlowReplay(runtimeEdges);
+    useTraceStore.getState().setActiveTrace(traceId, spans);
 
-      // Set active trace
-      useTraceStore.getState().setActiveTrace(traceId, spans);
+    useGraphStore.getState().setFlowStep(steps[0]);
+    if (steps[0].nodeId) {
+      useTraceStore.getState().setHighlightedNodeIds(new Set([steps[0].nodeId]));
+    }
 
-      // Apply first step
-      useGraphStore.getState().setFlowStep(steps[0]);
-      if (steps[0].nodeId) {
-        useTraceStore.getState().setHighlightedNodeIds(new Set([steps[0].nodeId]));
-      }
-
-      // Start playing
-      setIsPlaying(true);
-    },
-    [],
-  );
+    setIsPlaying(true);
+  }
 
   return {
     isPlaying,

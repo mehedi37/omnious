@@ -1,8 +1,11 @@
 'use client';
 
+import { useEffect } from 'react';
 import { GraphCanvas } from '@/components/graph/graph-canvas';
 import { EmptyProjectState } from '@/components/project/empty-project-state';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useGraphStore } from '@/lib/stores/graph-store';
+import { useUIStore } from '@/lib/stores/ui-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
 
@@ -21,12 +24,35 @@ export default function GraphPage() {
     { enabled: !!projectId, staleTime: 30_000 },
   );
 
-  const isLoading = nodeCountQuery.isLoading || projectQuery.isLoading;
+  // While projectId is null the store hasn't hydrated yet from localStorage —
+  // treat that as loading to avoid a flash of the empty state.
+  const isLoading =
+    !projectId ||
+    nodeCountQuery.isLoading ||
+    projectQuery.isLoading;
+
   const hasNodes = (nodeCountQuery.data?.total ?? 0) > 0;
+
+  // Pick up focus-node from sessionStorage (coming from error list "Focus on Graph")
+  useEffect(() => {
+    if (!hasNodes) return;
+    const focusNodeId = sessionStorage.getItem('omnious:focus-node');
+    if (focusNodeId) {
+      sessionStorage.removeItem('omnious:focus-node');
+      // Delay to allow graph to render first
+      const timer = setTimeout(() => {
+        useGraphStore.getState().selectNode(focusNodeId);
+        useGraphStore.getState().setFocusMode(focusNodeId);
+        useGraphStore.getState().highlightConnectedEdges(focusNodeId);
+        useUIStore.getState().setDetailPanelOpen(true);
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [hasNodes]);
 
   if (isLoading) {
     return (
-      <div className="h-[calc(100vh-6rem)] flex items-center justify-center">
+      <div className="h-full flex items-center justify-center">
         <div className="space-y-4 text-center">
           <Skeleton className="h-16 w-16 rounded-full mx-auto" />
           <Skeleton className="h-4 w-48 mx-auto" />
@@ -38,7 +64,7 @@ export default function GraphPage() {
 
   if (!hasNodes) {
     return (
-      <div className="h-[calc(100vh-6rem)] overflow-auto">
+      <div className="h-full overflow-auto">
         <EmptyProjectState
           projectName={projectQuery.data?.name ?? projectSlug ?? 'Project'}
           projectSlug={projectSlug ?? ''}
@@ -50,7 +76,7 @@ export default function GraphPage() {
   }
 
   return (
-    <div className="h-[calc(100vh-6rem)]">
+    <div className="h-full">
       <GraphCanvas />
     </div>
   );

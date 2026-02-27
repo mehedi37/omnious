@@ -1,5 +1,5 @@
 import { MultiDirectedGraph } from 'graphology';
-import type Sigma from 'sigma';
+import type { Edge, Node } from '@xyflow/react';
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
@@ -8,11 +8,10 @@ import { EDGE_COLORS, NODE_COLORS } from '../oir/constants';
 import type { FlowStep, RuntimeEdge } from '../oir/trace-flow';
 import type { OIREdgeType, OIRNodeType } from '../oir/types';
 
-// ─── Sigma / Graphology attribute types ──────────────────────────────────────
+// ─── Graphology attribute types ──────────────────────────────────────────────
 
 /** Attributes stored on every graphology node (individual + group nodes) */
-export interface SigmaNodeAttributes {
-  // Sigma rendering
+export interface GraphNodeAttributes {
   x: number;
   y: number;
   size: number;
@@ -44,7 +43,7 @@ export interface SigmaNodeAttributes {
 }
 
 /** Attributes stored on every graphology edge */
-export interface SigmaEdgeAttributes {
+export interface GraphEdgeAttributes {
   color: string;
   size: number;
   hidden?: boolean;
@@ -53,24 +52,132 @@ export interface SigmaEdgeAttributes {
   isRuntime?: boolean; // edges added during trace replay
 }
 
+// ─── React Flow node/edge data payloads ──────────────────────────────────────
+
+export interface RFNodeData extends Record<string, unknown> {
+  label: string;
+  oirType: OIRNodeType | null;
+  filePath: string | null;
+  lineStart: number | null;
+  lineEnd: number | null;
+  signature: string | null;
+  docComment: string | null;
+  metadata: Record<string, unknown>;
+  errorCount?: number;
+  errorSeverity?: string;
+  isGroup: boolean;
+  directory?: string;
+  childCount?: number;
+  childNodeIds?: string[];
+  typeBreakdown?: Record<string, number>;
+  dominantType?: string;
+  isIndividual: boolean;
+  color: string;
+}
+
+export interface RFEdgeData extends Record<string, unknown> {
+  edgeType: OIREdgeType | 'runtime_call';
+  isRuntime?: boolean;
+  routePoints?: Array<{ x: number; y: number }>;
+}
+
 // ─── Module-level refs (outside Zustand to avoid immer serialization) ─────────
 
-/** Live graphology graph instance — shared by sigma canvas and all hooks */
+/** Live graphology graph instance — shared by flow canvas and all hooks */
 export const graphRef: {
-  current: MultiDirectedGraph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
-} = { current: null };
-
-/** Live Sigma instance — shared by graph controls, search, and nav hooks */
-export const sigmaRef: {
-  current: Sigma<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
+  current: MultiDirectedGraph<GraphNodeAttributes, GraphEdgeAttributes> | null;
 } = { current: null };
 
 /** Initialise (or return existing) graphology graph */
-export function getOrCreateGraph(): MultiDirectedGraph<SigmaNodeAttributes, SigmaEdgeAttributes> {
+export function getOrCreateGraph(): MultiDirectedGraph<GraphNodeAttributes, GraphEdgeAttributes> {
   if (!graphRef.current) {
-    graphRef.current = new MultiDirectedGraph<SigmaNodeAttributes, SigmaEdgeAttributes>();
+    graphRef.current = new MultiDirectedGraph<GraphNodeAttributes, GraphEdgeAttributes>();
   }
   return graphRef.current;
+}
+
+// ─── Graphology → React Flow sync ────────────────────────────────────────────
+
+/**
+ * Read the graphology graph and produce React Flow node/edge arrays.
+ * Applies view-mode visibility and node-type filtering.
+ */
+export function buildRFNodesAndEdges(
+  graph: MultiDirectedGraph<GraphNodeAttributes, GraphEdgeAttributes>,
+  nodeTypeFilters: Set<OIRNodeType>,
+  focusedNodeId: string | null = null,
+  connectedNodeIds: Set<string> = new Set(),
+  selectedNodeIds: Set<string> = new Set(),
+  edgeRoutes: Map<string, Array<{ x: number; y: number }>> = new Map(),
+): { rfNodes: Node<RFNodeData>[]; rfEdges: Edge<RFEdgeData>[] } {
+  const rfNodes: Node<RFNodeData>[] = [];
+  const rfEdges: Edge<RFEdgeData>[] = [];
+  const isFocusMode = focusedNodeId !== null;
+
+  graph.forEachNode((id, attrs) => {
+    if (attrs.hidden) return;
+    // Apply node type filter (individual nodes only — groups always pass)
+    if (!attrs.isGroup && attrs.oirType && nodeTypeFilters.size > 0 && !nodeTypeFilters.has(attrs.oirType)) return;
+
+    const isConnected = !isFocusMode || connectedNodeIds.has(id);
+
+    // Exclusive focus mode: completely hide non-connected nodes
+    if (isFocusMode && !isConnected) return;
+
+    rfNodes.push({
+      id,
+      type: attrs.isGroup ? 'group' : 'code',
+      position: { x: attrs.x, y: attrs.y },
+      zIndex: 1,
+      draggable: isConnected,
+      selectable: isConnected,
+      selected: selectedNodeIds.has(id),
+      data: {
+        label: attrs.label,
+        oirType: attrs.oirType,
+        filePath: attrs.filePath,
+        lineStart: attrs.lineStart,
+        lineEnd: attrs.lineEnd,
+        signature: attrs.signature,
+        docComment: attrs.docComment,
+        metadata: attrs.metadata,
+        errorCount: attrs.errorCount,
+        errorSeverity: attrs.errorSeverity,
+        isGroup: attrs.isGroup,
+        directory: attrs.directory,
+        childCount: attrs.childCount,
+        childNodeIds: attrs.childNodeIds,
+        typeBreakdown: attrs.typeBreakdown,
+        dominantType: attrs.dominantType,
+        isIndividual: attrs.isIndividual,
+        color: attrs.color,
+      },
+    });
+  });
+
+  const visibleNodeIds = new Set(rfNodes.map((n) => n.id));
+
+  graph.forEachEdge((edgeId, attrs, source, target) => {
+    if (attrs.hidden) return;
+    if (!visibleNodeIds.has(source) || !visibleNodeIds.has(target)) return;
+
+    rfEdges.push({
+      id: edgeId,
+      source,
+      target,
+      type: attrs.isRuntime ? 'animated' : 'routed',
+      animated: !!attrs.isRuntime,
+      zIndex: 0,
+      style: { stroke: attrs.color, strokeWidth: attrs.size },
+      data: {
+        edgeType: attrs.edgeType,
+        isRuntime: attrs.isRuntime,
+        routePoints: edgeRoutes.get(edgeId),
+      },
+    });
+  });
+
+  return { rfNodes, rfEdges };
 }
 
 // ─── Node animation state ─────────────────────────────────────────────────────
@@ -85,6 +192,13 @@ interface GraphState {
   graphVersion: number;
   nodeCount: number;
   edgeCount: number;
+
+  // React Flow arrays (derived from graphology via syncFromGraphology)
+  rfNodes: Node<RFNodeData>[];
+  rfEdges: Edge<RFEdgeData>[];
+
+  // Node type filtering
+  nodeTypeFilters: Set<OIRNodeType>;
 
   selectedNodeIds: Set<string>;
   zoomLevel: ZoomLevel;
@@ -111,12 +225,25 @@ interface GraphState {
   connectedNodeIds: Set<string>;
   nodeSearchOpen: boolean;
 
+  // Edge highlighting (click-to-highlight connected edges)
+  highlightedNodeId: string | null;
+
+  // Neighbor node highlight (purple ring on nodes connected to selected)
+  neighborNodeIds: Set<string>;
+
+  // ELK-computed edge routes (avoid node overlap)
+  edgeRoutes: Map<string, Array<{ x: number; y: number }>>;
+
+  // Node position locking
+  nodesLocked: boolean;
+
   // Keyboard navigation
   keyboardFocusedNodeId: string | null;
 
   // ── Actions ──────────────────────────────────────────────────────────────────
 
   bumpGraphVersion: (counts?: { nodeCount: number; edgeCount: number }) => void;
+  syncFromGraphology: () => void;
   updateNodePositions: (positions: Map<string, { x: number; y: number }>) => void;
   selectNode: (nodeId: string) => void;
   deselectAll: () => void;
@@ -130,6 +257,8 @@ interface GraphState {
   setViewMode: (mode: ViewMode) => void;
   toggleGroupExpanded: (groupId: string) => void;
   setKeyboardFocusedNode: (nodeId: string | null) => void;
+  toggleNodeTypeFilter: (type: OIRNodeType) => void;
+  setNodeTypeFilters: (filters: Set<OIRNodeType>) => void;
 
   // Flow animation actions
   startFlowReplay: (runtimeEdges: RuntimeEdge[]) => void;
@@ -141,6 +270,9 @@ interface GraphState {
   setFocusMode: (nodeId: string) => void;
   clearFocusMode: () => void;
   setNodeSearchOpen: (open: boolean) => void;
+  highlightConnectedEdges: (nodeId: string | null) => void;
+  setEdgeRoutes: (routes: Map<string, Array<{ x: number; y: number }>>) => void;
+  toggleNodesLocked: () => void;
 }
 
 export const useGraphStore = create<GraphState>()(
@@ -149,6 +281,10 @@ export const useGraphStore = create<GraphState>()(
       graphVersion: 0,
       nodeCount: 0,
       edgeCount: 0,
+
+      rfNodes: [],
+      rfEdges: [],
+      nodeTypeFilters: new Set<OIRNodeType>(),
 
       selectedNodeIds: new Set<string>(),
       zoomLevel: 'function' as ZoomLevel,
@@ -172,6 +308,14 @@ export const useGraphStore = create<GraphState>()(
       connectedNodeIds: new Set<string>(),
       nodeSearchOpen: false,
 
+      highlightedNodeId: null,
+
+      neighborNodeIds: new Set<string>(),
+
+      edgeRoutes: new Map<string, Array<{ x: number; y: number }>>(),
+
+      nodesLocked: false,
+
       keyboardFocusedNodeId: null,
 
       // ── Graph version / counters ────────────────────────────────────────────
@@ -191,6 +335,26 @@ export const useGraphStore = create<GraphState>()(
           }
         }),
 
+      // ── Sync graphology → React Flow arrays ────────────────────────────────
+
+      syncFromGraphology: () => {
+        const graph = graphRef.current;
+        if (!graph) return;
+        const s = useGraphStore.getState();
+        const { rfNodes, rfEdges } = buildRFNodesAndEdges(graph, s.nodeTypeFilters, s.focusedNodeId, s.connectedNodeIds, s.selectedNodeIds, s.edgeRoutes);
+        // Apply node position lock if active
+        if (s.nodesLocked) {
+          for (const node of rfNodes) { node.draggable = false; }
+        }
+        set((state) => {
+          state.rfNodes = rfNodes;
+          state.rfEdges = rfEdges;
+          state.graphVersion += 1;
+          state.nodeCount = graph.order;
+          state.edgeCount = graph.size;
+        });
+      },
+
       updateNodePositions: (positions) => {
         const graph = graphRef.current;
         if (!graph) return;
@@ -200,8 +364,12 @@ export const useGraphStore = create<GraphState>()(
             graph.setNodeAttribute(id, 'y', pos.y);
           }
         });
-        // Sigma auto-refreshes via graphology events; just bump version
+        // Rebuild React Flow arrays with updated positions
+        const s = useGraphStore.getState();
+        const { rfNodes, rfEdges } = buildRFNodesAndEdges(graph, s.nodeTypeFilters, s.focusedNodeId, s.connectedNodeIds, s.selectedNodeIds, s.edgeRoutes);
         set((state) => {
+          state.rfNodes = rfNodes;
+          state.rfEdges = rfEdges;
           state.graphVersion += 1;
         });
       },
@@ -211,11 +379,19 @@ export const useGraphStore = create<GraphState>()(
       selectNode: (nodeId) =>
         set((state) => {
           state.selectedNodeIds = new Set([nodeId]);
+          // Highlight neighbor nodes in purple
+          const graph = graphRef.current;
+          const neighbors = new Set<string>();
+          if (graph && graph.hasNode(nodeId)) {
+            graph.neighbors(nodeId).forEach((n) => neighbors.add(n));
+          }
+          state.neighborNodeIds = neighbors;
         }),
 
       deselectAll: () =>
         set((state) => {
           state.selectedNodeIds = new Set();
+          state.neighborNodeIds = new Set();
         }),
 
       toggleNodeSelection: (nodeId) =>
@@ -267,14 +443,22 @@ export const useGraphStore = create<GraphState>()(
         const graph = graphRef.current;
         if (!graph) return;
 
+        // Clear focus mode before switching views — prevents stale connected set
+        // from filtering nodes that no longer exist in the new view
+        set((state) => {
+          state.focusedNodeId = null;
+          state.connectedNodeIds = new Set();
+          state.selectedNodeIds = new Set();
+          state.neighborNodeIds = new Set();
+          state.highlightedNodeId = null;
+        });
+
         // Show/hide individual vs group nodes
         graph.nodes().forEach((node) => {
           const attrs = graph.getNodeAttributes(node);
           if (mode === 'grouped') {
-            // Show group nodes, hide individual nodes
             graph.setNodeAttribute(node, 'hidden', attrs.isIndividual);
           } else {
-            // Show individual nodes, hide group nodes
             graph.setNodeAttribute(node, 'hidden', attrs.isGroup);
           }
         });
@@ -286,20 +470,20 @@ export const useGraphStore = create<GraphState>()(
             const tgt = graph.target(edge);
             const srcGroup = graph.getNodeAttribute(src, 'isGroup');
             const tgtGroup = graph.getNodeAttribute(tgt, 'isGroup');
-            // Hide edges connecting individual nodes (only show group-level)
             graph.setEdgeAttribute(edge, 'hidden', !srcGroup && !tgtGroup);
           } else {
             const srcGroup = graph.getNodeAttribute(graph.source(edge), 'isGroup');
             const tgtGroup = graph.getNodeAttribute(graph.target(edge), 'isGroup');
-            // Hide edges connecting group nodes (only show individual-level)
             graph.setEdgeAttribute(edge, 'hidden', srcGroup || tgtGroup);
           }
         });
 
         set((state) => {
           state.viewMode = mode;
-          state.graphVersion += 1;
         });
+
+        // Sync React Flow arrays after visibility change
+        useGraphStore.getState().syncFromGraphology();
       },
 
       toggleGroupExpanded: (groupId) =>
@@ -315,12 +499,47 @@ export const useGraphStore = create<GraphState>()(
           state.keyboardFocusedNodeId = nodeId;
         }),
 
+      // ── Node type filters ──────────────────────────────────────────────────
+
+      toggleNodeTypeFilter: (type) => {
+        const next = new Set(useGraphStore.getState().nodeTypeFilters);
+        if (next.has(type)) next.delete(type);
+        else next.add(type);
+        // Rebuild RF arrays with new filter
+        const graph = graphRef.current;
+        if (graph) {
+          const s = useGraphStore.getState();
+          const { rfNodes, rfEdges } = buildRFNodesAndEdges(graph, next, s.focusedNodeId, s.connectedNodeIds, s.selectedNodeIds);
+          set((state) => {
+            state.nodeTypeFilters = next;
+            state.rfNodes = rfNodes;
+            state.rfEdges = rfEdges;
+          });
+        } else {
+          set((state) => { state.nodeTypeFilters = next; });
+        }
+      },
+
+      setNodeTypeFilters: (filters) => {
+        const graph = graphRef.current;
+        if (graph) {
+          const s = useGraphStore.getState();
+          const { rfNodes, rfEdges } = buildRFNodesAndEdges(graph, filters, s.focusedNodeId, s.connectedNodeIds, s.selectedNodeIds);
+          set((state) => {
+            state.nodeTypeFilters = filters;
+            state.rfNodes = rfNodes;
+            state.rfEdges = rfEdges;
+          });
+        } else {
+          set((state) => { state.nodeTypeFilters = filters; });
+        }
+      },
+
       // ── Flow animation actions ─────────────────────────────────────────────
 
       startFlowReplay: (runtimeEdges) => {
         const graph = graphRef.current;
         if (graph) {
-          // Add runtime edges directly to the graphology graph
           for (const re of runtimeEdges) {
             if (
               graph.hasNode(re.sourceNodeId) &&
@@ -345,6 +564,7 @@ export const useGraphStore = create<GraphState>()(
           state.errorNodeIds = new Set();
           state.callStack = [];
         });
+        useGraphStore.getState().syncFromGraphology();
       },
 
       setFlowStep: (step) =>
@@ -378,7 +598,6 @@ export const useGraphStore = create<GraphState>()(
       clearFlowReplay: () => {
         const graph = graphRef.current;
         if (graph) {
-          // Remove all runtime edges
           graph.edges().forEach((edge) => {
             if (graph.getEdgeAttribute(edge, 'isRuntime')) {
               graph.dropEdge(edge);
@@ -394,6 +613,7 @@ export const useGraphStore = create<GraphState>()(
           state.errorNodeIds = new Set();
           state.callStack = [];
         });
+        useGraphStore.getState().syncFromGraphology();
       },
 
       getNodeFlowState: (nodeId) => {
@@ -407,28 +627,94 @@ export const useGraphStore = create<GraphState>()(
 
       // ── Focus + Search ─────────────────────────────────────────────────────
 
-      setFocusMode: (nodeId) =>
+      setFocusMode: (nodeId) => {
+        const graph = graphRef.current;
+        const connected = new Set<string>([nodeId]);
+        if (graph && graph.hasNode(nodeId)) {
+          graph.neighbors(nodeId).forEach((n) => {
+            // Only include visible (non-hidden) neighbors
+            if (!graph.getNodeAttribute(n, 'hidden')) {
+              connected.add(n);
+            }
+          });
+        }
         set((state) => {
-          const graph = graphRef.current;
-          const connected = new Set<string>([nodeId]);
-          if (graph && graph.hasNode(nodeId)) {
-            graph.neighbors(nodeId).forEach((n) => connected.add(n));
-          }
           state.focusedNodeId = nodeId;
           state.connectedNodeIds = connected;
           state.selectedNodeIds = new Set([nodeId]);
-        }),
+          state.neighborNodeIds = new Set(); // clear — focus mode handles this differently
+        });
+        useGraphStore.getState().syncFromGraphology();
+        // Auto-fit connected nodes into viewport
+        window.dispatchEvent(new CustomEvent('omnious:focus-fit'));
+      },
 
-      clearFocusMode: () =>
+      clearFocusMode: () => {
         set((state) => {
           state.focusedNodeId = null;
           state.connectedNodeIds = new Set();
-        }),
+          state.selectedNodeIds = new Set();
+          state.neighborNodeIds = new Set();
+          state.highlightedNodeId = null;
+        });
+        useGraphStore.getState().syncFromGraphology();
+        // Restore edge opacity without highlighting any node
+        useGraphStore.getState().highlightConnectedEdges(null);
+      },
 
       setNodeSearchOpen: (open) =>
         set((state) => {
           state.nodeSearchOpen = open;
         }),
+
+      // ── Edge highlighting ──────────────────────────────────────────────────
+
+      highlightConnectedEdges: (nodeId) => {
+        set((state) => {
+          state.highlightedNodeId = nodeId;
+          // Update edge z-index and stroke for highlighted edges
+          const AMBER_STROKE = 'oklch(0.75 0.18 75)'; // amber/gold
+          for (const edge of state.rfEdges) {
+            if (nodeId && (edge.source === nodeId || edge.target === nodeId)) {
+              edge.zIndex = 10;
+              edge.style = { ...edge.style, stroke: AMBER_STROKE, strokeWidth: 2.5, opacity: 1 };
+            } else {
+              edge.zIndex = 0;
+              // Restore original color from graphology; dim non-connected edges when highlighting
+              const graph = graphRef.current;
+              if (graph && graph.hasEdge(edge.id)) {
+                const attrs = graph.getEdgeAttributes(edge.id);
+                edge.style = {
+                  ...edge.style,
+                  stroke: attrs.color,
+                  strokeWidth: attrs.size,
+                  opacity: nodeId ? 0.1 : 0.45,
+                };
+              }
+            }
+          }
+        });
+      },
+
+      // ── Edge routes ────────────────────────────────────────────────────────
+
+      setEdgeRoutes: (routes) =>
+        set((state) => {
+          state.edgeRoutes = routes;
+        }),
+
+      // ── Node position lock ─────────────────────────────────────────────────
+
+      toggleNodesLocked: () => {
+        set((state) => {
+          state.nodesLocked = !state.nodesLocked;
+          // Update draggable on all RF nodes
+          const locked = state.nodesLocked;
+          for (const node of state.rfNodes) {
+            node.draggable = !locked;
+          }
+        });
+      },
     })),
   ),
 );

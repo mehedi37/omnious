@@ -117,6 +117,10 @@ const pushFromCLISchema = z.object({
     .optional(),
   index_hash: z.string().optional(),
   dry_run: z.boolean().optional(),
+  /** File paths deleted since last push — their nodes (and cascaded edges) will be removed */
+  stale_file_paths: z.array(z.string()).optional(),
+  /** Changed file paths — outgoing edges from their nodes are deleted before re-inserting */
+  changed_file_paths: z.array(z.string()).optional(),
 });
 
 const getProjectStatusFromCLISchema = z.object({
@@ -310,10 +314,10 @@ export const graphRouter = router({
   pushFromCLI: publicProcedure
     .input(pushFromCLISchema)
     .mutation(async ({ ctx, input }) => {
-      // Authenticate via project API key
+      // Authenticate via project API key — join workspace for slug
       const { data: project, error: projectError } = await ctx.adminDb
         .from('projects')
-        .select('id, name, slug')
+        .select('id, name, slug, workspaces(slug)')
         .eq('api_key', input.projectApiKey)
         .single();
 
@@ -324,11 +328,15 @@ export const graphRouter = router({
         });
       }
 
+      const workspaceSlug = (project.workspaces as unknown as { slug: string } | null)?.slug ?? null;
+
       // Dry run — just validate the key and return project info
       if (input.dry_run) {
         return {
           project_id: project.id,
           project_name: project.name,
+          project_slug: project.slug,
+          workspace_slug: workspaceSlug,
           nodes_upserted: 0,
           edges_upserted: 0,
           edges_skipped: 0,
@@ -338,6 +346,60 @@ export const graphRouter = router({
       let nodesUpserted = 0;
       let edgesUpserted = 0;
       let edgesSkipped = 0;
+
+      // ── Pre-push cleanup ──
+
+      // 1. Delete nodes from removed files (FK cascade removes their edges automatically)
+      const staleFilePaths = input.stale_file_paths ?? [];
+      if (staleFilePaths.length > 0) {
+        const { error: staleError } = await ctx.adminDb
+          .from('code_nodes')
+          .delete()
+          .eq('project_id', project.id)
+          .in('file_path', staleFilePaths);
+
+        if (staleError) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: `Stale node cleanup failed: ${staleError.message}`,
+          });
+        }
+      }
+
+      // 2. Delete outgoing edges from changed files so stale call relationships
+      //    are removed before we re-insert the current set.
+      const changedFilePaths = input.changed_file_paths ?? [];
+      if (changedFilePaths.length > 0) {
+        // Resolve node IDs for changed files first
+        const { data: changedNodeIds, error: changedNodesError } = await ctx.adminDb
+          .from('code_nodes')
+          .select('id')
+          .eq('project_id', project.id)
+          .in('file_path', changedFilePaths);
+
+        if (changedNodesError) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: `Changed node lookup failed: ${changedNodesError.message}`,
+          });
+        }
+
+        if (changedNodeIds && changedNodeIds.length > 0) {
+          const ids = changedNodeIds.map((r) => r.id);
+          const { error: edgeCleanupError } = await ctx.adminDb
+            .from('code_edges')
+            .delete()
+            .eq('project_id', project.id)
+            .in('source_node_id', ids);
+
+          if (edgeCleanupError) {
+            throw new TRPCError({
+              code: 'INTERNAL_SERVER_ERROR',
+              message: `Edge cleanup for changed files failed: ${edgeCleanupError.message}`,
+            });
+          }
+        }
+      }
 
       // Step 1: Upsert nodes
       if (input.nodes.length > 0) {
@@ -460,6 +522,8 @@ export const graphRouter = router({
       return {
         project_id: project.id,
         project_name: project.name,
+        project_slug: project.slug,
+        workspace_slug: workspaceSlug,
         nodes_upserted: nodesUpserted,
         edges_upserted: edgesUpserted,
         edges_skipped: edgesSkipped,
@@ -470,10 +534,10 @@ export const graphRouter = router({
   getProjectStatusFromCLI: publicProcedure
     .input(getProjectStatusFromCLISchema)
     .query(async ({ ctx, input }) => {
-      // Authenticate via project API key
+      // Authenticate via project API key — join workspace for slug
       const { data: project, error: projectError } = await ctx.adminDb
         .from('projects')
-        .select('id, name, slug, status, last_indexed_at, last_index_hash, updated_at')
+        .select('id, name, slug, status, last_indexed_at, last_index_hash, updated_at, workspace_id, workspaces(slug)')
         .eq('api_key', input.projectApiKey)
         .single();
 
@@ -483,6 +547,9 @@ export const graphRouter = router({
           message: 'Invalid project API key.',
         });
       }
+
+      // Extract workspace slug from the joined relation
+      const workspaceSlug = (project.workspaces as unknown as { slug: string } | null)?.slug ?? null;
 
       // Count nodes, edges, traces, errors
       const [nodeCount, edgeCount, traceCount, errorCount] = await Promise.all([
@@ -512,6 +579,7 @@ export const graphRouter = router({
         id: project.id,
         name: project.name,
         slug: project.slug,
+        workspace_slug: workspaceSlug,
         status: project.status ?? 'active',
         last_indexed_at: project.last_indexed_at ?? project.updated_at,
         last_index_hash: project.last_index_hash ?? null,
@@ -520,5 +588,98 @@ export const graphRouter = router({
         trace_count: traceCount,
         error_count: errorCount,
       };
+    }),
+
+  /**
+   * Push static analysis diagnostics from the CLI.
+   * Creates error_snapshots for each diagnostic linked to a code node.
+   * Authenticated via project API key (same as pushFromCLI).
+   */
+  pushDiagnostics: publicProcedure
+    .input(
+      z.object({
+        projectApiKey: z.string(),
+        diagnostics: z.array(
+          z.object({
+            code_node_oir_id: z.string(),
+            rule_id: z.string(),
+            severity: z.enum(['error', 'warning', 'info']),
+            message: z.string(),
+            file_path: z.string(),
+            line_start: z.number().int().optional(),
+            line_end: z.number().int().optional(),
+            suggestion: z.string().optional(),
+            metadata: z.record(z.unknown()).optional(),
+          }),
+        ),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Auth via project API key
+      const { data: project, error: projectError } = await ctx.adminDb
+        .from('projects')
+        .select('id')
+        .eq('api_key', input.projectApiKey)
+        .single();
+
+      if (projectError || !project) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Invalid project API key.',
+        });
+      }
+
+      // Resolve OIR IDs → code_node UUIDs
+      const oirIds = [...new Set(input.diagnostics.map((d) => d.code_node_oir_id))];
+      const { data: nodes } = await ctx.adminDb
+        .from('code_nodes')
+        .select('id, oir_id')
+        .eq('project_id', project.id)
+        .in('oir_id', oirIds);
+
+      const oirToUuid = new Map<string, string>();
+      for (const n of nodes ?? []) {
+        oirToUuid.set(n.oir_id, n.id);
+      }
+
+      // Upsert error snapshots for each diagnostic
+      let created = 0;
+      let skipped = 0;
+      const upsertPromises = input.diagnostics.map(async (d) => {
+        const codeNodeId = oirToUuid.get(d.code_node_oir_id);
+        if (!codeNodeId) {
+          skipped++;
+          return;
+        }
+
+        const fingerprint = `static::${d.rule_id}::${codeNodeId}::${d.file_path}:${d.line_start ?? 0}`;
+
+        const { error } = await ctx.adminDb.rpc('upsert_error_snapshot', {
+          p_project_id: project.id,
+          p_code_node_id: codeNodeId,
+          p_trace_id: null as unknown as string, // static analysis — no trace
+          p_span_id: null as unknown as string,
+          p_error_type: `static/${d.rule_id}`,
+          p_error_message: d.message,
+          p_error_stack: d.suggestion ?? '',
+          p_fingerprint: fingerprint.slice(0, 255),
+          p_metadata: {
+            severity: d.severity,
+            rule_id: d.rule_id,
+            file_path: d.file_path,
+            line_start: d.line_start,
+            line_end: d.line_end,
+            source: 'cli-static-analysis',
+            ...(d.metadata ?? {}),
+          } as import('../lib/supabase/database.types.js').Json,
+        });
+
+        if (!error) created++;
+        else skipped++;
+      });
+
+      await Promise.allSettled(upsertPromises);
+
+      return { created, skipped, total: input.diagnostics.length };
     }),
 });

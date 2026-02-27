@@ -3,7 +3,7 @@ import path from 'node:path';
 import ora from 'ora';
 import { loadConfig } from '../config/loader.js';
 import { walkFiles } from '../utils/fs.js';
-import { createDefaultRegistry } from '../parsers/registry.js';
+import { extractFromFile, canExtract } from '../parsers/extractor-registry.js';
 import { OIRBuilder } from '../oir/builder.js';
 import { hashFileContent } from '../oir/hasher.js';
 import { logger } from '../utils/logger.js';
@@ -17,42 +17,51 @@ interface IndexOptions {
   verbose?: boolean;
   dryRun?: boolean;
   force?: boolean;
+  /** Internal: suppress banner when called from `omnious sync` */
+  _skipBanner?: boolean;
 }
 
 /**
  * `omnious index` — parse the codebase and build local OIR graph
  *
- * Reads .omnious.yml, discovers files, runs parsers, writes .omnious/index.json
+ * Uses gitignore-first file discovery and tree-sitter-based extractors.
+ * Supports: TypeScript/JavaScript, Python, Go, Java, C#
  */
 export async function indexCommand(opts: IndexOptions): Promise<void> {
   const cwd = process.cwd();
+  if (!opts._skipBanner) {
+    logger.banner();
+    console.log('');
+  }
 
   // Load config
   const config = loadConfig(opts.config);
   const spinner = ora({ isSilent: !!process.env['CI'] });
 
-  // Step 1: Discover files
-  spinner.start('Discovering files...');
+  // Step 1: Discover files (gitignore-first)
+  spinner.start('Discovering files…');
   const files = await walkFiles(config, cwd);
 
   if (files.length === 0) {
-    spinner.fail('No files matched the include patterns.');
-    logger.dim('Check "index.include" in .omnious.yml');
+    spinner.fail('No parseable files found.');
+    logger.dim('  Make sure you\'re in the project root.');
+    logger.dim('  Supported: .ts, .tsx, .js, .jsx, .py, .go, .java, .cs');
     process.exitCode = 1;
     return;
   }
-  spinner.succeed(`Found ${files.length} files`);
+  spinner.succeed(`Found ${logger.theme.brand(String(files.length))} files`);
 
   // Step 2: Check for incremental indexing
   const previousIndex = loadPreviousIndex(cwd);
   let skippedCount = 0;
+  let parsedCount = 0;
+  let noParserCount = 0;
 
-  // Step 3: Parse files
-  const registry = createDefaultRegistry();
+  // Step 3: Parse files with tree-sitter extractors
   const builder = new OIRBuilder();
   const allErrors: ParseError[] = [];
 
-  spinner.start('Parsing files...');
+  spinner.start('Parsing files…');
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i]!;
@@ -91,27 +100,30 @@ export async function indexCommand(opts: IndexOptions): Promise<void> {
       continue;
     }
 
-    // Find parser for file
-    const parser = registry.detect(file);
-    if (!parser) {
+    // Check if we have an extractor for this file
+    if (!canExtract(file)) {
+      noParserCount++;
       if (opts.verbose) {
-        logger.dim(`  Skipping ${file} (no parser for extension)`);
+        logger.dim(`  Skipping ${file} (no extractor)`);
       }
       continue;
     }
 
-    // Parse
+    // Parse with tree-sitter + extract
     try {
-      const result = parser.parse(content, file);
-      builder.addParseResult(result, fileHash);
+      const result = extractFromFile(content, file);
+      if (result) {
+        builder.addParseResult(result, fileHash);
+        parsedCount++;
 
-      if (result.errors.length > 0) {
-        allErrors.push(...result.errors);
-        if (opts.verbose) {
-          for (const err of result.errors) {
-            logger.warn(
-              `  ${err.file_path}:${err.line ?? '?'} — ${err.message}`,
-            );
+        if (result.errors.length > 0) {
+          allErrors.push(...result.errors);
+          if (opts.verbose) {
+            for (const err of result.errors) {
+              logger.warn(
+                `  ${err.file_path}:${err.line ?? '?'} — ${err.message}`,
+              );
+            }
           }
         }
       }
@@ -119,53 +131,52 @@ export async function indexCommand(opts: IndexOptions): Promise<void> {
       allErrors.push({
         file_path: file,
         line: null,
-        message: `Parser crash: ${err instanceof Error ? err.message : String(err)}`,
+        message: `Extractor crash: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
 
     // Update spinner
     if (i % 50 === 0) {
-      spinner.text = `Parsing files... (${i + 1}/${files.length})`;
+      spinner.text = `Parsing files… (${i + 1}/${files.length})`;
     }
   }
 
-  spinner.succeed('Parsing complete');
+  spinner.succeed(`Parsed ${logger.theme.brand(String(parsedCount))} files`);
 
   // Step 4: Build index
-  spinner.start('Building OIR graph...');
+  spinner.start('Building OIR graph…');
   const index = builder.build();
   spinner.succeed('OIR graph built');
 
   // Print summary
   const { summary } = index;
-  logger.info('');
-  logger.info('Index Summary:');
-  logger.info(`  Files:       ${summary.total_files}`);
-  logger.info(`  Nodes:       ${summary.total_nodes}`);
-  logger.info(`  Edges:       ${summary.total_edges}`);
+
+  logger.section('Index Summary');
+  logger.kv('Files', summary.total_files);
+  logger.kv('Nodes', summary.total_nodes);
+  logger.kv('Edges', summary.total_edges);
   if (skippedCount > 0) {
-    logger.dim(`  Unchanged:   ${skippedCount} (reused from cache)`);
+    logger.kv('Unchanged', `${skippedCount} ${logger.theme.muted('(cached)')}`);
   }
   if (summary.parse_errors > 0) {
-    logger.warn(`  Parse errors: ${summary.parse_errors}`);
+    logger.kv('Parse Errors', logger.theme.highlight(String(summary.parse_errors)));
   }
 
   // Node type breakdown
+  logger.section('Nodes by Type');
+  logger.nodeTypeBreakdown(summary.nodes_by_type);
+
+  // Edge type breakdown (verbose only)
   if (opts.verbose) {
-    logger.info('');
-    logger.info('  Nodes by type:');
-    for (const [type, count] of Object.entries(summary.nodes_by_type)) {
-      logger.info(`    ${type}: ${count}`);
-    }
-    logger.info('  Edges by type:');
-    for (const [type, count] of Object.entries(summary.edges_by_type)) {
-      logger.info(`    ${type}: ${count}`);
+    logger.section('Edges by Type');
+    for (const [type, count] of Object.entries(summary.edges_by_type).sort((a, b) => b[1] - a[1])) {
+      logger.kv(type, count);
     }
   }
 
   if (opts.dryRun) {
-    logger.info('');
-    logger.info('(dry run — not writing index.json)');
+    console.log('');
+    logger.warnBox(['Parse without writing index file'], '⚠ Dry Run');
     return;
   }
 
@@ -177,24 +188,22 @@ export async function indexCommand(opts: IndexOptions): Promise<void> {
 
   const indexPath = path.join(cacheDir, INDEX_FILE);
   fs.writeFileSync(indexPath, JSON.stringify(index, null, 2), 'utf-8');
-  logger.success(`\nWrote ${path.relative(cwd, indexPath)}`);
 
-  // Show diff from previous if available
+  // Diff from previous
+  const diffLines: string[] = [`Wrote ${logger.theme.accent(path.relative(cwd, indexPath))}`];
   if (previousIndex) {
     const nodeDiff = index.nodes.length - previousIndex.nodes.length;
     const edgeDiff = index.edges.length - previousIndex.edges.length;
     if (nodeDiff !== 0 || edgeDiff !== 0) {
-      logger.dim(
-        `  Δ nodes: ${nodeDiff >= 0 ? '+' : ''}${nodeDiff}  ` +
-          `Δ edges: ${edgeDiff >= 0 ? '+' : ''}${edgeDiff}`,
-      );
+      diffLines.push(`Δ nodes: ${logger.diff(nodeDiff)}  Δ edges: ${logger.diff(edgeDiff)}`);
     }
     if (index.project_hash !== previousIndex.project_hash) {
-      logger.dim('  Project hash changed — push recommended');
+      diffLines.push(`${logger.theme.highlight('Project hash changed')} — push recommended`);
     } else {
-      logger.dim('  Project hash unchanged — no push needed');
+      diffLines.push(`${logger.theme.muted('Project hash unchanged')} — no push needed`);
     }
   }
+  logger.successBox(diffLines);
 }
 
 /**

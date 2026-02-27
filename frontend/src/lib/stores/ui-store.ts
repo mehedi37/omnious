@@ -6,6 +6,8 @@ interface UIState {
   detailPanelOpen: boolean;
   activeDetailTab: 'properties' | 'code' | 'errors' | 'traces';
   pendingReplayTraceId: string | null;
+  filtersOpen: boolean;
+  keyboardShortcutsOpen: boolean;
 
   // Actions
   toggleSidebar: () => void;
@@ -16,6 +18,10 @@ interface UIState {
   setDetailPanelOpen: (open: boolean) => void;
   setActiveDetailTab: (tab: UIState['activeDetailTab']) => void;
   setPendingReplayTraceId: (traceId: string | null) => void;
+  toggleFilters: () => void;
+  setFiltersOpen: (open: boolean) => void;
+  toggleKeyboardShortcuts: () => void;
+  setKeyboardShortcutsOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>()((set) => ({
@@ -24,6 +30,8 @@ export const useUIStore = create<UIState>()((set) => ({
   detailPanelOpen: false,
   activeDetailTab: 'properties',
   pendingReplayTraceId: null,
+  filtersOpen: false,
+  keyboardShortcutsOpen: false,
 
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
 
@@ -40,4 +48,12 @@ export const useUIStore = create<UIState>()((set) => ({
   setActiveDetailTab: (tab) => set({ activeDetailTab: tab, detailPanelOpen: true }),
 
   setPendingReplayTraceId: (traceId) => set({ pendingReplayTraceId: traceId }),
+
+  toggleFilters: () => set((state) => ({ filtersOpen: !state.filtersOpen })),
+
+  setFiltersOpen: (open) => set({ filtersOpen: open }),
+
+  toggleKeyboardShortcuts: () => set((state) => ({ keyboardShortcutsOpen: !state.keyboardShortcutsOpen })),
+
+  setKeyboardShortcutsOpen: (open) => set({ keyboardShortcutsOpen: open }),
 }));

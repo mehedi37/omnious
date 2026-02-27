@@ -1,13 +1,12 @@
 'use client';
 
+import { useCanvasNavigation } from './use-canvas-navigation';
+
 /**
  * Global keyboard shortcuts for the graph view.
- *
- * NOTE: All keyboard shortcuts have been migrated to use-canvas-navigation.ts
- * which runs inside the SigmaContainer and has access to the sigma camera.
- * This hook is kept as a no-op for backward compat with graph-canvas.tsx imports.
+ * Delegates to useCanvasNavigation which handles all keyboard shortcuts
+ * inside the ReactFlowProvider context.
  */
 export function useKeyboardShortcuts() {
-  // All shortcuts are now handled by useCanvasNavigation() inside SigmaInner.
-  // See: frontend/src/hooks/use-canvas-navigation.ts
+  useCanvasNavigation();
 }

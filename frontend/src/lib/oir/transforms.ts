@@ -1,7 +1,7 @@
 import type { MultiDirectedGraph } from 'graphology';
 import { EDGE_COLORS, NODE_COLORS } from './constants';
 import type { CodeEdge, CodeNode, ErrorHeatmapEntry, OIREdgeType } from './types';
-import type { SigmaEdgeAttributes, SigmaNodeAttributes } from '@/lib/stores/graph-store';
+import type { GraphEdgeAttributes, GraphNodeAttributes } from '@/lib/stores/graph-store';
 import type { ViewMode } from '@/lib/stores/graph-store';
 
 /** Grid layout constants for initial placement before ELK runs */
@@ -20,7 +20,7 @@ const GROUP_SPACING_Y = 180;
 export function pushCodesToGraph(
   codeNodes: CodeNode[],
   codeEdges: CodeEdge[],
-  graph: MultiDirectedGraph<SigmaNodeAttributes, SigmaEdgeAttributes>,
+  graph: MultiDirectedGraph<GraphNodeAttributes, GraphEdgeAttributes>,
   viewMode: ViewMode,
 ): { nodeToGroupId: Map<string, string> } {
   // ── Drop all non-runtime nodes / edges ─────────────────────────────────────
@@ -157,7 +157,7 @@ export function pushCodesToGraph(
  */
 export function applyErrorHeatmapToGraph(
   heatmap: ErrorHeatmapEntry[],
-  graph: MultiDirectedGraph<SigmaNodeAttributes, SigmaEdgeAttributes>,
+  graph: MultiDirectedGraph<GraphNodeAttributes, GraphEdgeAttributes>,
 ): void {
   for (const entry of heatmap) {
     if (!graph.hasNode(entry.code_node_id)) continue;
