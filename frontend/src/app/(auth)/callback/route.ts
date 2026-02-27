@@ -31,11 +31,21 @@ export async function GET(request: NextRequest) {
 
     if (!error) {
       const forwardedHost = request.headers.get('x-forwarded-host');
-      const isLocalEnv = process.env.NODE_ENV === 'development';
+      // Treat as local if running via Next.js dev server OR if origin/host is
+      // localhost / 127.0.0.1 (covers Docker with NODE_ENV=production).
+      const isLocalOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(origin);
+      const isLocalHost = forwardedHost
+        ? /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(forwardedHost)
+        : false;
+      const isLocalEnv =
+        process.env.NODE_ENV === 'development' || isLocalOrigin || isLocalHost;
 
       let redirectUrl: string;
       if (isLocalEnv) {
-        redirectUrl = `${origin}${next}`;
+        // Always use http:// locally — Next.js dev / Docker doesn't have TLS.
+        // Using https:// causes SSL_ERROR_RX_RECORD_TOO_LONG in Firefox/Zen.
+        const base = forwardedHost ? `http://${forwardedHost}` : origin.replace(/^https:\/\//, 'http://');
+        redirectUrl = `${base}${next}`;
       } else if (forwardedHost) {
         redirectUrl = `https://${forwardedHost}${next}`;
       } else {

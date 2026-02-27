@@ -19,12 +19,14 @@ program
   .command('init')
   .description('Initialize .omnious.yml in the current directory')
   .option('-y, --yes', 'Accept all defaults (non-interactive)')
+  .option('-i, --interactive', 'Interactive mode: select workspace and create project')
   .option('--api-url <url>', 'API URL')
   .option('--project-key <key>', 'Project API key')
   .option('--link <apiKey>', 'Auto-link project using an API key')
   .action(async (opts) => {
     await initCommand({
       yes: opts.yes,
+      interactive: opts.interactive,
       apiUrl: opts.apiUrl,
       projectKey: opts.projectKey,
       link: opts.link,
@@ -34,15 +36,17 @@ program
 // ── omnious login ──
 program
   .command('login')
-  .description('Authenticate with your project API key')
+  .description('Authenticate with your project API key or via browser')
   .option('--api-key <key>', 'API key (or enter interactively)')
   .option('--api-url <url>', 'API URL override')
+  .option('-b, --browser', 'Log in via browser (Device Flow)')
   .option('--logout', 'Remove stored credentials')
   .option('--status', 'Show current auth status')
   .action(async (opts) => {
     await loginCommand({
       apiKey: opts.apiKey,
       apiUrl: opts.apiUrl,
+      browser: opts.browser,
       logout: opts.logout,
       status: opts.status,
     });
@@ -89,6 +93,7 @@ program
   .option('--api-key <key>', 'Project API key')
   .option('-c, --config <path>', 'Path to .omnious.yml')
   .option('--force', 'Push even if project hash is unchanged')
+  .option('--clean', 'Wipe local push state and do a full re-push')
   .option('--dry-run', 'Show what would be pushed without sending')
   .option('-v, --verbose', 'Show detailed output')
   .action(async (opts) => {
@@ -96,6 +101,7 @@ program
       apiKey: opts.apiKey,
       config: opts.config,
       force: opts.force,
+      clean: opts.clean,
       dryRun: opts.dryRun,
       verbose: opts.verbose,
     });

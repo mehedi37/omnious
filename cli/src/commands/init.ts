@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { input, confirm } from '@inquirer/prompts';
+import { input, confirm, select } from '@inquirer/prompts';
 import ora from 'ora';
 import { defaultConfigYaml } from '../config/schema.js';
 import { findConfigPath } from '../config/loader.js';
-import { saveCredentials } from '../api/auth.js';
+import { saveCredentials, loadCredentials } from '../api/auth.js';
 import { detectStack, type DetectionResult } from '../parsers/detect-stack.js';
 import { scanProject } from '../utils/fs.js';
 import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../parsers/languages.js';
@@ -29,6 +29,7 @@ interface InitOptions {
   apiUrl?: string;
   projectKey?: string;
   link?: string;
+  interactive?: boolean;
 }
 
 /**
@@ -45,6 +46,11 @@ export async function initCommand(opts: InitOptions): Promise<void> {
   // ── --link shortcut: validate key, auto-write full config ──
   if (opts.link) {
     return linkProject(cwd, opts);
+  }
+
+  // ── Interactive mode: select workspace → create project → link ──
+  if (opts.interactive) {
+    return interactiveInit(cwd, opts);
   }
 
   // Check if config already exists
@@ -122,6 +128,32 @@ export async function initCommand(opts: InitOptions): Promise<void> {
   // Add .omnious/ to .gitignore if not already there
   await ensureGitignore(cwd);
 
+  // If a project API key was entered, validate it against the backend and enrich config
+  let projectStatus: Awaited<ReturnType<OmniousApiClient['getProjectStatus']>> | null = null;
+  if (projectKey) {
+    const spinner = ora({ isSilent: !!process.env['CI'] });
+    spinner.start('Validating API key…');
+    try {
+      const client = new OmniousApiClient(apiUrl, projectKey);
+      projectStatus = await client.getProjectStatus();
+      spinner.succeed(`Connected to project: ${logger.theme.brand(projectStatus.name)}`);
+      // Rewrite the config with full project info (slug, id, workspace)
+      const richYaml = defaultConfigYaml({
+        apiUrl,
+        projectKey,
+        projectId: projectStatus.id,
+        projectName: projectStatus.name,
+        slug: projectStatus.slug,
+        workspaceSlug: projectStatus.workspace_slug ?? undefined,
+      });
+      fs.writeFileSync(configPath, richYaml, 'utf-8');
+      // Save credentials so `omnious push` works without OMNIOUS_PROJECT_KEY env var
+      saveCredentials({ api_key: projectKey, api_url: apiUrl });
+    } catch {
+      spinner.warn('Could not validate API key (backend unreachable or key invalid)');
+    }
+  }
+
   // Success output
   const summaryLines = [
     `Config created at ${logger.theme.accent(path.relative(cwd, configPath))}`,
@@ -129,11 +161,20 @@ export async function initCommand(opts: InitOptions): Promise<void> {
     `${logger.label('Discovery')} gitignore-first (zero config)`,
     `${logger.label('Files')} ${totalFiles} parseable files found`,
   ];
-  if (!prodUrl) {
-    summaryLines.push(`${logger.label('API URL')} ${apiUrl}`);
-  }
-  if (projectKey) {
-    summaryLines.push(`${logger.label('API Key')} ${'*'.repeat(4)}...${projectKey.slice(-4)}`);
+  if (projectStatus) {
+    summaryLines.push(`${logger.label('Project')} ${logger.theme.brand(projectStatus.name)} ${logger.theme.muted(`(${projectStatus.slug})`)}`);
+    summaryLines.push(`${logger.label('Project ID')} ${projectStatus.id}`);
+    if (projectStatus.workspace_slug) {
+      summaryLines.push(`${logger.label('Workspace')} ${projectStatus.workspace_slug}`);
+    }
+    summaryLines.push(`${logger.label('Key saved')} ${logger.theme.muted('~/.omnious/credentials.json')}`);
+  } else {
+    if (!prodUrl) {
+      summaryLines.push(`${logger.label('API URL')} ${apiUrl}`);
+    }
+    if (projectKey) {
+      summaryLines.push(`${logger.label('API Key')} ${'*'.repeat(4)}...${projectKey.slice(-4)}`);
+    }
   }
   logger.successBox(summaryLines, '✔ Initialized');
 
@@ -277,6 +318,162 @@ function formatFramework(fw: string): string {
     jekyll: 'Jekyll',
   };
   return names[fw] ?? fw;
+}
+
+/**
+ * Interactive init: user selects workspace → creates project → config is auto-generated.
+ * Requires the user to be logged in with a Supabase access token.
+ */
+async function interactiveInit(cwd: string, opts: InitOptions): Promise<void> {
+  const spinner = ora({ isSilent: !!process.env['CI'] });
+
+  // Resolve API URL
+  const prodUrl = getProdUrl();
+  const apiUrl = opts.apiUrl ?? prodUrl ?? 'http://localhost:4000';
+  const client = new OmniousApiClient(apiUrl, '');
+
+  // Check for existing access token
+  const creds = loadCredentials();
+  const accessToken = creds?.access_token;
+  if (!accessToken) {
+    logger.error('Not authenticated. Run `omnious login` first to get an access token.');
+    logger.dim('  Interactive init requires user authentication, not just an API key.');
+    process.exitCode = 1;
+    return;
+  }
+
+  // Scan project first for context
+  logger.step('Scanning project…');
+  const fileCounts = scanProject(cwd);
+  const totalFiles = [...fileCounts.values()].reduce((a, b) => a + b, 0);
+  if (totalFiles > 0) {
+    printFileSummary(fileCounts, totalFiles);
+  }
+  const detection = detectStack(cwd);
+  printDetection(detection);
+
+  // Fetch workspaces
+  spinner.start('Fetching your workspaces…');
+  let workspaces: Awaited<ReturnType<OmniousApiClient['listWorkspaces']>>;
+  try {
+    workspaces = await client.listWorkspaces(accessToken);
+    spinner.succeed(`Found ${workspaces.length} workspace(s)`);
+  } catch (err) {
+    spinner.fail('Failed to fetch workspaces');
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(msg);
+    logger.dim('  Your access token may be expired. Run `omnious login` again.');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (workspaces.length === 0) {
+    logger.error('You don\'t belong to any workspaces yet.');
+    logger.dim('  Create one at the dashboard first, then re-run `omnious init -i`.');
+    process.exitCode = 1;
+    return;
+  }
+
+  // Pick workspace
+  const workspaceChoice = await select({
+    message: 'Select a workspace:',
+    choices: workspaces.map((w) => ({
+      name: `${w.workspace.name} (${w.workspace.slug}) — ${w.role}`,
+      value: w.workspace.id,
+    })),
+  });
+
+  const selectedWs = workspaces.find((w) => w.workspace.id === workspaceChoice)!;
+  logger.dim(`  → ${selectedWs.workspace.name}`);
+
+  // Project name
+  const dirName = path.basename(cwd);
+  const projectName = await input({
+    message: 'Project name:',
+    default: dirName,
+  });
+
+  // Slug from name
+  const defaultSlug = projectName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  const projectSlug = await input({
+    message: 'Project slug:',
+    default: defaultSlug,
+    validate: (val) =>
+      /^[a-z0-9-]{2,50}$/.test(val) || 'Slug must be 2-50 chars, lowercase alphanumeric + dashes',
+  });
+
+  // Detect primary language
+  const primaryLang = detection.languages[0] ?? undefined;
+  const framework = detection.frameworks[0] ?? undefined;
+
+  // Create project
+  spinner.start('Creating project…');
+  let project: Awaited<ReturnType<OmniousApiClient['createProject']>>;
+  try {
+    project = await client.createProject(accessToken, {
+      workspaceId: workspaceChoice,
+      name: projectName,
+      slug: projectSlug,
+      primaryLanguage: primaryLang,
+      framework,
+    });
+    spinner.succeed(`Created project: ${logger.theme.brand(project.name)}`);
+  } catch (err) {
+    spinner.fail('Failed to create project');
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(msg);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Write config
+  const yaml = defaultConfigYaml({
+    apiUrl,
+    projectKey: project.api_key,
+    projectId: project.id,
+    projectName: project.name,
+    slug: project.slug,
+    workspaceSlug: selectedWs.workspace.slug,
+  });
+
+  const configPath = path.join(cwd, '.omnious.yml');
+  fs.writeFileSync(configPath, yaml, 'utf-8');
+
+  const cacheDir = path.join(cwd, '.omnious');
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+
+  await ensureGitignore(cwd);
+
+  // Save credentials (api key for future pushes)
+  saveCredentials({
+    ...creds,
+    api_key: project.api_key,
+    api_url: apiUrl,
+  });
+
+  // Summary
+  logger.successBox([
+    `Project ${logger.theme.brand(project.name)} created under ${logger.theme.accent(selectedWs.workspace.name)}`,
+    '',
+    `${logger.label('Project ID')} ${project.id}`,
+    `${logger.label('Workspace')} ${selectedWs.workspace.slug}`,
+    `${logger.label('Slug')} ${project.slug}`,
+    `${logger.label('Files')} ${totalFiles} parseable files found`,
+    `${logger.label('Key saved')} ${logger.theme.muted('~/.omnious/credentials.json')}`,
+  ], '✔ Project Created');
+
+  // Next steps
+  logger.infoBox([
+    `${logger.theme.muted('1.')} Parse & push your codebase:`,
+    `   ${logger.theme.accent('omnious sync')}`,
+    `${logger.theme.muted('2.')} Open the dashboard:`,
+    `   ${logger.theme.accent(`https://app.omnious.dev/${selectedWs.workspace.slug}/${project.slug}`)}`,
+  ], 'Next Steps');
 }
 
 /**

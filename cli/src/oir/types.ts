@@ -104,6 +104,8 @@ export interface IndexSummary {
 export interface PushResult {
   project_id: string;
   project_name: string;
+  project_slug: string;
+  workspace_slug: string | null;
   nodes_upserted: number;
   edges_upserted: number;
   edges_skipped: number;

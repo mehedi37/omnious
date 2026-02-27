@@ -55,51 +55,58 @@ export function GraphControls() {
     const currentFocusId = store.focusedNodeId;
     const graph = graphRef.current;
 
+    // setViewMode now clears focus state before toggling visibility
     store.setViewMode(next);
-    setTimeout(() => {
-      store.requestLayout();
+    store.requestLayout();
 
-      // If in focus mode, transition focus to the corresponding node in the new view
-      if (currentFocusId && graph) {
-        setTimeout(() => {
-          if (next === 'grouped') {
-            // All → Grouped: find the group containing the focused individual node
-            const attrs = graph.hasNode(currentFocusId)
-              ? graph.getNodeAttributes(currentFocusId)
-              : null;
-            let groupId: string | null = null;
-            if (attrs?.filePath) {
-              const dir = attrs.filePath.split('/').slice(0, -1).join('/') || '/';
-              groupId = `group:${dir}`;
-            }
-            // Fallback: scan groups for one containing this node
-            if (!groupId || !graph.hasNode(groupId)) {
-              graph.forEachNode((id, a) => {
-                if (a.isGroup && a.childNodeIds?.includes(currentFocusId)) {
-                  groupId = id;
-                }
-              });
-            }
-            if (groupId && graph.hasNode(groupId)) {
-              useGraphStore.getState().selectNode(groupId);
-              useGraphStore.getState().setFocusMode(groupId);
-              useUIStore.getState().setDetailPanelOpen(true);
-            }
-          } else {
-            // Grouped → All: focus the first child of the focused group
-            const groupAttrs = graph.hasNode(currentFocusId)
-              ? graph.getNodeAttributes(currentFocusId)
-              : null;
-            const firstChild = groupAttrs?.childNodeIds?.[0];
-            if (firstChild && graph.hasNode(firstChild)) {
-              useGraphStore.getState().selectNode(firstChild);
-              useGraphStore.getState().setFocusMode(firstChild);
-              useUIStore.getState().setDetailPanelOpen(true);
+    // If was in focus mode, transition focus to corresponding node in new view
+    if (currentFocusId && graph) {
+      // Use a one-shot listener on layoutVersion to re-focus after layout completes
+      const unsub = useGraphStore.subscribe(
+        (s) => s.isLayouting,
+        (isLayouting, prevLayouting) => {
+          if (prevLayouting && !isLayouting) {
+            unsub();
+            if (next === 'grouped') {
+              // All → Grouped: find the group containing the focused individual node
+              const attrs = graph.hasNode(currentFocusId)
+                ? graph.getNodeAttributes(currentFocusId)
+                : null;
+              let groupId: string | null = null;
+              if (attrs?.filePath) {
+                const dir = attrs.filePath.split('/').slice(0, -1).join('/') || '/';
+                groupId = `group:${dir}`;
+              }
+              if (!groupId || !graph.hasNode(groupId)) {
+                graph.forEachNode((id, a) => {
+                  if (a.isGroup && a.childNodeIds?.includes(currentFocusId)) {
+                    groupId = id;
+                  }
+                });
+              }
+              if (groupId && graph.hasNode(groupId)) {
+                useGraphStore.getState().selectNode(groupId);
+                useGraphStore.getState().setFocusMode(groupId);
+                useUIStore.getState().setDetailPanelOpen(true);
+              }
+            } else {
+              // Grouped → All: focus the first child of the focused group
+              const groupAttrs = graph.hasNode(currentFocusId)
+                ? graph.getNodeAttributes(currentFocusId)
+                : null;
+              const firstChild = groupAttrs?.childNodeIds?.[0];
+              if (firstChild && graph.hasNode(firstChild)) {
+                useGraphStore.getState().selectNode(firstChild);
+                useGraphStore.getState().setFocusMode(firstChild);
+                useUIStore.getState().setDetailPanelOpen(true);
+              }
             }
           }
-        }, 150);
-      }
-    }, 50);
+        },
+      );
+      // Safety: unsubscribe after 3s in case layout never fires
+      setTimeout(() => unsub(), 3000);
+    }
   }
 
   function handleToggleHeatmap() {

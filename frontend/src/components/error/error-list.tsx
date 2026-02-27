@@ -1,6 +1,7 @@
 'use client';
 
-import { AlertCircle, ArrowUpDown, Check, Clock } from 'lucide-react';
+import { AlertCircle, Check, Clock, Crosshair } from 'lucide-react';
+import { usePathname, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
@@ -16,12 +17,19 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useGraphStore } from '@/lib/stores/graph-store';
+import { useUIStore } from '@/lib/stores/ui-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { formatNumber, formatRelativeTime } from '@/lib/utils/format';
 import { trpc } from '@/trpc/client';
 
 export function ErrorList() {
   const currentProjectId = useWorkspaceStore((s) => s.currentProjectId);
+  const workspaceSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const projectSlug = useWorkspaceStore((s) => s.currentProjectSlug);
+  const router = useRouter();
+  const pathname = usePathname();
   const [search, setSearch] = useState('');
 
   const errorsQuery = trpc.error.list.useQuery(
@@ -36,6 +44,23 @@ export function ErrorList() {
     },
     onError: (err) => toast.error(err.message),
   });
+
+  /** Navigate to graph page and focus on the error node */
+  function handleFocusOnGraph(nodeId: string) {
+    const graphPath = `/dashboard/${workspaceSlug}/${projectSlug}/graph`;
+    // If already on the graph page, directly focus the node
+    if (pathname.startsWith(graphPath)) {
+      useGraphStore.getState().selectNode(nodeId);
+      useGraphStore.getState().setFocusMode(nodeId);
+      useGraphStore.getState().highlightConnectedEdges(nodeId);
+      useUIStore.getState().setDetailPanelOpen(true);
+    } else {
+      // Navigate to graph — store the pending focus target so graph page can pick it up
+      // We use sessionStorage as a simple cross-page signal
+      sessionStorage.setItem('omnious:focus-node', nodeId);
+      router.push(graphPath);
+    }
+  }
 
   const errors = errorsQuery.data?.errors ?? [];
   const filtered = search
@@ -120,8 +145,29 @@ export function ErrorList() {
                   <TableCell className="text-right font-mono text-sm font-medium">
                     {formatNumber(error.occurrence_count)}
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground truncate max-w-[120px]">
-                    {error.code_node?.name ?? '—'}
+                  <TableCell className="text-xs text-muted-foreground max-w-[120px]">
+                    {error.code_node?.name ? (
+                      <div className="flex items-center gap-1">
+                        <span className="truncate">{error.code_node.name}</span>
+                        {error.code_node.id && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-5 w-5 shrink-0"
+                                onClick={() => handleFocusOnGraph(error.code_node!.id)}
+                              >
+                                <Crosshair className="h-3 w-3" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom">Focus on graph</TooltipContent>
+                          </Tooltip>
+                        )}
+                      </div>
+                    ) : (
+                      '—'
+                    )}
                   </TableCell>
                   <TableCell className="text-right text-xs text-muted-foreground">
                     <Clock className="h-3 w-3 inline mr-1" />

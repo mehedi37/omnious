@@ -70,6 +70,24 @@ export const configSchema = z.object({
       summary_comment: z.boolean().default(true),
     })
     .optional(),
+
+  rules: z
+    .object({
+      'large-functions': z
+        .object({
+          max_lines: z.number().positive().optional(),
+          max_params: z.number().positive().optional(),
+        })
+        .optional(),
+      'hub-nodes': z
+        .object({
+          max_fan_in: z.number().positive().optional(),
+          max_fan_out: z.number().positive().optional(),
+        })
+        .optional(),
+      disabled: z.array(z.string()).optional(),
+    })
+    .optional(),
 });
 
 export type OmniousConfig = z.infer<typeof configSchema>;

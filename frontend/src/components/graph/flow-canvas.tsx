@@ -17,7 +17,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useTheme } from 'next-themes';
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { nodeTypes } from './nodes';
 import { edgeTypes } from './edges';
 import { graphRef, useGraphStore, type RFNodeData } from '@/lib/stores/graph-store';
@@ -38,7 +38,6 @@ export function FlowCanvas({ onContextMenu }: FlowCanvasProps) {
   const reactFlow = useReactFlow();
   const rfNodes = useGraphStore((s) => s.rfNodes);
   const rfEdges = useGraphStore((s) => s.rfEdges);
-  const lastZoomRef = useRef<ZoomLevel>('function');
 
   // Listen for center-node events from the detail panel's connected nodes
   useEffect(() => {
@@ -56,19 +55,11 @@ export function FlowCanvas({ onContextMenu }: FlowCanvasProps) {
         reactFlow.fitView({ padding: 0.25, duration: 400 });
       }, 50);
     }
-    function handleFocusClear() {
-      // Reset viewport to show all visible nodes
-      setTimeout(() => {
-        reactFlow.fitView({ padding: 0.15, duration: 400 });
-      }, 50);
-    }
     window.addEventListener('omnious:center-node', handleCenter);
     window.addEventListener('omnious:focus-fit', handleFocusFit);
-    window.addEventListener('omnious:focus-clear', handleFocusClear);
     return () => {
       window.removeEventListener('omnious:center-node', handleCenter);
       window.removeEventListener('omnious:focus-fit', handleFocusFit);
-      window.removeEventListener('omnious:focus-clear', handleFocusClear);
     };
   }, [reactFlow]);
 
@@ -103,16 +94,19 @@ export function FlowCanvas({ onContextMenu }: FlowCanvasProps) {
   const onNodeClick: NodeMouseHandler = (_event, node) => {
     useGraphStore.getState().selectNode(node.id);
     useGraphStore.getState().highlightConnectedEdges(node.id);
+    const wasOpen = useUIStore.getState().detailPanelOpen;
     useUIStore.getState().setDetailPanelOpen(true);
-    // Position focused node on the LEFT side of the viewport (not center)
-    const graph = graphRef.current;
-    if (graph && graph.hasNode(node.id)) {
-      const attrs = graph.getNodeAttributes(node.id);
-      const viewport = reactFlow.getViewport();
-      const width = window.innerWidth;
-      // Place node at ~25% from left edge
-      const offsetX = (width * 0.25) / viewport.zoom;
-      reactFlow.setCenter(attrs.x + offsetX, attrs.y, { zoom: viewport.zoom, duration: 300 });
+    // Only pan viewport when opening the panel for the first time
+    // to avoid disorienting camera jumps on every click
+    if (!wasOpen) {
+      const graph = graphRef.current;
+      if (graph && graph.hasNode(node.id)) {
+        const attrs = graph.getNodeAttributes(node.id);
+        const viewport = reactFlow.getViewport();
+        const width = window.innerWidth;
+        const offsetX = (width * 0.25) / viewport.zoom;
+        reactFlow.setCenter(attrs.x + offsetX, attrs.y, { zoom: viewport.zoom, duration: 300 });
+      }
     }
   };
 
@@ -160,12 +154,9 @@ export function FlowCanvas({ onContextMenu }: FlowCanvasProps) {
       else if (zoom < ZOOM_THRESHOLDS.module) level = 'module';
       else if (zoom < ZOOM_THRESHOLDS.function) level = 'function';
 
-      if (level !== lastZoomRef.current) {
-        lastZoomRef.current = level;
-        const currentLevel = useGraphStore.getState().zoomLevel;
-        if (currentLevel !== level) {
-          useGraphStore.getState().setZoomLevel(level);
-        }
+      const currentLevel = useGraphStore.getState().zoomLevel;
+      if (currentLevel !== level) {
+        useGraphStore.getState().setZoomLevel(level);
       }
     },
   });

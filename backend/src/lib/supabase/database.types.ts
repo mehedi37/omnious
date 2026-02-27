@@ -310,6 +310,42 @@ export type Database = {
           },
         ]
       }
+      device_codes: {
+        Row: {
+          access_token: string | null
+          created_at: string
+          device_code: string
+          expires_at: string
+          poll_interval: number
+          refresh_token: string | null
+          status: string
+          user_code: string
+          user_email: string | null
+        }
+        Insert: {
+          access_token?: string | null
+          created_at?: string
+          device_code: string
+          expires_at: string
+          poll_interval?: number
+          refresh_token?: string | null
+          status?: string
+          user_code: string
+          user_email?: string | null
+        }
+        Update: {
+          access_token?: string | null
+          created_at?: string
+          device_code?: string
+          expires_at?: string
+          poll_interval?: number
+          refresh_token?: string | null
+          status?: string
+          user_code?: string
+          user_email?: string | null
+        }
+        Relationships: []
+      }
       error_snapshots: {
         Row: {
           code_node_id: string | null

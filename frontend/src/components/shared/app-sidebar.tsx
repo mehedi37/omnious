@@ -24,7 +24,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import { CreateProjectDialog } from '@/components/project/create-project-dialog';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
@@ -317,6 +317,9 @@ export function AppSidebar() {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton>
                   <Avatar className="size-6">
+                    {profile?.avatar_url && (
+                      <AvatarImage src={profile.avatar_url} alt={displayName} />
+                    )}
                     <AvatarFallback className="text-xs">{initials}</AvatarFallback>
                   </Avatar>
                   <span>{displayName}</span>

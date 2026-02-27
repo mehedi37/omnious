@@ -37,14 +37,14 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function CodeBlock({ code, language = 'bash' }: { code: string; language?: string }) {
+function CodeBlock({ code, language = 'bash', copyText }: { code: string; language?: string; copyText?: string }) {
   return (
     <div className="relative group">
       <pre className="bg-zinc-950 dark:bg-zinc-900 text-zinc-100 rounded-lg p-4 text-sm font-mono overflow-x-auto border border-zinc-800">
         <code>{code}</code>
       </pre>
       <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-        <CopyButton text={code} />
+        <CopyButton text={copyText ?? code} />
       </div>
     </div>
   );
@@ -136,10 +136,19 @@ export function EmptyProjectState({
                     Initialize your project
                   </div>
                   <CodeBlock
-                    code={`npx @omnious/cli init \\
-  --project ${projectSlug} \\
-  --workspace ${workspaceSlug}`}
+                    code={apiKey
+                      ? `npx @omnious/cli init --link ${maskedKey}`
+                      : 'npx @omnious/cli init -i'}
+                    copyText={apiKey
+                      ? `npx @omnious/cli init --link ${apiKey}`
+                      : undefined}
                   />
+                  {apiKey && (
+                    <p className="text-xs text-muted-foreground pl-1">
+                      The copy button above includes your full API key.{' '}
+                      <span className="font-mono">{maskedKey}</span>
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">
@@ -150,21 +159,21 @@ export function EmptyProjectState({
                     >
                       2
                     </Badge>
-                    Index & push your codebase
+                    Parse & push your codebase
                   </div>
-                  <CodeBlock
-                    code={`npx @omnious/cli index
-npx @omnious/cli push`}
-                  />
+                  <CodeBlock code="npx @omnious/cli sync" />
+                  <p className="text-xs text-muted-foreground pl-1">
+                    Parses your AST locally, builds the OIR graph, and uploads metadata. Source code never leaves your machine.
+                  </p>
                 </div>
 
                 <Separator />
 
                 <div className="space-y-2">
                   <p className="text-sm text-muted-foreground">
-                    <strong>Watch mode</strong> — auto-reindex on file changes:
+                    <strong>Check sync status</strong> — see what's been indexed:
                   </p>
-                  <CodeBlock code="npx @omnious/cli watch" />
+                  <CodeBlock code="npx @omnious/cli status" />
                 </div>
               </CardContent>
             </Card>
@@ -272,10 +281,8 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Index & Push to Omnious
-        run: |
-          npx @omnious/cli index
-          npx @omnious/cli push
+      - name: Parse & Push to Omnious
+        run: npx @omnious/cli sync
         env:
           OMNIOUS_PROJECT_KEY: \${{ secrets.OMNIOUS_PROJECT_KEY }}`}
                   />

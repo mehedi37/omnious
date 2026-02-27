@@ -443,6 +443,16 @@ export const useGraphStore = create<GraphState>()(
         const graph = graphRef.current;
         if (!graph) return;
 
+        // Clear focus mode before switching views — prevents stale connected set
+        // from filtering nodes that no longer exist in the new view
+        set((state) => {
+          state.focusedNodeId = null;
+          state.connectedNodeIds = new Set();
+          state.selectedNodeIds = new Set();
+          state.neighborNodeIds = new Set();
+          state.highlightedNodeId = null;
+        });
+
         // Show/hide individual vs group nodes
         graph.nodes().forEach((node) => {
           const attrs = graph.getNodeAttributes(node);
@@ -621,7 +631,12 @@ export const useGraphStore = create<GraphState>()(
         const graph = graphRef.current;
         const connected = new Set<string>([nodeId]);
         if (graph && graph.hasNode(nodeId)) {
-          graph.neighbors(nodeId).forEach((n) => connected.add(n));
+          graph.neighbors(nodeId).forEach((n) => {
+            // Only include visible (non-hidden) neighbors
+            if (!graph.getNodeAttribute(n, 'hidden')) {
+              connected.add(n);
+            }
+          });
         }
         set((state) => {
           state.focusedNodeId = nodeId;
@@ -638,10 +653,13 @@ export const useGraphStore = create<GraphState>()(
         set((state) => {
           state.focusedNodeId = null;
           state.connectedNodeIds = new Set();
+          state.selectedNodeIds = new Set();
+          state.neighborNodeIds = new Set();
+          state.highlightedNodeId = null;
         });
         useGraphStore.getState().syncFromGraphology();
-        // Reset viewport to show all visible nodes
-        window.dispatchEvent(new CustomEvent('omnious:focus-clear'));
+        // Restore edge opacity without highlighting any node
+        useGraphStore.getState().highlightConnectedEdges(null);
       },
 
       setNodeSearchOpen: (open) =>

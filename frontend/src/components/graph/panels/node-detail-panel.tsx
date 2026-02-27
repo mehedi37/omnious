@@ -5,7 +5,7 @@ import {
   Layers, Radio, Antenna, Globe, Variable, Type, Crosshair, FolderOpen, X,
   ChevronDown, ChevronRight,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -425,7 +425,13 @@ function TypeBreakdownRow({ type, count, groupNodeId }: { type: string; count: n
 const COLLAPSE_THRESHOLD = 6;
 
 function ConnectedNodesList({ nodeId }: { nodeId: string }) {
-  const { incoming, outgoing } = getConnectedNodes(nodeId);
+  // Re-render when graphVersion changes — memoize the expensive graph traversal
+  const graphVersion = useGraphStore((s) => s.graphVersion);
+  const { incoming, outgoing } = useMemo(
+    () => getConnectedNodes(nodeId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [nodeId, graphVersion],
+  );
   const [incomingSectionOpen, setIncomingSectionOpen] = useState(true);
   const [outgoingSectionOpen, setOutgoingSectionOpen] = useState(true);
   const [incomingOpen, setIncomingOpen] = useState(true);
@@ -434,18 +440,10 @@ function ConnectedNodesList({ nodeId }: { nodeId: string }) {
   if (incoming.length === 0 && outgoing.length === 0) return null;
 
   function handleNavigate(targetId: string) {
-    // Enter focus mode on the clicked node (shows only its connections)
+    // Enter focus mode on the clicked node — setFocusMode already fits the viewport
     useGraphStore.getState().setFocusMode(targetId);
     useGraphStore.getState().highlightConnectedEdges(targetId);
     useUIStore.getState().setDetailPanelOpen(true);
-    // Scroll to the node on the canvas (left-side positioning)
-    const graph = graphRef.current;
-    if (graph && graph.hasNode(targetId)) {
-      const attrs = graph.getNodeAttributes(targetId);
-      window.dispatchEvent(
-        new CustomEvent('omnious:center-node', { detail: { x: attrs.x, y: attrs.y } }),
-      );
-    }
   }
 
   return (
@@ -471,24 +469,26 @@ function ConnectedNodesList({ nodeId }: { nodeId: string }) {
               </p>
             </button>
           </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-1.5 mt-1">
+          <CollapsibleContent className="mt-1">
             {incoming.length <= COLLAPSE_THRESHOLD ? (
-              <div className="space-y-0.5">
+              <div className="flex flex-wrap gap-1">
                 {incoming.map((node) => (
                   <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
                 ))}
               </div>
             ) : (
               <Collapsible open={incomingOpen} onOpenChange={setIncomingOpen}>
-                <div className="space-y-0.5">
+                <div className="flex flex-wrap gap-1">
                   {incoming.slice(0, COLLAPSE_THRESHOLD).map((node) => (
                     <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
                   ))}
                 </div>
-                <CollapsibleContent className="space-y-0.5 mt-0.5">
-                  {incoming.slice(COLLAPSE_THRESHOLD).map((node) => (
-                    <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
-                  ))}
+                <CollapsibleContent className="mt-1">
+                  <div className="flex flex-wrap gap-1">
+                    {incoming.slice(COLLAPSE_THRESHOLD).map((node) => (
+                      <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
+                    ))}
+                  </div>
                 </CollapsibleContent>
                 <CollapsibleTrigger asChild>
                   <Button variant="ghost" size="sm" className="w-full h-6 text-xs text-muted-foreground mt-1">
@@ -520,24 +520,26 @@ function ConnectedNodesList({ nodeId }: { nodeId: string }) {
               </p>
             </button>
           </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-1.5 mt-1">
+          <CollapsibleContent className="mt-1">
             {outgoing.length <= COLLAPSE_THRESHOLD ? (
-              <div className="space-y-0.5">
+              <div className="flex flex-wrap gap-1">
                 {outgoing.map((node) => (
                   <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
                 ))}
               </div>
             ) : (
               <Collapsible open={outgoingOpen} onOpenChange={setOutgoingOpen}>
-                <div className="space-y-0.5">
+                <div className="flex flex-wrap gap-1">
                   {outgoing.slice(0, COLLAPSE_THRESHOLD).map((node) => (
                     <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
                   ))}
                 </div>
-                <CollapsibleContent className="space-y-0.5 mt-0.5">
-                  {outgoing.slice(COLLAPSE_THRESHOLD).map((node) => (
-                    <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
-                  ))}
+                <CollapsibleContent className="mt-1">
+                  <div className="flex flex-wrap gap-1">
+                    {outgoing.slice(COLLAPSE_THRESHOLD).map((node) => (
+                      <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
+                    ))}
+                  </div>
                 </CollapsibleContent>
                 <CollapsibleTrigger asChild>
                   <Button variant="ghost" size="sm" className="w-full h-6 text-xs text-muted-foreground mt-1">
@@ -564,24 +566,25 @@ function ConnectedNodeItem({
   const bgClass = NODE_BG_CLASSES[node.oirType as keyof typeof NODE_BG_CLASSES] ?? '';
 
   return (
-    <button
-      type="button"
-      onClick={() => onNavigate(node.id)}
-      className={cn(
-        'flex items-center gap-2 w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors',
-        'hover:bg-muted group',
-      )}
-    >
-      <div className={cn('flex items-center justify-center rounded p-1 shrink-0', bgClass)}>
-        <Icon className="h-3 w-3" />
-      </div>
-      <span className="font-medium truncate flex-1 group-hover:text-foreground">{node.label}</span>
-      <Badge
-        variant="outline"
-        className="text-[8px] px-1 py-0 leading-tight opacity-60 shrink-0"
-      >
-        {node.edgeType.replace('_', ' ')}
-      </Badge>
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={() => onNavigate(node.id)}
+          className={cn(
+            'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors',
+            'hover:bg-muted/80 hover:border-foreground/20 cursor-pointer shrink-0',
+            bgClass,
+          )}
+        >
+          <Icon className="h-2.5 w-2.5 shrink-0" />
+          <span className="truncate max-w-[120px]">{node.label}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="text-xs">
+        <span className="font-medium">{node.label}</span>
+        <span className="text-muted-foreground ml-1">· {node.edgeType.replace('_', ' ')}</span>
+      </TooltipContent>
+    </Tooltip>
   );
 }

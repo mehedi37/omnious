@@ -1,4 +1,5 @@
 import type { OIRNode, OIREdge, PushResult, ProjectStatus } from '../oir/types.js';
+import type { Diagnostic } from '../rules/types.js';
 
 export class ApiError extends Error {
   constructor(
@@ -151,6 +152,135 @@ export class OmniousApiClient {
     return this.query('graph.getProjectStatusFromCLI', {
       projectApiKey: this.apiKey,
     });
+  }
+
+  /** Push static analysis diagnostics */
+  async pushDiagnostics(
+    diagnostics: Diagnostic[],
+  ): Promise<{ upserted: number; skipped: number }> {
+    return this.mutate('graph.pushDiagnostics', {
+      projectApiKey: this.apiKey,
+      diagnostics: diagnostics.map((d) => ({
+        code_node_oir_id: d.code_node_oir_id,
+        rule_id: d.rule_id,
+        severity: d.severity,
+        message: d.message,
+        file_path: d.file_path,
+        line_start: d.line_start,
+        line_end: d.line_end,
+        metadata: d.metadata,
+      })),
+    });
+  }
+
+  /**
+   * Call a tRPC query that requires a user access token (Bearer auth).
+   * Used for workspace/project management from the CLI interactive flow.
+   */
+  async queryWithToken<T>(procedure: string, input: unknown, accessToken: string): Promise<T> {
+    const encoded = encodeURIComponent(JSON.stringify({ json: input }));
+    const url = `${this.baseUrl}/trpc/${procedure}?input=${encoded}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+      },
+    });
+
+    const json = (await res.json()) as {
+      result?: { data: { json: T } };
+      error?: { message: string; data?: { code: string } };
+    };
+
+    if (!res.ok || json.error) {
+      const msg = json.error?.message ?? `HTTP ${res.status}`;
+      const code = json.error?.data?.code ?? 'INTERNAL_SERVER_ERROR';
+      throw new ApiError(msg, res.status, code);
+    }
+
+    const data = json.result?.data?.json;
+    if (data === undefined) {
+      throw new ApiError(
+        `Unexpected response structure from ${procedure}`,
+        res.status,
+        'PARSE_ERROR',
+      );
+    }
+    return data;
+  }
+
+  /**
+   * Call a tRPC mutation that requires a user access token (Bearer auth).
+   */
+  async mutateWithToken<T>(procedure: string, input: unknown, accessToken: string): Promise<T> {
+    const url = `${this.baseUrl}/trpc/${procedure}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ json: input }),
+    });
+
+    const json = (await res.json()) as {
+      result?: { data: { json: T } };
+      error?: { message: string; data?: { code: string } };
+    };
+
+    if (!res.ok || json.error) {
+      const msg = json.error?.message ?? `HTTP ${res.status}`;
+      const code = json.error?.data?.code ?? 'INTERNAL_SERVER_ERROR';
+      throw new ApiError(msg, res.status, code);
+    }
+
+    const data = json.result?.data?.json;
+    if (data === undefined) {
+      throw new ApiError(
+        `Unexpected response structure from ${procedure}`,
+        res.status,
+        'PARSE_ERROR',
+      );
+    }
+    return data;
+  }
+
+  /** List workspaces the authenticated user belongs to */
+  async listWorkspaces(accessToken: string): Promise<
+    Array<{
+      role: string;
+      workspace: {
+        id: string;
+        name: string;
+        slug: string;
+        plan: string;
+        created_at: string;
+      };
+    }>
+  > {
+    return this.queryWithToken('workspace.list', {}, accessToken);
+  }
+
+  /** Create a project (requires user auth, not API key) */
+  async createProject(
+    accessToken: string,
+    opts: {
+      workspaceId: string;
+      name: string;
+      slug: string;
+      description?: string;
+      primaryLanguage?: string;
+      framework?: string;
+    },
+  ): Promise<{
+    id: string;
+    name: string;
+    slug: string;
+    api_key: string;
+    workspace_id: string;
+  }> {
+    return this.mutateWithToken('project.create', opts, accessToken);
   }
 
   /** Health check */

@@ -108,22 +108,22 @@ export function GraphContextMenu({ nodeId, x, y, onClose }: GraphContextMenuProp
   }
 
   const items = [
-    { icon: Eye, label: 'View Details', action: handleViewDetails },
-    { icon: Crosshair, label: 'Focus on Node', action: handleFocus },
+    { icon: Eye, label: 'View Details', action: handleViewDetails, shortcut: 'Enter' },
+    { icon: Crosshair, label: 'Focus on Node', action: handleFocus, shortcut: 'N' },
     ...(isGroup
-      ? [{ icon: Layers, label: 'Expand Group', action: handleExpandGroup }]
+      ? [{ icon: Layers, label: 'Expand Group', action: handleExpandGroup, shortcut: 'E' }]
       : []),
     ...(!isGroup && viewMode === 'individual'
-      ? [{ icon: FolderUp, label: 'Combine Group', action: handleCombineGroup }]
+      ? [{ icon: FolderUp, label: 'Combine Group', action: handleCombineGroup, shortcut: 'G' }]
       : []),
-    { icon: Clipboard, label: 'Copy Name', action: handleCopyName },
-    { icon: EyeOff, label: 'Hide Node', action: handleHideNode, destructive: true },
+    { icon: Clipboard, label: 'Copy Name', action: handleCopyName, shortcut: '⌘C' },
+    { icon: EyeOff, label: 'Hide Node', action: handleHideNode, destructive: true, shortcut: 'Del' },
   ];
 
   return (
     <div
       ref={menuRef}
-      className="fixed z-[100] min-w-[180px] rounded-md border bg-popover/95 backdrop-blur-md p-1 shadow-lg animate-in fade-in-0 zoom-in-95"
+      className="fixed z-[100] min-w-[200px] rounded-md border bg-popover/95 backdrop-blur-md p-1 shadow-lg animate-in fade-in-0 zoom-in-95"
       style={{ left: x, top: y }}
     >
       {items.map((item) => (
@@ -138,7 +138,12 @@ export function GraphContextMenu({ nodeId, x, y, onClose }: GraphContextMenuProp
           }`}
         >
           <item.icon className="h-4 w-4" />
-          {item.label}
+          <span className="flex-1 text-left">{item.label}</span>
+          {'shortcut' in item && item.shortcut && (
+            <kbd className="ml-auto text-[10px] text-muted-foreground font-mono bg-muted px-1 py-0.5 rounded">
+              {item.shortcut}
+            </kbd>
+          )}
         </button>
       ))}
     </div>

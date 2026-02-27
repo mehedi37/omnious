@@ -6,6 +6,7 @@ import { resolveApiKey } from '../api/auth.js';
 import { OmniousApiClient } from '../api/client.js';
 import { getGitContext } from '../utils/git.js';
 import { logger } from '../utils/logger.js';
+import { runRules } from '../rules/index.js';
 import type { OIRIndex } from '../oir/types.js';
 
 const CACHE_DIR = '.omnious';
@@ -15,10 +16,14 @@ const PUSH_STATE_FILE = 'last-push.json';
 /** Batch size for node/edge uploads */
 const BATCH_SIZE = 500;
 
+/** Simple sleep helper for retry delays */
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
 interface PushOptions {
   apiKey?: string;
   config?: string;
   force?: boolean;
+  clean?: boolean;
   dryRun?: boolean;
   verbose?: boolean;
   /** Internal: suppress banner when called from `omnious sync` */
@@ -74,19 +79,56 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
     return;
   }
 
+  // Create API client early (needed for stale cache detection)
+  const client = new OmniousApiClient(config.api.url, apiKey);
+
   // ── Differential diff: determine changed / stale files ──
-  const lastPush = loadPushState(cwd);
+  let lastPush = loadPushState(cwd);
+
+  // --clean flag: wipe local push state to force a full re-push
+  if (opts.clean && lastPush) {
+    const statePath = path.join(cwd, CACHE_DIR, PUSH_STATE_FILE);
+    if (fs.existsSync(statePath)) fs.unlinkSync(statePath);
+    lastPush = null;
+    if (opts.verbose) {
+      logger.dim('  Cleaned push state — will do a full push');
+    }
+  }
 
   // Fast-path: project hash matches and not --force
   if (!opts.force && lastPush && lastPush.project_hash === index.project_hash) {
-    logger.infoBox(
-      [
-        'Project hash unchanged — already up to date.',
-        `${logger.theme.muted('Use')} ${logger.theme.accent('--force')} ${logger.theme.muted('to push anyway.')}`,
-      ],
-      '● Up to Date',
-    );
-    return;
+    // Auto-detect stale cache: check if the server actually has data.
+    // This helps when the backend was wiped but local cache thinks everything is synced.
+    try {
+      const serverStatus = await client.getProjectStatus();
+      if (serverStatus && serverStatus.node_count === 0 && lastPush.nodes_pushed > 0) {
+        logger.warn('Server has 0 nodes but local cache says push was successful.');
+        logger.dim('  Auto-cleaning push state and doing a full push…');
+        const statePath = path.join(cwd, CACHE_DIR, PUSH_STATE_FILE);
+        if (fs.existsSync(statePath)) fs.unlinkSync(statePath);
+        lastPush = null;
+        // Fall through to full push logic
+      } else {
+        logger.infoBox(
+          [
+            'Project hash unchanged — already up to date.',
+            `${logger.theme.muted('Use')} ${logger.theme.accent('--force')} ${logger.theme.muted('to push anyway.')}`,
+          ],
+          '● Up to Date',
+        );
+        return;
+      }
+    } catch {
+      // If health check fails, just show up-to-date message
+      logger.infoBox(
+        [
+          'Project hash unchanged — already up to date.',
+          `${logger.theme.muted('Use')} ${logger.theme.accent('--force')} ${logger.theme.muted('to push anyway.')}`,
+        ],
+        '● Up to Date',
+      );
+      return;
+    }
   }
 
   const prevFileHashes: Record<string, string> = lastPush?.file_hashes ?? {};
@@ -123,9 +165,6 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
       `  Git: ${gitContext.branch} @ ${gitContext.commit_hash?.slice(0, 7)}`,
     );
   }
-
-  // Create API client
-  const client = new OmniousApiClient(config.api.url, apiKey);
 
   // Health check
   spinner.start('Connecting to Omnious…');
@@ -169,6 +208,9 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   let totalNodesUpserted = 0;
   let totalEdgesUpserted = 0;
   let totalEdgesSkipped = 0;
+  // Captured from the first successful push response for display
+  let pushedProjectName: string | null = null;
+  let pushedWorkspaceSlug: string | null = null;
 
   // Phase 1: Push changed nodes
   // First batch also carries cleanup metadata (stale + changed file paths for the backend)
@@ -176,26 +218,39 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   if (nodeChunks.length > 0) {
     spinner.start(`Pushing ${totalNodes} node(s)…`);
     for (let i = 0; i < nodeChunks.length; i++) {
-      try {
-        const result = await client.pushGraph(
-          nodeChunks[i],
-          [],
-          i === 0 ? gitContext ?? undefined : undefined,
-          i === 0 ? index.project_hash : undefined,
-          i === 0 ? staleFilePaths : [],
-          i === 0 ? [...changedFilePaths] : [],
-        );
-        totalNodesUpserted += result.nodes_upserted;
-
+      let nodeResult: Awaited<ReturnType<typeof client.pushGraph>> | null = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          nodeResult = await client.pushGraph(
+            nodeChunks[i],
+            [],
+            i === 0 ? gitContext ?? undefined : undefined,
+            i === 0 ? index.project_hash : undefined,
+            i === 0 ? staleFilePaths : [],
+            i === 0 ? [...changedFilePaths] : [],
+          );
+          break;
+        } catch (err) {
+          if (attempt === 2) {
+            spinner.fail(`Node push failed on batch ${i + 1}`);
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.error(msg);
+            process.exitCode = 1;
+            return;
+          }
+          logger.dim(`  Batch ${i + 1} failed, retrying in 2s…`);
+          await sleep(2000);
+        }
+      }
+      if (nodeResult) {
+        totalNodesUpserted += nodeResult.nodes_upserted;
+        if (i === 0) {
+          pushedProjectName = nodeResult.project_name;
+          pushedWorkspaceSlug = nodeResult.workspace_slug;
+        }
         if (nodeChunks.length > 1) {
           spinner.text = `Pushing nodes… batch ${i + 1}/${nodeChunks.length}`;
         }
-      } catch (err) {
-        spinner.fail(`Node push failed on batch ${i + 1}`);
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error(msg);
-        process.exitCode = 1;
-        return;
       }
     }
     spinner.succeed(`${totalNodesUpserted} node(s) upserted`);
@@ -223,25 +278,38 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   if (edgeChunks.length > 0) {
     spinner.start(`Pushing ${totalEdges} edge(s)…`);
     for (let i = 0; i < edgeChunks.length; i++) {
-      try {
-        const result = await client.pushGraph(
-          [],
-          edgeChunks[i],
-          undefined,
-          undefined,
-        );
-        totalEdgesUpserted += result.edges_upserted;
-        totalEdgesSkipped += result.edges_skipped;
-
+      let edgeResult: Awaited<ReturnType<typeof client.pushGraph>> | null = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          edgeResult = await client.pushGraph(
+            [],
+            edgeChunks[i],
+            undefined,
+            undefined,
+          );
+          break;
+        } catch (err) {
+          if (attempt === 2) {
+            spinner.fail(`Edge push failed on batch ${i + 1}`);
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.error(msg);
+            process.exitCode = 1;
+            return;
+          }
+          logger.dim(`  Batch ${i + 1} failed, retrying in 2s…`);
+          await sleep(2000);
+        }
+      }
+      if (edgeResult) {
+        totalEdgesUpserted += edgeResult.edges_upserted;
+        totalEdgesSkipped += edgeResult.edges_skipped;
+        if (i === 0 && pushedProjectName === null) {
+          pushedProjectName = edgeResult.project_name;
+          pushedWorkspaceSlug = edgeResult.workspace_slug;
+        }
         if (edgeChunks.length > 1) {
           spinner.text = `Pushing edges… batch ${i + 1}/${edgeChunks.length}`;
         }
-      } catch (err) {
-        spinner.fail(`Edge push failed on batch ${i + 1}`);
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error(msg);
-        process.exitCode = 1;
-        return;
       }
     }
     spinner.succeed(`${totalEdgesUpserted} edge(s) upserted`);
@@ -258,10 +326,17 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   });
 
   // Summary box
-  const summaryLines = [
+  const summaryLines: string[] = [];
+  if (pushedProjectName) {
+    const projectLabel = pushedWorkspaceSlug
+      ? `${pushedProjectName}  (workspace: ${pushedWorkspaceSlug})`
+      : pushedProjectName;
+    summaryLines.push(`${logger.label('Project')} ${projectLabel}`);
+  }
+  summaryLines.push(
     `${logger.label('Nodes')} ${totalNodesUpserted} upserted`,
     `${logger.label('Edges')} ${totalEdgesUpserted} upserted`,
-  ];
+  );
   if (totalEdgesSkipped > 0) {
     summaryLines.push(`${logger.label('Skipped')} ${logger.theme.highlight(String(totalEdgesSkipped))} edges (unresolved targets)`);
   }
@@ -269,6 +344,40 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   summaryLines.push(`${logger.label('Pushed at')} ${new Date(pushedAt).toLocaleString()}`);
 
   logger.successBox(summaryLines, '✔ Graph Synced');
+
+  // ── Phase 3: Static analysis ──
+  spinner.start('Running static analysis rules…');
+  const diagnostics = runRules(index, undefined, config.rules);
+  if (diagnostics.length > 0) {
+    spinner.succeed(
+      `Found ${diagnostics.length} diagnostic(s)`,
+    );
+
+    // Group by severity for display
+    const bySeverity: Record<string, number> = {};
+    for (const d of diagnostics) {
+      bySeverity[d.severity] = (bySeverity[d.severity] ?? 0) + 1;
+    }
+    const severityLine = Object.entries(bySeverity)
+      .map(([sev, count]) => `${count} ${sev}`)
+      .join(', ');
+    logger.dim(`  ${severityLine}`);
+
+    // Push diagnostics to backend
+    spinner.start('Uploading diagnostics…');
+    try {
+      const result = await client.pushDiagnostics(diagnostics);
+      spinner.succeed(`${result.upserted} diagnostic(s) synced`);
+    } catch (err) {
+      spinner.warn('Failed to upload diagnostics (non-fatal)');
+      if (opts.verbose) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.dim(`  ${msg}`);
+      }
+    }
+  } else {
+    spinner.succeed('No issues found');
+  }
 }
 
 // ── Helpers ──

@@ -171,6 +171,7 @@ function GraphCanvasInner() {
           <SheetContent
             side="right"
             className="w-[380px] sm:w-[420px] p-0 border-l"
+            showCloseButton={false}
           >
             <NodeDetailPanel />
           </SheetContent>
