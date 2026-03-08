@@ -14,6 +14,14 @@ export const NODE_COLORS: Record<OIRNodeType, string> = {
   external_api: 'oklch(0.65 0.14 340)', // pink
   variable: 'oklch(0.65 0.06 250)', // gray-blue
   type_def: 'oklch(0.6 0.12 310)', // violet
+  // Multi-language types
+  struct: 'oklch(0.58 0.16 160)', // emerald
+  enum: 'oklch(0.62 0.18 95)', // lime
+  interface: 'oklch(0.55 0.17 190)', // teal
+  namespace: 'oklch(0.6 0.08 260)', // cool gray
+  trait: 'oklch(0.58 0.2 330)', // rose
+  protocol: 'oklch(0.56 0.15 220)', // sky
+  package: 'oklch(0.63 0.1 270)', // light indigo
 };
 
 /** Tailwind color class (bg-*) for each node type */
@@ -30,6 +38,13 @@ export const NODE_BG_CLASSES: Record<OIRNodeType, string> = {
   external_api: 'bg-pink-500/10 border-pink-500/30',
   variable: 'bg-slate-400/10 border-slate-400/30',
   type_def: 'bg-violet-500/10 border-violet-500/30',
+  struct: 'bg-emerald-500/10 border-emerald-500/30',
+  enum: 'bg-lime-500/10 border-lime-500/30',
+  interface: 'bg-teal-500/10 border-teal-500/30',
+  namespace: 'bg-gray-500/10 border-gray-500/30',
+  trait: 'bg-rose-500/10 border-rose-500/30',
+  protocol: 'bg-sky-500/10 border-sky-500/30',
+  package: 'bg-indigo-400/10 border-indigo-400/30',
 };
 
 /** Stronger color classes for detail zoom — more visible type differentiation */
@@ -46,6 +61,13 @@ export const NODE_BG_CLASSES_STRONG: Record<OIRNodeType, string> = {
   external_api: 'bg-pink-500/20 border-pink-500/50',
   variable: 'bg-slate-400/20 border-slate-400/50',
   type_def: 'bg-violet-500/20 border-violet-500/50',
+  struct: 'bg-emerald-500/20 border-emerald-500/50',
+  enum: 'bg-lime-500/20 border-lime-500/50',
+  interface: 'bg-teal-500/20 border-teal-500/50',
+  namespace: 'bg-gray-500/20 border-gray-500/50',
+  trait: 'bg-rose-500/20 border-rose-500/50',
+  protocol: 'bg-sky-500/20 border-sky-500/50',
+  package: 'bg-indigo-400/20 border-indigo-400/50',
 };
 
 /** Left border accent color for detail zoom nodes */
@@ -62,6 +84,13 @@ export const NODE_ACCENT_BORDER: Record<OIRNodeType, string> = {
   external_api: 'border-l-pink-500',
   variable: 'border-l-slate-400',
   type_def: 'border-l-violet-500',
+  struct: 'border-l-emerald-500',
+  enum: 'border-l-lime-500',
+  interface: 'border-l-teal-500',
+  namespace: 'border-l-gray-500',
+  trait: 'border-l-rose-500',
+  protocol: 'border-l-sky-500',
+  package: 'border-l-indigo-400',
 };
 
 /** Lucide icon name for each node type */
@@ -78,6 +107,13 @@ export const NODE_ICONS: Record<OIRNodeType, string> = {
   external_api: 'Globe',
   variable: 'Variable',
   type_def: 'Type',
+  struct: 'Cuboid',
+  enum: 'List',
+  interface: 'FileInput',
+  namespace: 'FolderTree',
+  trait: 'Puzzle',
+  protocol: 'Shield',
+  package: 'Package',
 };
 
 /** Edge color by type */

@@ -1,0 +1,5 @@
+-- Migration: Make upsert_error_snapshot parameters nullable
+-- Applied to remote DB before local file was created; reconstructed for sync.
+-- This was an intermediate step — the function was later replaced in
+-- 20260301090801_fix_error_snapshots_and_heatmap.sql with the 11-param version.
+-- No-op: kept for migration history parity with remote.

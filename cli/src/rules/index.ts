@@ -4,11 +4,19 @@ import { circularDepsRule } from './circular-deps.js';
 import { unusedExportsRule } from './unused-exports.js';
 import { largeFunctionsRule } from './large-functions.js';
 import { hubNodesRule } from './hub-nodes.js';
+import { tscErrorsRule } from './tsc-errors.js';
+import { eslintErrorsRule } from './eslint-errors.js';
+import { compilerErrorsRule } from './compiler-errors.js';
 
 export type { Diagnostic, DiagnosticSeverity, RulesConfig } from './types.js';
 
 /** All built-in rules */
 const BUILT_IN_RULES: Rule[] = [
+  // Compiler / linter rules — run against local tooling
+  tscErrorsRule,
+  eslintErrorsRule,
+  compilerErrorsRule,
+  // Structural / architectural rules
   circularDepsRule,
   unusedExportsRule,
   largeFunctionsRule,

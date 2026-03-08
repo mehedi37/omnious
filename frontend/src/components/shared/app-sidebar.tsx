@@ -8,7 +8,6 @@ import {
   ChevronRight,
   ChevronsUpDown,
   ChevronUp,
-  CreditCard,
   FolderKanban,
   GitGraph,
   LogOut,
@@ -18,7 +17,6 @@ import {
   Plus,
   Settings,
   Sun,
-  Users,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -50,7 +48,6 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarRail,
-  SidebarSeparator,
   useSidebar,
 } from '@/components/ui/sidebar';
 import { CreateWorkspaceDialog } from '@/components/workspace/create-workspace-dialog';
@@ -132,9 +129,22 @@ export function AppSidebar() {
 
   return (
     <Sidebar collapsible="icon" variant="sidebar">
-      {/* ── Header: Workspace Switcher ── */}
+      {/* ── Header: Collapse + Workspace Switcher + Breadcrumb ── */}
       <SidebarHeader>
         <SidebarMenu>
+          {/* Collapse/Expand toggle */}
+          <SidebarMenuItem>
+            <SidebarMenuButton onClick={toggleSidebar} tooltip="Toggle sidebar">
+              {sidebarState === 'collapsed' ? (
+                <PanelLeft className="size-5" />
+              ) : (
+                <PanelLeftClose className="size-5" />
+              )}
+              <span>Collapse</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+
+          {/* Workspace switcher */}
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -180,6 +190,22 @@ export function AppSidebar() {
             </DropdownMenu>
           </SidebarMenuItem>
         </SidebarMenu>
+
+        {/* Breadcrumb (shown when inside a project, hidden in icon-collapsed mode) */}
+        {projectSlug && isInWorkspace && (
+          <div className="text-xs text-muted-foreground px-2 py-1 group-data-[collapsible=icon]:hidden">
+            <div className="wrap-break-word">
+              <Link
+                href={`/dashboard/${workspaceSlug}`}
+                className="hover:text-foreground transition-colors"
+              >
+                {workspaceName}
+              </Link>
+              <span className="mx-1 opacity-50">/</span>
+              <span className="font-medium text-foreground">{projectSlug}</span>
+            </div>
+          </div>
+        )}
       </SidebarHeader>
 
       <SidebarContent>
@@ -258,60 +284,11 @@ export function AppSidebar() {
             </SidebarGroupContent>
           </SidebarGroup>
         )}
-
-        {/* ── Workspace-scoped nav (Members, Settings, Billing) ── */}
-        {isInWorkspace && (
-          <>
-            <SidebarSeparator />
-            <SidebarGroup>
-              <SidebarGroupLabel>Workspace</SidebarGroupLabel>
-              <SidebarGroupContent>
-                <SidebarMenu>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton asChild tooltip="Members">
-                      <Link href={`/dashboard/${workspaceSlug}/settings/members`}>
-                        <Users className="size-4" />
-                        <span>Members</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton asChild tooltip="Settings">
-                      <Link href={`/dashboard/${workspaceSlug}/settings`}>
-                        <Settings className="size-4" />
-                        <span>Settings</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton asChild tooltip="Billing">
-                      <Link href={`/dashboard/${workspaceSlug}/settings/billing`}>
-                        <CreditCard className="size-4" />
-                        <span>Billing</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
-          </>
-        )}
       </SidebarContent>
 
-      {/* ── Footer: Collapse Toggle + User Profile ── */}
+      {/* ── Footer: User Profile ── */}
       <SidebarFooter>
         <SidebarMenu>
-          {/* Collapse/Expand toggle */}
-          <SidebarMenuItem>
-            <SidebarMenuButton onClick={toggleSidebar} tooltip="Toggle sidebar">
-              {sidebarState === 'collapsed' ? (
-                <PanelLeft className="size-6" />
-              ) : (
-                <PanelLeftClose className="size-6" />
-              )}
-              <span>Collapse</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -331,6 +308,17 @@ export function AppSidebar() {
                 align="start"
                 className="w-[--radix-dropdown-menu-trigger-width]"
               >
+                {isInWorkspace && (
+                  <>
+                    <DropdownMenuItem asChild>
+                      <Link href={`/dashboard/${workspaceSlug}/settings`}>
+                        <Settings className="mr-2 size-4" />
+                        Settings
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
                 <DropdownMenuItem onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
                   {theme === 'dark' ? (
                     <Sun className="mr-2 size-4" />

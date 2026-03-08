@@ -8,6 +8,7 @@ interface UIState {
   pendingReplayTraceId: string | null;
   filtersOpen: boolean;
   keyboardShortcutsOpen: boolean;
+  minimapVisible: boolean;
 
   // Actions
   toggleSidebar: () => void;
@@ -22,6 +23,8 @@ interface UIState {
   setFiltersOpen: (open: boolean) => void;
   toggleKeyboardShortcuts: () => void;
   setKeyboardShortcutsOpen: (open: boolean) => void;
+  toggleMinimap: () => void;
+  setMinimapVisible: (visible: boolean) => void;
 }
 
 export const useUIStore = create<UIState>()((set) => ({
@@ -32,6 +35,7 @@ export const useUIStore = create<UIState>()((set) => ({
   pendingReplayTraceId: null,
   filtersOpen: false,
   keyboardShortcutsOpen: false,
+  minimapVisible: true,
 
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
 
@@ -56,4 +60,8 @@ export const useUIStore = create<UIState>()((set) => ({
   toggleKeyboardShortcuts: () => set((state) => ({ keyboardShortcutsOpen: !state.keyboardShortcutsOpen })),
 
   setKeyboardShortcutsOpen: (open) => set({ keyboardShortcutsOpen: open }),
+
+  toggleMinimap: () => set((state) => ({ minimapVisible: !state.minimapVisible })),
+
+  setMinimapVisible: (visible) => set({ minimapVisible: visible }),
 }));

@@ -2,33 +2,21 @@
 
 import {
   ArrowDownToLine, ArrowUpFromLine, Braces, Component, Route, Database, FileCode, Box,
-  Layers, Radio, Antenna, Globe, Variable, Type, Crosshair, FolderOpen, X,
-  ChevronDown, ChevronRight,
+  Layers, Radio, Antenna, Globe, Variable, Type, Crosshair, X, AlertTriangle, Bot,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { NODE_BG_CLASSES } from '@/lib/oir/constants';
-import { graphRef, useGraphStore } from '@/lib/stores/graph-store';
-import type { GraphNodeAttributes, GraphEdgeAttributes } from '@/lib/stores/graph-store';
+import { useGraphStore, type OmniousNodeData } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
+import { trpc } from '@/trpc/client';
 import { cn } from '@/lib/utils';
-
-/** Read node attributes directly from graphology */
-function getSelectedAttrs(): GraphNodeAttributes | null {
-  const { selectedNodeIds } = useGraphStore.getState();
-  if (selectedNodeIds.size === 0) return null;
-  const graph = graphRef.current;
-  if (!graph) return null;
-
-  const firstId = selectedNodeIds.values().next().value as string;
-  if (!graph.hasNode(firstId)) return null;
-  return graph.getNodeAttributes(firstId);
-}
+import type { OIRNodeType } from '@/lib/oir/types';
+import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   function: Braces,
@@ -45,69 +33,82 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   type_def: Type,
 };
 
-interface ConnectedNode {
-  id: string;
-  label: string;
-  oirType: string;
-  edgeType: string;
+/**
+ * Gets the selected node's data from the React Flow store.
+ */
+function useSelectedNodeData(): { nodeId: string; data: OmniousNodeData } | null {
+  const selectedNodeIds = useGraphStore((s) => s.selectedNodeIds);
+  const nodes = useGraphStore((s) => s.nodes);
+
+  return useMemo(() => {
+    if (selectedNodeIds.size === 0) return null;
+    const firstId = selectedNodeIds.values().next().value as string;
+    const node = nodes.find((n) => n.id === firstId);
+    if (!node) return null;
+    return { nodeId: firstId, data: node.data };
+  }, [selectedNodeIds, nodes]);
 }
 
-function getConnectedNodes(nodeId: string): { incoming: ConnectedNode[]; outgoing: ConnectedNode[] } {
-  const graph = graphRef.current;
-  if (!graph || !graph.hasNode(nodeId)) return { incoming: [], outgoing: [] };
+/**
+ * Gets connected nodes from the edges in the React Flow store.
+ */
+function useConnectedNodes(nodeId: string | null) {
+  const edges = useGraphStore((s) => s.edges);
+  const nodes = useGraphStore((s) => s.nodes);
 
-  const incoming: ConnectedNode[] = [];
-  const outgoing: ConnectedNode[] = [];
+  return useMemo(() => {
+    if (!nodeId) return { incoming: [], outgoing: [] };
 
-  graph.forEachInEdge(nodeId, (_edgeId, edgeAttrs: GraphEdgeAttributes, source) => {
-    if (source === nodeId) return;
-    if (!graph.hasNode(source)) return;
-    const srcAttrs = graph.getNodeAttributes(source);
-    if (srcAttrs.hidden || srcAttrs.isGroup) return;
-    incoming.push({
-      id: source,
-      label: srcAttrs.label,
-      oirType: srcAttrs.oirType ?? 'module',
-      edgeType: edgeAttrs.edgeType,
-    });
-  });
+    const nodeMap = new Map(nodes.map((n) => [n.id, n.data]));
 
-  graph.forEachOutEdge(nodeId, (_edgeId, edgeAttrs: GraphEdgeAttributes, _source, target) => {
-    if (target === nodeId) return;
-    if (!graph.hasNode(target)) return;
-    const tgtAttrs = graph.getNodeAttributes(target);
-    if (tgtAttrs.hidden || tgtAttrs.isGroup) return;
-    outgoing.push({
-      id: target,
-      label: tgtAttrs.label,
-      oirType: tgtAttrs.oirType ?? 'module',
-      edgeType: edgeAttrs.edgeType,
-    });
-  });
+    const incoming: Array<{ id: string; label: string; oirType: string; edgeType: string }> = [];
+    const outgoing: Array<{ id: string; label: string; oirType: string; edgeType: string }> = [];
 
-  // Deduplicate (multi-graph can have multiple edges between same nodes)
-  const dedup = (arr: ConnectedNode[]) => {
-    const seen = new Set<string>();
-    return arr.filter((n) => {
-      const key = `${n.id}:${n.edgeType}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  };
+    const seenIn = new Set<string>();
+    const seenOut = new Set<string>();
 
-  return { incoming: dedup(incoming), outgoing: dedup(outgoing) };
+    for (const edge of edges) {
+      if (edge.target === nodeId && edge.source !== nodeId) {
+        const key = `${edge.source}:${edge.data?.edgeType ?? 'unknown'}`;
+        if (!seenIn.has(key)) {
+          seenIn.add(key);
+          const srcData = nodeMap.get(edge.source);
+          if (srcData) {
+            incoming.push({
+              id: edge.source,
+              label: srcData.label,
+              oirType: srcData.oirType ?? 'module',
+              edgeType: edge.data?.edgeType ?? 'unknown',
+            });
+          }
+        }
+      }
+      if (edge.source === nodeId && edge.target !== nodeId) {
+        const key = `${edge.target}:${edge.data?.edgeType ?? 'unknown'}`;
+        if (!seenOut.has(key)) {
+          seenOut.add(key);
+          const tgtData = nodeMap.get(edge.target);
+          if (tgtData) {
+            outgoing.push({
+              id: edge.target,
+              label: tgtData.label,
+              oirType: tgtData.oirType ?? 'module',
+              edgeType: edge.data?.edgeType ?? 'unknown',
+            });
+          }
+        }
+      }
+    }
+
+    return { incoming, outgoing };
+  }, [nodeId, edges, nodes]);
 }
 
 export function NodeDetailPanel() {
-  const selectedNodeIds = useGraphStore((s) => s.selectedNodeIds);
+  const selected = useSelectedNodeData();
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
-  // Re-render when graphVersion changes (to pick up new attributes)
-  useGraphStore((s) => s.graphVersion);
 
-  const attrs = getSelectedAttrs();
-
-  if (!attrs) {
+  if (!selected) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-muted-foreground text-sm">
         Select a node to view details
@@ -115,8 +116,8 @@ export function NodeDetailPanel() {
     );
   }
 
-  const selectedNodeId = selectedNodeIds.values().next().value as string;
-  const isCurrentlyFocused = focusedNodeId === selectedNodeId;
+  const { nodeId, data: attrs } = selected;
+  const isCurrentlyFocused = focusedNodeId === nodeId;
 
   const handleClose = () => {
     useGraphStore.getState().deselectAll();
@@ -127,98 +128,13 @@ export function NodeDetailPanel() {
     if (isCurrentlyFocused) {
       useGraphStore.getState().clearFocusMode();
     } else {
-      useGraphStore.getState().setFocusMode(selectedNodeId);
+      useGraphStore.getState().setFocusMode(nodeId);
+      window.dispatchEvent(new CustomEvent('omnious:focus-fit'));
     }
   };
 
-  // --- Group node detail view ---
-  if (attrs.isGroup) {
-    return (
-      <ScrollArea className="h-full">
-        <div className="p-4 space-y-4">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <Badge
-                variant="outline"
-                className={`text-[10px] mb-2 ${NODE_BG_CLASSES[(attrs.dominantType ?? 'module') as keyof typeof NODE_BG_CLASSES] ?? ''}`}
-              >
-                group · {(attrs.dominantType ?? 'module').replace('_', ' ')}
-              </Badge>
-              <h3 className="text-lg font-semibold truncate">{attrs.label}</h3>
-            </div>
-            <div className="flex items-center gap-0.5 shrink-0">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant={isCurrentlyFocused ? 'secondary' : 'ghost'}
-                    size="icon"
-                    className={`h-7 w-7 ${isCurrentlyFocused ? 'bg-primary/10 text-primary' : ''}`}
-                    onClick={handleFocus}
-                  >
-                    <Crosshair className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {isCurrentlyFocused ? 'Exit focus mode (Esc)' : 'Focus on connected nodes (N)'}
-                </TooltipContent>
-              </Tooltip>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleClose}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* Directory */}
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Directory</p>
-            <div className="flex items-center gap-2 text-sm">
-              <FolderOpen className="h-4 w-4 text-muted-foreground shrink-0" />
-              <span className="font-mono text-xs truncate">{attrs.directory || '/'}</span>
-            </div>
-          </div>
-
-          {/* Child count */}
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Nodes in group</p>
-            <div className="flex items-center gap-2 text-sm">
-              <Layers className="h-4 w-4 text-muted-foreground shrink-0" />
-              <span>{attrs.childCount ?? 0} node{(attrs.childCount ?? 0) !== 1 ? 's' : ''}</span>
-            </div>
-          </div>
-
-          {/* Type breakdown — expandable to show individual child nodes */}
-          {attrs.typeBreakdown && Object.keys(attrs.typeBreakdown).length > 0 && (
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Type breakdown</p>
-              <div className="rounded-md bg-muted p-2 space-y-0.5">
-                {Object.entries(attrs.typeBreakdown)
-                  .sort(([, a], [, b]) => b - a)
-                  .map(([type, count]) => (
-                    <TypeBreakdownRow
-                      key={type}
-                      type={type}
-                      count={count}
-                      groupNodeId={selectedNodeId}
-                    />
-                  ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </ScrollArea>
-    );
-  }
-
-  // --- Individual node detail view ---
-  if (!attrs.oirType) {
-    return (
-      <div className="flex h-full items-center justify-center p-6 text-muted-foreground text-sm">
-        Select a node to view details
-      </div>
-    );
-  }
+  const Icon = ICON_MAP[attrs.oirType] ?? FileCode;
+  const bgClass = NODE_BG_CLASSES[attrs.oirType as keyof typeof NODE_BG_CLASSES] ?? '';
 
   return (
     <ScrollArea className="h-full">
@@ -226,11 +142,8 @@ export function NodeDetailPanel() {
         {/* Header */}
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
-            <Badge
-              variant="outline"
-              className={`text-[10px] mb-2 ${NODE_BG_CLASSES[attrs.oirType] ?? ''}`}
-            >
-              {attrs.oirType.replace('_', ' ')}
+            <Badge variant="outline" className={cn('text-[10px] mb-2', bgClass)}>
+              {attrs.oirType.replace(/_/g, ' ')}
             </Badge>
             <h3 className="text-lg font-semibold truncate">{attrs.label}</h3>
           </div>
@@ -240,14 +153,14 @@ export function NodeDetailPanel() {
                 <Button
                   variant={isCurrentlyFocused ? 'secondary' : 'ghost'}
                   size="icon"
-                  className={`h-7 w-7 ${isCurrentlyFocused ? 'bg-primary/10 text-primary' : ''}`}
+                  className={cn('h-7 w-7', isCurrentlyFocused && 'bg-primary/10 text-primary')}
                   onClick={handleFocus}
                 >
                   <Crosshair className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">
-                {isCurrentlyFocused ? 'Exit focus mode (Esc)' : 'Focus on connected nodes (N)'}
+                {isCurrentlyFocused ? 'Exit focus mode (Esc)' : 'Focus on connected nodes'}
               </TooltipContent>
             </Tooltip>
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleClose}>
@@ -266,9 +179,9 @@ export function NodeDetailPanel() {
               <FileCode className="h-4 w-4 text-muted-foreground shrink-0" />
               <span className="font-mono text-xs truncate">{attrs.filePath}</span>
             </div>
-            {(attrs.lineStart || attrs.lineEnd) && (
+            {(attrs.lineStart != null || attrs.lineEnd != null) && (
               <p className="text-xs text-muted-foreground pl-6">
-                Lines {attrs.lineStart}–{attrs.lineEnd ?? '?'}
+                Lines {attrs.lineStart ?? '?'}–{attrs.lineEnd ?? '?'}
               </p>
             )}
           </div>
@@ -295,20 +208,27 @@ export function NodeDetailPanel() {
           </div>
         )}
 
-        {/* Error info */}
-        {attrs.errorCount != null && attrs.errorCount > 0 && (
+        {/* Errors section */}
+        <NodeErrorList nodeId={nodeId} nodeLabel={attrs.label} />
+
+        {/* Relevance (for AI query results) */}
+        {attrs.relevance != null && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Errors</p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Relevance</p>
             <div className="flex items-center gap-2">
-              <Badge variant="destructive">
-                {attrs.errorCount} error{attrs.errorCount > 1 ? 's' : ''}
-              </Badge>
-              {attrs.errorSeverity && (
-                <Badge variant="outline" className="border-red-500/30 text-red-600 dark:text-red-400">
-                  {attrs.errorSeverity}
-                </Badge>
-              )}
+              <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-primary transition-all"
+                  style={{ width: `${Math.round(attrs.relevance * 100)}%` }}
+                />
+              </div>
+              <span className="text-xs font-mono text-muted-foreground">
+                {Math.round(attrs.relevance * 100)}%
+              </span>
             </div>
+            <p className="text-[10px] text-muted-foreground">
+              {attrs.source === 'seed' ? 'Direct semantic match' : 'Discovered via graph traversal'}
+            </p>
           </div>
         )}
 
@@ -330,261 +250,183 @@ export function NodeDetailPanel() {
         )}
 
         {/* Connected Nodes */}
-        <ConnectedNodesList nodeId={selectedNodeId} />
+        <ConnectedNodesList nodeId={nodeId} />
       </div>
     </ScrollArea>
   );
 }
 
-// ─── Type Breakdown Row (expandable) ─────────────────────────────────────────
-
-function getChildNodesOfType(groupNodeId: string, type: string): { id: string; label: string }[] {
-  const graph = graphRef.current;
-  if (!graph || !graph.hasNode(groupNodeId)) return [];
-  const childIds = graph.getNodeAttributes(groupNodeId).childNodeIds ?? [];
-  const result: { id: string; label: string }[] = [];
-  for (const id of childIds) {
-    if (!graph.hasNode(id)) continue;
-    const attrs = graph.getNodeAttributes(id);
-    if (attrs.oirType === type) {
-      result.push({ id, label: attrs.label });
-    }
-  }
-  return result.sort((a, b) => a.label.localeCompare(b.label));
-}
-
-function TypeBreakdownRow({ type, count, groupNodeId }: { type: string; count: number; groupNodeId: string }) {
-  const [open, setOpen] = useState(false);
-  const Icon = ICON_MAP[type] ?? FileCode;
-  const bgClass = NODE_BG_CLASSES[type as keyof typeof NODE_BG_CLASSES] ?? '';
-
-  function handleChildClick(childId: string) {
-    // Switch to individual mode and focus on the child node
-    useGraphStore.getState().setViewMode('individual');
-    setTimeout(() => {
-      useGraphStore.getState().requestLayout();
-      setTimeout(() => {
-        useGraphStore.getState().selectNode(childId);
-        useGraphStore.getState().setFocusMode(childId);
-        useUIStore.getState().setDetailPanelOpen(true);
-        const graph = graphRef.current;
-        if (graph && graph.hasNode(childId)) {
-          const attrs = graph.getNodeAttributes(childId);
-          window.dispatchEvent(
-            new CustomEvent('omnious:center-node', { detail: { x: attrs.x, y: attrs.y } }),
-          );
-        }
-      }, 200);
-    }, 50);
-  }
-
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          className="flex items-center justify-between w-full text-xs rounded px-1 py-0.5 hover:bg-background/50 transition-colors"
-        >
-          <div className="flex items-center gap-1.5">
-            {open ? (
-              <ChevronDown className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
-            ) : (
-              <ChevronRight className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
-            )}
-            <Badge
-              variant="outline"
-              className={`text-[9px] px-1.5 py-0 ${bgClass}`}
-            >
-              {type.replace('_', ' ')}
-            </Badge>
-          </div>
-          <span className="font-mono text-muted-foreground">{count}</span>
-        </button>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="pl-4 space-y-0.5 mt-0.5">
-        {open && getChildNodesOfType(groupNodeId, type).map((child) => (
-          <button
-            key={child.id}
-            type="button"
-            onClick={() => handleChildClick(child.id)}
-            className="flex items-center gap-1.5 w-full rounded px-1.5 py-1 text-xs text-left hover:bg-background/70 transition-colors group"
-          >
-            <div className={cn('flex items-center justify-center rounded p-0.5 shrink-0', bgClass)}>
-              <Icon className="h-2.5 w-2.5" />
-            </div>
-            <span className="truncate group-hover:text-foreground">{child.label}</span>
-          </button>
-        ))}
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-// ─── Connected Nodes Sub-component ──────────────────────────────────────────
-
-const COLLAPSE_THRESHOLD = 6;
+const CHIP_COLLAPSE_THRESHOLD = 5;
 
 function ConnectedNodesList({ nodeId }: { nodeId: string }) {
-  // Re-render when graphVersion changes — memoize the expensive graph traversal
-  const graphVersion = useGraphStore((s) => s.graphVersion);
-  const { incoming, outgoing } = useMemo(
-    () => getConnectedNodes(nodeId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [nodeId, graphVersion],
-  );
-  const [incomingSectionOpen, setIncomingSectionOpen] = useState(true);
-  const [outgoingSectionOpen, setOutgoingSectionOpen] = useState(true);
-  const [incomingOpen, setIncomingOpen] = useState(true);
-  const [outgoingOpen, setOutgoingOpen] = useState(true);
+  const { incoming, outgoing } = useConnectedNodes(nodeId);
+  const [showAllIn, setShowAllIn] = useState(false);
+  const [showAllOut, setShowAllOut] = useState(false);
 
   if (incoming.length === 0 && outgoing.length === 0) return null;
 
-  function handleNavigate(targetId: string) {
-    // Enter focus mode on the clicked node — setFocusMode already fits the viewport
-    useGraphStore.getState().setFocusMode(targetId);
-    useGraphStore.getState().highlightConnectedEdges(targetId);
-    useUIStore.getState().setDetailPanelOpen(true);
-  }
+  const visibleIn = showAllIn ? incoming : incoming.slice(0, CHIP_COLLAPSE_THRESHOLD);
+  const visibleOut = showAllOut ? outgoing : outgoing.slice(0, CHIP_COLLAPSE_THRESHOLD);
 
   return (
-    <>
-      <Separator />
-
-      {/* Incoming connections */}
+    <div className="space-y-3">
       {incoming.length > 0 && (
-        <Collapsible open={incomingSectionOpen} onOpenChange={setIncomingSectionOpen}>
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              className="flex items-center gap-1.5 w-full hover:bg-muted/50 rounded-md px-1 py-0.5 transition-colors"
-            >
-              {incomingSectionOpen ? (
-                <ChevronDown className="h-3 w-3 text-muted-foreground" />
-              ) : (
-                <ChevronRight className="h-3 w-3 text-muted-foreground" />
-              )}
-              <ArrowDownToLine className="h-3.5 w-3.5 text-muted-foreground" />
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                Incoming ({incoming.length})
-              </p>
-            </button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-1">
-            {incoming.length <= COLLAPSE_THRESHOLD ? (
-              <div className="flex flex-wrap gap-1">
-                {incoming.map((node) => (
-                  <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
-                ))}
-              </div>
-            ) : (
-              <Collapsible open={incomingOpen} onOpenChange={setIncomingOpen}>
-                <div className="flex flex-wrap gap-1">
-                  {incoming.slice(0, COLLAPSE_THRESHOLD).map((node) => (
-                    <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
-                  ))}
-                </div>
-                <CollapsibleContent className="mt-1">
-                  <div className="flex flex-wrap gap-1">
-                    {incoming.slice(COLLAPSE_THRESHOLD).map((node) => (
-                      <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
-                    ))}
-                  </div>
-                </CollapsibleContent>
-                <CollapsibleTrigger asChild>
-                  <Button variant="ghost" size="sm" className="w-full h-6 text-xs text-muted-foreground mt-1">
-                    {incomingOpen ? 'Show less' : `Show ${incoming.length - COLLAPSE_THRESHOLD} more…`}
-                  </Button>
-                </CollapsibleTrigger>
-              </Collapsible>
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            <ArrowDownToLine className="h-3 w-3" />
+            Incoming ({incoming.length})
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {visibleIn.map((n) => (
+              <ConnectedChip key={`${n.id}:${n.edgeType}`} node={n} direction="in" />
+            ))}
+            {incoming.length > CHIP_COLLAPSE_THRESHOLD && !showAllIn && (
+              <button
+                type="button"
+                onClick={() => setShowAllIn(true)}
+                className="text-[10px] text-primary hover:underline px-1"
+              >
+                Show all {incoming.length}
+              </button>
             )}
-          </CollapsibleContent>
-        </Collapsible>
+          </div>
+        </div>
       )}
-
-      {/* Outgoing connections */}
       {outgoing.length > 0 && (
-        <Collapsible open={outgoingSectionOpen} onOpenChange={setOutgoingSectionOpen}>
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              className="flex items-center gap-1.5 w-full hover:bg-muted/50 rounded-md px-1 py-0.5 transition-colors"
-            >
-              {outgoingSectionOpen ? (
-                <ChevronDown className="h-3 w-3 text-muted-foreground" />
-              ) : (
-                <ChevronRight className="h-3 w-3 text-muted-foreground" />
-              )}
-              <ArrowUpFromLine className="h-3.5 w-3.5 text-muted-foreground" />
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                Outgoing ({outgoing.length})
-              </p>
-            </button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-1">
-            {outgoing.length <= COLLAPSE_THRESHOLD ? (
-              <div className="flex flex-wrap gap-1">
-                {outgoing.map((node) => (
-                  <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
-                ))}
-              </div>
-            ) : (
-              <Collapsible open={outgoingOpen} onOpenChange={setOutgoingOpen}>
-                <div className="flex flex-wrap gap-1">
-                  {outgoing.slice(0, COLLAPSE_THRESHOLD).map((node) => (
-                    <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
-                  ))}
-                </div>
-                <CollapsibleContent className="mt-1">
-                  <div className="flex flex-wrap gap-1">
-                    {outgoing.slice(COLLAPSE_THRESHOLD).map((node) => (
-                      <ConnectedNodeItem key={`${node.id}:${node.edgeType}`} node={node} onNavigate={handleNavigate} />
-                    ))}
-                  </div>
-                </CollapsibleContent>
-                <CollapsibleTrigger asChild>
-                  <Button variant="ghost" size="sm" className="w-full h-6 text-xs text-muted-foreground mt-1">
-                    {outgoingOpen ? 'Show less' : `Show ${outgoing.length - COLLAPSE_THRESHOLD} more…`}
-                  </Button>
-                </CollapsibleTrigger>
-              </Collapsible>
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            <ArrowUpFromLine className="h-3 w-3" />
+            Outgoing ({outgoing.length})
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {visibleOut.map((n) => (
+              <ConnectedChip key={`${n.id}:${n.edgeType}`} node={n} direction="out" />
+            ))}
+            {outgoing.length > CHIP_COLLAPSE_THRESHOLD && !showAllOut && (
+              <button
+                type="button"
+                onClick={() => setShowAllOut(true)}
+                className="text-[10px] text-primary hover:underline px-1"
+              >
+                Show all {outgoing.length}
+              </button>
             )}
-          </CollapsibleContent>
-        </Collapsible>
+          </div>
+        </div>
       )}
-    </>
+    </div>
   );
 }
 
-function ConnectedNodeItem({
-  node,
-  onNavigate,
-}: {
-  node: ConnectedNode;
-  onNavigate: (id: string) => void;
-}) {
-  const Icon = ICON_MAP[node.oirType] ?? FileCode;
-  const bgClass = NODE_BG_CLASSES[node.oirType as keyof typeof NODE_BG_CLASSES] ?? '';
+const SEVERITY_STYLES: Record<string, string> = {
+  error: 'text-red-600 dark:text-red-400 border-red-500/40 bg-red-500/5',
+  warning: 'text-amber-600 dark:text-amber-400 border-amber-500/40 bg-amber-500/5',
+  info: 'text-blue-600 dark:text-blue-400 border-blue-500/40 bg-blue-500/5',
+};
+
+function NodeErrorList({ nodeId, nodeLabel }: { nodeId: string; nodeLabel: string }) {
+  const projectId = useWorkspaceStore((s) => s.currentProjectId);
+
+  // Always call hooks unconditionally (Rules of Hooks), use `enabled` to gate the fetch
+  const { data, isLoading } = trpc.error.listByNode.useQuery(
+    { projectId: projectId ?? '', codeNodeId: nodeId, limit: 5 },
+    { enabled: !!projectId },
+  );
+
+  const errors = data?.errors ?? [];
+
+  // Conditional logic only after all hooks
+  if (!projectId || (!isLoading && errors.length === 0)) return null;
+
+  const handleAskAI = (message: string) => {
+    window.dispatchEvent(new CustomEvent('omnious:prefill-ai', { detail: { message } }));
+  };
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={() => onNavigate(node.id)}
-          className={cn(
-            'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] transition-colors',
-            'hover:bg-muted/80 hover:border-foreground/20 cursor-pointer shrink-0',
-            bgClass,
-          )}
-        >
-          <Icon className="h-2.5 w-2.5 shrink-0" />
-          <span className="truncate max-w-[120px]">{node.label}</span>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" className="text-xs">
-        <span className="font-medium">{node.label}</span>
-        <span className="text-muted-foreground ml-1">· {node.edgeType.replace('_', ' ')}</span>
-      </TooltipContent>
-    </Tooltip>
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1">
+          <AlertTriangle className="h-3 w-3" />
+          Active Errors
+        </p>
+        {errors.length > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-[10px] gap-1"
+            onClick={() => handleAskAI(`Explain all active errors on ${nodeLabel}`)}
+          >
+            <Bot className="h-3 w-3" />
+            Ask AI
+          </Button>
+        )}
+      </div>
+      {isLoading ? (
+        <div className="text-xs text-muted-foreground">Loading errors…</div>
+      ) : (
+        <div className="space-y-1.5">
+          {errors.map((err) => (
+            <div
+              key={err.id}
+              className={cn(
+                'rounded-md border p-2 space-y-1',
+                SEVERITY_STYLES[err.severity] ?? SEVERITY_STYLES.error,
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase">{err.error_type}</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] opacity-60">×{err.occurrence_count}</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-4 w-4"
+                    onClick={() =>
+                      handleAskAI(`Explain this error on ${nodeLabel}: ${err.error_type}: ${err.error_message}`)
+                    }
+                  >
+                    <Bot className="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
+              <p className="text-[10px] leading-relaxed line-clamp-2 opacity-80">
+                {err.error_message}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConnectedChip({
+  node,
+  direction,
+}: {
+  node: { id: string; label: string; oirType: string; edgeType: string };
+  direction: 'in' | 'out';
+}) {
+  const bgClass = NODE_BG_CLASSES[node.oirType as keyof typeof NODE_BG_CLASSES] ?? '';
+
+  const handleClick = () => {
+    useGraphStore.getState().selectNode(node.id);
+  };
+
+  const arrow = direction === 'in' ? '←' : '→';
+
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        'cursor-pointer text-[10px] px-1.5 py-0.5 gap-1 hover:bg-muted/80 transition-colors',
+        bgClass,
+      )}
+      onClick={handleClick}
+    >
+      <span className="opacity-50">{arrow}</span>
+      <span className="truncate max-w-30">{node.label}</span>
+      <span className="opacity-40">({node.edgeType.replace(/_/g, ' ')})</span>
+    </Badge>
   );
 }

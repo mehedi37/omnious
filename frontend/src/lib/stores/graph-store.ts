@@ -1,215 +1,74 @@
-import { MultiDirectedGraph } from 'graphology';
-import type { Edge, Node } from '@xyflow/react';
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import type { ZoomLevel } from '../oir/constants';
-import { EDGE_COLORS, NODE_COLORS } from '../oir/constants';
+import type { Node, Edge } from '@xyflow/react';
+import type { OIRNodeType, OIREdgeType } from '../oir/types';
 import type { FlowStep, RuntimeEdge } from '../oir/trace-flow';
-import type { OIREdgeType, OIRNodeType } from '../oir/types';
 
-// ─── Graphology attribute types ──────────────────────────────────────────────
+// ─── React Flow node/edge data types ─────────────────────────────────────────
 
-/** Attributes stored on every graphology node (individual + group nodes) */
-export interface GraphNodeAttributes {
-  x: number;
-  y: number;
-  size: number;
-  color: string;
+/** Data payload for Omnious graph nodes (stored on node.data) */
+export interface OmniousNodeData {
   label: string;
-  hidden?: boolean;
-
-  // OIR data (individual nodes)
-  oirType: OIRNodeType | null;
+  oirType: OIRNodeType;
   filePath: string | null;
   lineStart: number | null;
   lineEnd: number | null;
   signature: string | null;
   docComment: string | null;
   metadata: Record<string, unknown>;
+  oirId: string;
+  /** How this node was discovered in the current query */
+  source?: 'seed' | 'traversal' | 'semantic';
+  relevance?: number;
+  /** Error heatmap data */
   errorCount?: number;
   errorSeverity?: string;
-
-  // Group node data
-  isGroup: boolean;
-  directory?: string;
-  childCount?: number;
-  childNodeIds?: string[];
-  typeBreakdown?: Record<string, number>;
-  dominantType?: string;
-
-  /** Whether this node belongs to the individual (non-grouped) graph */
-  isIndividual: boolean;
+  [key: string]: unknown;
 }
 
-/** Attributes stored on every graphology edge */
-export interface GraphEdgeAttributes {
-  color: string;
-  size: number;
-  hidden?: boolean;
-  label?: string;
-  edgeType: OIREdgeType | 'runtime_call';
-  isRuntime?: boolean; // edges added during trace replay
-}
-
-// ─── React Flow node/edge data payloads ──────────────────────────────────────
-
-export interface RFNodeData extends Record<string, unknown> {
-  label: string;
-  oirType: OIRNodeType | null;
-  filePath: string | null;
-  lineStart: number | null;
-  lineEnd: number | null;
-  signature: string | null;
-  docComment: string | null;
-  metadata: Record<string, unknown>;
-  errorCount?: number;
-  errorSeverity?: string;
-  isGroup: boolean;
-  directory?: string;
-  childCount?: number;
-  childNodeIds?: string[];
-  typeBreakdown?: Record<string, number>;
-  dominantType?: string;
-  isIndividual: boolean;
-  color: string;
-}
-
-export interface RFEdgeData extends Record<string, unknown> {
+/** Data payload for Omnious graph edges */
+export interface OmniousEdgeData {
   edgeType: OIREdgeType | 'runtime_call';
   isRuntime?: boolean;
-  routePoints?: Array<{ x: number; y: number }>;
+  [key: string]: unknown;
 }
 
-// ─── Module-level refs (outside Zustand to avoid immer serialization) ─────────
+export type OmniousNode = Node<OmniousNodeData, 'omnious'>;
+export type OmniousEdge = Edge<OmniousEdgeData>;
 
-/** Live graphology graph instance — shared by flow canvas and all hooks */
-export const graphRef: {
-  current: MultiDirectedGraph<GraphNodeAttributes, GraphEdgeAttributes> | null;
-} = { current: null };
-
-/** Initialise (or return existing) graphology graph */
-export function getOrCreateGraph(): MultiDirectedGraph<GraphNodeAttributes, GraphEdgeAttributes> {
-  if (!graphRef.current) {
-    graphRef.current = new MultiDirectedGraph<GraphNodeAttributes, GraphEdgeAttributes>();
-  }
-  return graphRef.current;
-}
-
-// ─── Graphology → React Flow sync ────────────────────────────────────────────
-
-/**
- * Read the graphology graph and produce React Flow node/edge arrays.
- * Applies view-mode visibility and node-type filtering.
- */
-export function buildRFNodesAndEdges(
-  graph: MultiDirectedGraph<GraphNodeAttributes, GraphEdgeAttributes>,
-  nodeTypeFilters: Set<OIRNodeType>,
-  focusedNodeId: string | null = null,
-  connectedNodeIds: Set<string> = new Set(),
-  selectedNodeIds: Set<string> = new Set(),
-  edgeRoutes: Map<string, Array<{ x: number; y: number }>> = new Map(),
-): { rfNodes: Node<RFNodeData>[]; rfEdges: Edge<RFEdgeData>[] } {
-  const rfNodes: Node<RFNodeData>[] = [];
-  const rfEdges: Edge<RFEdgeData>[] = [];
-  const isFocusMode = focusedNodeId !== null;
-
-  graph.forEachNode((id, attrs) => {
-    if (attrs.hidden) return;
-    // Apply node type filter (individual nodes only — groups always pass)
-    if (!attrs.isGroup && attrs.oirType && nodeTypeFilters.size > 0 && !nodeTypeFilters.has(attrs.oirType)) return;
-
-    const isConnected = !isFocusMode || connectedNodeIds.has(id);
-
-    // Exclusive focus mode: completely hide non-connected nodes
-    if (isFocusMode && !isConnected) return;
-
-    rfNodes.push({
-      id,
-      type: attrs.isGroup ? 'group' : 'code',
-      position: { x: attrs.x, y: attrs.y },
-      zIndex: 1,
-      draggable: isConnected,
-      selectable: isConnected,
-      selected: selectedNodeIds.has(id),
-      data: {
-        label: attrs.label,
-        oirType: attrs.oirType,
-        filePath: attrs.filePath,
-        lineStart: attrs.lineStart,
-        lineEnd: attrs.lineEnd,
-        signature: attrs.signature,
-        docComment: attrs.docComment,
-        metadata: attrs.metadata,
-        errorCount: attrs.errorCount,
-        errorSeverity: attrs.errorSeverity,
-        isGroup: attrs.isGroup,
-        directory: attrs.directory,
-        childCount: attrs.childCount,
-        childNodeIds: attrs.childNodeIds,
-        typeBreakdown: attrs.typeBreakdown,
-        dominantType: attrs.dominantType,
-        isIndividual: attrs.isIndividual,
-        color: attrs.color,
-      },
-    });
-  });
-
-  const visibleNodeIds = new Set(rfNodes.map((n) => n.id));
-
-  graph.forEachEdge((edgeId, attrs, source, target) => {
-    if (attrs.hidden) return;
-    if (!visibleNodeIds.has(source) || !visibleNodeIds.has(target)) return;
-
-    rfEdges.push({
-      id: edgeId,
-      source,
-      target,
-      type: attrs.isRuntime ? 'animated' : 'routed',
-      animated: !!attrs.isRuntime,
-      zIndex: 0,
-      style: { stroke: attrs.color, strokeWidth: attrs.size },
-      data: {
-        edgeType: attrs.edgeType,
-        isRuntime: attrs.isRuntime,
-        routePoints: edgeRoutes.get(edgeId),
-      },
-    });
-  });
-
-  return { rfNodes, rfEdges };
-}
-
-// ─── Node animation state ─────────────────────────────────────────────────────
+// ─── Node flow animation state ───────────────────────────────────────────────
 
 export type NodeFlowState = 'idle' | 'active' | 'completed' | 'error';
-export type ViewMode = 'grouped' | 'individual';
 
-// ─── Zustand store ────────────────────────────────────────────────────────────
+// ─── Store types ─────────────────────────────────────────────────────────────
 
 interface GraphState {
-  // Reactive graph counters (increment to trigger re-renders)
-  graphVersion: number;
-  nodeCount: number;
-  edgeCount: number;
+  // React Flow nodes and edges
+  nodes: OmniousNode[];
+  edges: OmniousEdge[];
 
-  // React Flow arrays (derived from graphology via syncFromGraphology)
-  rfNodes: Node<RFNodeData>[];
-  rfEdges: Edge<RFEdgeData>[];
-
-  // Node type filtering
-  nodeTypeFilters: Set<OIRNodeType>;
-
-  selectedNodeIds: Set<string>;
-  zoomLevel: ZoomLevel;
+  // Layout state
   layoutMode: 'layered-tb' | 'layered-lr' | 'force' | 'stress';
-  heatmapActive: boolean;
   isLayouting: boolean;
   layoutVersion: number;
 
-  // View mode
-  viewMode: ViewMode;
-  expandedGroupIds: Set<string>;
+  // Selection
+  selectedNodeIds: Set<string>;
+  neighborNodeIds: Set<string>;
+
+  // Heatmap
+  heatmapActive: boolean;
+  heatmapData: Map<string, { errorCount: number; errorSeverity: string; heatLevel: string }>;
+
+  // Node pinning
+  pinnedNodeIds: Set<string>;
+
+  // Severity filters
+  severityFilters: Set<'error' | 'warning' | 'info'>;
+
+  // Node type filtering
+  nodeTypeFilters: Set<OIRNodeType>;
 
   // Flow animation state
   flowMode: 'static' | 'replay';
@@ -223,44 +82,59 @@ interface GraphState {
   // Focus mode
   focusedNodeId: string | null;
   connectedNodeIds: Set<string>;
+
+  // Search
   nodeSearchOpen: boolean;
 
-  // Edge highlighting (click-to-highlight connected edges)
+  // Edge highlighting
   highlightedNodeId: string | null;
 
-  // Neighbor node highlight (purple ring on nodes connected to selected)
-  neighborNodeIds: Set<string>;
+  // AI query context
+  queryActive: boolean;
+  queryExplanation: string | null;
+  querySteps: string[];
 
-  // ELK-computed edge routes (avoid node overlap)
-  edgeRoutes: Map<string, Array<{ x: number; y: number }>>;
+  // Module grouping
+  moduleGroups: Array<{ label: string; color: string; nodeIds: string[] }>;
 
-  // Node position locking
-  nodesLocked: boolean;
+  // ── Actions ──────────────────────────────────────────────────────────────
 
-  // Keyboard navigation
-  keyboardFocusedNodeId: string | null;
+  // Node/edge management
+  setNodes: (nodes: OmniousNode[]) => void;
+  setEdges: (edges: OmniousEdge[]) => void;
+  setGraph: (nodes: OmniousNode[], edges: OmniousEdge[]) => void;
+  clearGraph: () => void;
 
-  // ── Actions ──────────────────────────────────────────────────────────────────
-
-  bumpGraphVersion: (counts?: { nodeCount: number; edgeCount: number }) => void;
-  syncFromGraphology: () => void;
-  updateNodePositions: (positions: Map<string, { x: number; y: number }>) => void;
+  // Selection
   selectNode: (nodeId: string) => void;
   deselectAll: () => void;
   toggleNodeSelection: (nodeId: string) => void;
-  selectAllVisible: () => void;
-  setZoomLevel: (level: ZoomLevel) => void;
+
+  // Layout
   setLayoutMode: (mode: GraphState['layoutMode']) => void;
-  toggleHeatmap: () => void;
   setIsLayouting: (val: boolean) => void;
   requestLayout: () => void;
-  setViewMode: (mode: ViewMode) => void;
-  toggleGroupExpanded: (groupId: string) => void;
-  setKeyboardFocusedNode: (nodeId: string | null) => void;
+
+  // Heatmap
+  toggleHeatmap: () => void;
+  applyHeatmapData: (
+    entries: Array<{ code_node_id: string; error_count: number; severity: string; heat_level: string }>,
+  ) => void;
+  clearHeatmapData: () => void;
+
+  // Pinning
+  togglePinNode: (id: string) => void;
+  pinAll: () => void;
+  unpinAll: () => void;
+
+  // Severity filters
+  toggleSeverityFilter: (severity: 'error' | 'warning' | 'info') => void;
+
+  // Node type filters
   toggleNodeTypeFilter: (type: OIRNodeType) => void;
   setNodeTypeFilters: (filters: Set<OIRNodeType>) => void;
 
-  // Flow animation actions
+  // Flow animation
   startFlowReplay: (runtimeEdges: RuntimeEdge[]) => void;
   setFlowStep: (step: FlowStep) => void;
   clearFlowReplay: () => void;
@@ -271,30 +145,38 @@ interface GraphState {
   clearFocusMode: () => void;
   setNodeSearchOpen: (open: boolean) => void;
   highlightConnectedEdges: (nodeId: string | null) => void;
-  setEdgeRoutes: (routes: Map<string, Array<{ x: number; y: number }>>) => void;
-  toggleNodesLocked: () => void;
+
+  // AI query state
+  setQueryActive: (active: boolean) => void;
+  setQueryResult: (explanation: string, steps: string[]) => void;
+  clearQueryResult: () => void;
+
+  // Module grouping
+  setModuleGroups: (groups: Array<{ label: string; color: string; nodeIds: string[] }>) => void;
+  clearModuleGroups: () => void;
 }
 
 export const useGraphStore = create<GraphState>()(
   subscribeWithSelector(
     immer((set) => ({
-      graphVersion: 0,
-      nodeCount: 0,
-      edgeCount: 0,
+      nodes: [],
+      edges: [],
 
-      rfNodes: [],
-      rfEdges: [],
-      nodeTypeFilters: new Set<OIRNodeType>(),
-
-      selectedNodeIds: new Set<string>(),
-      zoomLevel: 'function' as ZoomLevel,
       layoutMode: 'layered-tb',
-      heatmapActive: false,
       isLayouting: false,
       layoutVersion: 0,
 
-      viewMode: 'grouped' as ViewMode,
-      expandedGroupIds: new Set<string>(),
+      selectedNodeIds: new Set<string>(),
+      neighborNodeIds: new Set<string>(),
+
+      heatmapActive: false,
+      heatmapData: new Map(),
+
+      pinnedNodeIds: new Set<string>(),
+
+      severityFilters: new Set<'error' | 'warning' | 'info'>(['error']),
+
+      nodeTypeFilters: new Set<OIRNodeType>(),
 
       flowMode: 'static',
       activeFlowStep: null,
@@ -306,84 +188,62 @@ export const useGraphStore = create<GraphState>()(
 
       focusedNodeId: null,
       connectedNodeIds: new Set<string>(),
-      nodeSearchOpen: false,
 
+      nodeSearchOpen: false,
       highlightedNodeId: null,
 
-      neighborNodeIds: new Set<string>(),
+      queryActive: false,
+      queryExplanation: null,
+      querySteps: [],
 
-      edgeRoutes: new Map<string, Array<{ x: number; y: number }>>(),
+      moduleGroups: [],
 
-      nodesLocked: false,
+      // ── Node/edge management ───────────────────────────────────────────
 
-      keyboardFocusedNodeId: null,
-
-      // ── Graph version / counters ────────────────────────────────────────────
-
-      bumpGraphVersion: (counts) =>
+      setNodes: (nodes) =>
         set((state) => {
-          state.graphVersion += 1;
-          if (counts) {
-            state.nodeCount = counts.nodeCount;
-            state.edgeCount = counts.edgeCount;
-          } else {
-            const g = graphRef.current;
-            if (g) {
-              state.nodeCount = g.order;
-              state.edgeCount = g.size;
-            }
-          }
+          state.nodes = nodes;
         }),
 
-      // ── Sync graphology → React Flow arrays ────────────────────────────────
-
-      syncFromGraphology: () => {
-        const graph = graphRef.current;
-        if (!graph) return;
-        const s = useGraphStore.getState();
-        const { rfNodes, rfEdges } = buildRFNodesAndEdges(graph, s.nodeTypeFilters, s.focusedNodeId, s.connectedNodeIds, s.selectedNodeIds, s.edgeRoutes);
-        // Apply node position lock if active
-        if (s.nodesLocked) {
-          for (const node of rfNodes) { node.draggable = false; }
-        }
+      setEdges: (edges) =>
         set((state) => {
-          state.rfNodes = rfNodes;
-          state.rfEdges = rfEdges;
-          state.graphVersion += 1;
-          state.nodeCount = graph.order;
-          state.edgeCount = graph.size;
-        });
-      },
+          state.edges = edges;
+        }),
 
-      updateNodePositions: (positions) => {
-        const graph = graphRef.current;
-        if (!graph) return;
-        positions.forEach((pos, id) => {
-          if (graph.hasNode(id)) {
-            graph.setNodeAttribute(id, 'x', pos.x);
-            graph.setNodeAttribute(id, 'y', pos.y);
-          }
-        });
-        // Rebuild React Flow arrays with updated positions
-        const s = useGraphStore.getState();
-        const { rfNodes, rfEdges } = buildRFNodesAndEdges(graph, s.nodeTypeFilters, s.focusedNodeId, s.connectedNodeIds, s.selectedNodeIds, s.edgeRoutes);
+      setGraph: (nodes, edges) =>
         set((state) => {
-          state.rfNodes = rfNodes;
-          state.rfEdges = rfEdges;
-          state.graphVersion += 1;
-        });
-      },
+          state.nodes = nodes;
+          state.edges = edges;
+          state.selectedNodeIds = new Set();
+          state.neighborNodeIds = new Set();
+          state.focusedNodeId = null;
+          state.connectedNodeIds = new Set();
+          state.highlightedNodeId = null;
+        }),
 
-      // ── Selection ──────────────────────────────────────────────────────────
+      clearGraph: () =>
+        set((state) => {
+          state.nodes = [];
+          state.edges = [];
+          state.selectedNodeIds = new Set();
+          state.neighborNodeIds = new Set();
+          state.focusedNodeId = null;
+          state.connectedNodeIds = new Set();
+          state.highlightedNodeId = null;
+          state.queryExplanation = null;
+          state.querySteps = [];
+        }),
+
+      // ── Selection ──────────────────────────────────────────────────────
 
       selectNode: (nodeId) =>
         set((state) => {
           state.selectedNodeIds = new Set([nodeId]);
-          // Highlight neighbor nodes in purple
-          const graph = graphRef.current;
+          // Compute neighbor nodes from edges
           const neighbors = new Set<string>();
-          if (graph && graph.hasNode(nodeId)) {
-            graph.neighbors(nodeId).forEach((n) => neighbors.add(n));
+          for (const edge of state.edges) {
+            if (edge.source === nodeId) neighbors.add(edge.target);
+            if (edge.target === nodeId) neighbors.add(edge.source);
           }
           state.neighborNodeIds = neighbors;
         }),
@@ -402,29 +262,11 @@ export const useGraphStore = create<GraphState>()(
           state.selectedNodeIds = next;
         }),
 
-      selectAllVisible: () =>
-        set((state) => {
-          const graph = graphRef.current;
-          if (!graph) return;
-          const visible = graph.nodes().filter((n) => !graph.getNodeAttribute(n, 'hidden'));
-          state.selectedNodeIds = new Set(visible);
-        }),
-
-      // ── Graph settings ─────────────────────────────────────────────────────
-
-      setZoomLevel: (level) =>
-        set((state) => {
-          state.zoomLevel = level;
-        }),
+      // ── Layout ─────────────────────────────────────────────────────────
 
       setLayoutMode: (mode) =>
         set((state) => {
           state.layoutMode = mode;
-        }),
-
-      toggleHeatmap: () =>
-        set((state) => {
-          state.heatmapActive = !state.heatmapActive;
         }),
 
       setIsLayouting: (val) =>
@@ -437,125 +279,109 @@ export const useGraphStore = create<GraphState>()(
           state.layoutVersion += 1;
         }),
 
-      // ── View mode ──────────────────────────────────────────────────────────
+      // ── Heatmap ────────────────────────────────────────────────────────
 
-      setViewMode: (mode) => {
-        const graph = graphRef.current;
-        if (!graph) return;
-
-        // Clear focus mode before switching views — prevents stale connected set
-        // from filtering nodes that no longer exist in the new view
+      toggleHeatmap: () =>
         set((state) => {
-          state.focusedNodeId = null;
-          state.connectedNodeIds = new Set();
-          state.selectedNodeIds = new Set();
-          state.neighborNodeIds = new Set();
-          state.highlightedNodeId = null;
-        });
-
-        // Show/hide individual vs group nodes
-        graph.nodes().forEach((node) => {
-          const attrs = graph.getNodeAttributes(node);
-          if (mode === 'grouped') {
-            graph.setNodeAttribute(node, 'hidden', attrs.isIndividual);
-          } else {
-            graph.setNodeAttribute(node, 'hidden', attrs.isGroup);
+          state.heatmapActive = !state.heatmapActive;
+        }),
+      applyHeatmapData: (entries) =>
+        set((state) => {
+          const newMap = new Map<string, { errorCount: number; errorSeverity: string; heatLevel: string }>();
+          for (const e of entries) {
+            newMap.set(e.code_node_id, {
+              errorCount: Number(e.error_count),
+              errorSeverity: e.severity,
+              heatLevel: e.heat_level,
+            });
           }
-        });
-        // Hide intra-group edges in grouped mode, show in individual
-        graph.edges().forEach((edge) => {
-          if (graph.getEdgeAttribute(edge, 'isRuntime')) return;
-          if (mode === 'grouped') {
-            const src = graph.source(edge);
-            const tgt = graph.target(edge);
-            const srcGroup = graph.getNodeAttribute(src, 'isGroup');
-            const tgtGroup = graph.getNodeAttribute(tgt, 'isGroup');
-            graph.setEdgeAttribute(edge, 'hidden', !srcGroup && !tgtGroup);
-          } else {
-            const srcGroup = graph.getNodeAttribute(graph.source(edge), 'isGroup');
-            const tgtGroup = graph.getNodeAttribute(graph.target(edge), 'isGroup');
-            graph.setEdgeAttribute(edge, 'hidden', srcGroup || tgtGroup);
-          }
-        });
-
-        set((state) => {
-          state.viewMode = mode;
-        });
-
-        // Sync React Flow arrays after visibility change
-        useGraphStore.getState().syncFromGraphology();
-      },
-
-      toggleGroupExpanded: (groupId) =>
-        set((state) => {
-          const next = new Set(state.expandedGroupIds);
-          if (next.has(groupId)) next.delete(groupId);
-          else next.add(groupId);
-          state.expandedGroupIds = next;
+          state.heatmapData = newMap;
+          // Merge errorCount / errorSeverity into node.data so filtering and glow work
+          state.nodes = state.nodes.map((n: OmniousNode) => {
+            const heat = newMap.get(n.id);
+            if (!heat) return n;
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                errorCount: heat.errorCount,
+                errorSeverity: heat.errorSeverity,
+              },
+            };
+          });
         }),
 
-      setKeyboardFocusedNode: (nodeId) =>
+      clearHeatmapData: () =>
         set((state) => {
-          state.keyboardFocusedNodeId = nodeId;
+          state.heatmapData = new Map();
+          // Clear error fields from nodes
+          state.nodes = state.nodes.map((n: OmniousNode) => ({
+            ...n,
+            data: { ...n.data, errorCount: undefined, errorSeverity: undefined },
+          }));
+        }),
+      // ── Pinning ───────────────────────────────────────────────────────
+
+      togglePinNode: (id) =>
+        set((state) => {
+          const next = new Set(state.pinnedNodeIds);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          state.pinnedNodeIds = next;
         }),
 
-      // ── Node type filters ──────────────────────────────────────────────────
+      pinAll: () =>
+        set((state) => {
+          state.pinnedNodeIds = new Set(state.nodes.map((n: OmniousNode) => n.id));
+        }),
 
-      toggleNodeTypeFilter: (type) => {
-        const next = new Set(useGraphStore.getState().nodeTypeFilters);
-        if (next.has(type)) next.delete(type);
-        else next.add(type);
-        // Rebuild RF arrays with new filter
-        const graph = graphRef.current;
-        if (graph) {
-          const s = useGraphStore.getState();
-          const { rfNodes, rfEdges } = buildRFNodesAndEdges(graph, next, s.focusedNodeId, s.connectedNodeIds, s.selectedNodeIds);
-          set((state) => {
-            state.nodeTypeFilters = next;
-            state.rfNodes = rfNodes;
-            state.rfEdges = rfEdges;
-          });
-        } else {
-          set((state) => { state.nodeTypeFilters = next; });
-        }
-      },
+      unpinAll: () =>
+        set((state) => {
+          state.pinnedNodeIds = new Set();
+        }),
 
-      setNodeTypeFilters: (filters) => {
-        const graph = graphRef.current;
-        if (graph) {
-          const s = useGraphStore.getState();
-          const { rfNodes, rfEdges } = buildRFNodesAndEdges(graph, filters, s.focusedNodeId, s.connectedNodeIds, s.selectedNodeIds);
-          set((state) => {
-            state.nodeTypeFilters = filters;
-            state.rfNodes = rfNodes;
-            state.rfEdges = rfEdges;
-          });
-        } else {
-          set((state) => { state.nodeTypeFilters = filters; });
-        }
-      },
+      // ── Severity filters ───────────────────────────────────────────────
 
-      // ── Flow animation actions ─────────────────────────────────────────────
+      toggleSeverityFilter: (severity) =>
+        set((state) => {
+          const next = new Set(state.severityFilters);
+          if (next.has(severity)) next.delete(severity);
+          else next.add(severity);
+          state.severityFilters = next;
+        }),
+
+      // ── Node type filters ──────────────────────────────────────────────
+
+      toggleNodeTypeFilter: (type) =>
+        set((state) => {
+          const next = new Set(state.nodeTypeFilters);
+          if (next.has(type)) next.delete(type);
+          else next.add(type);
+          state.nodeTypeFilters = next;
+        }),
+
+      setNodeTypeFilters: (filters) =>
+        set((state) => {
+          state.nodeTypeFilters = filters;
+        }),
+
+      // ── Flow animation ─────────────────────────────────────────────────
 
       startFlowReplay: (runtimeEdges) => {
-        const graph = graphRef.current;
-        if (graph) {
+        set((state) => {
+          // Add runtime edges to the edge array
           for (const re of runtimeEdges) {
-            if (
-              graph.hasNode(re.sourceNodeId) &&
-              graph.hasNode(re.targetNodeId) &&
-              !graph.hasEdge(re.id)
-            ) {
-              graph.addEdgeWithKey(re.id, re.sourceNodeId, re.targetNodeId, {
-                color: 'oklch(0.7 0.2 195)',
-                size: 2,
-                edgeType: 'runtime_call',
-                isRuntime: true,
+            const exists = state.edges.some((e: OmniousEdge) => e.id === re.id);
+            if (!exists) {
+              state.edges.push({
+                id: re.id,
+                source: re.sourceNodeId,
+                target: re.targetNodeId,
+                type: 'animated-flow',
+                data: { edgeType: 'runtime_call', isRuntime: true },
               });
             }
           }
-        }
-        set((state) => {
           state.flowMode = 'replay';
           state.activeFlowStep = null;
           state.activeNodeId = null;
@@ -564,13 +390,11 @@ export const useGraphStore = create<GraphState>()(
           state.errorNodeIds = new Set();
           state.callStack = [];
         });
-        useGraphStore.getState().syncFromGraphology();
       },
 
       setFlowStep: (step) =>
         set((state) => {
           const prev = state.activeFlowStep;
-
           if (prev?.nodeId) {
             if (prev.status === 'error') {
               state.errorNodeIds.add(prev.nodeId);
@@ -578,33 +402,19 @@ export const useGraphStore = create<GraphState>()(
               state.completedNodeIds.add(prev.nodeId);
             }
           }
-
           state.activeFlowStep = step;
           state.activeNodeId = step.nodeId;
-
           state.activeEdgeIds = new Set<string>();
-          if (step.edgeId) {
-            state.activeEdgeIds.add(step.edgeId);
-          }
-
-          if (step.status === 'error' && step.nodeId) {
-            state.errorNodeIds.add(step.nodeId);
-          }
-
+          if (step.edgeId) state.activeEdgeIds.add(step.edgeId);
+          if (step.status === 'error' && step.nodeId) state.errorNodeIds.add(step.nodeId);
           state.callStack = state.callStack.slice(0, step.depth);
           state.callStack.push(step);
         }),
 
-      clearFlowReplay: () => {
-        const graph = graphRef.current;
-        if (graph) {
-          graph.edges().forEach((edge) => {
-            if (graph.getEdgeAttribute(edge, 'isRuntime')) {
-              graph.dropEdge(edge);
-            }
-          });
-        }
+      clearFlowReplay: () =>
         set((state) => {
+          // Remove runtime edges
+          state.edges = state.edges.filter((e: OmniousEdge) => !e.data?.isRuntime);
           state.flowMode = 'static';
           state.activeFlowStep = null;
           state.activeNodeId = null;
@@ -612,9 +422,7 @@ export const useGraphStore = create<GraphState>()(
           state.completedNodeIds = new Set();
           state.errorNodeIds = new Set();
           state.callStack = [];
-        });
-        useGraphStore.getState().syncFromGraphology();
-      },
+        }),
 
       getNodeFlowState: (nodeId) => {
         const s = useGraphStore.getState();
@@ -625,96 +433,144 @@ export const useGraphStore = create<GraphState>()(
         return 'idle';
       },
 
-      // ── Focus + Search ─────────────────────────────────────────────────────
+      // ── Focus + Search ─────────────────────────────────────────────────
 
-      setFocusMode: (nodeId) => {
-        const graph = graphRef.current;
-        const connected = new Set<string>([nodeId]);
-        if (graph && graph.hasNode(nodeId)) {
-          graph.neighbors(nodeId).forEach((n) => {
-            // Only include visible (non-hidden) neighbors
-            if (!graph.getNodeAttribute(n, 'hidden')) {
-              connected.add(n);
-            }
-          });
-        }
+      setFocusMode: (nodeId) =>
         set((state) => {
+          // Collect 2-hop neighbors from edges
+          const connected = new Set<string>([nodeId]);
+          const hop1 = new Set<string>();
+
+          for (const edge of state.edges) {
+            if (edge.source === nodeId) { connected.add(edge.target); hop1.add(edge.target); }
+            if (edge.target === nodeId) { connected.add(edge.source); hop1.add(edge.source); }
+          }
+
+          // 2nd hop
+          for (const n1 of hop1) {
+            if (connected.size >= 50) break;
+            for (const edge of state.edges) {
+              if (connected.size >= 50) break;
+              if (edge.source === n1 && !connected.has(edge.target)) connected.add(edge.target);
+              if (edge.target === n1 && !connected.has(edge.source)) connected.add(edge.source);
+            }
+          }
+
           state.focusedNodeId = nodeId;
           state.connectedNodeIds = connected;
           state.selectedNodeIds = new Set([nodeId]);
-          state.neighborNodeIds = new Set(); // clear — focus mode handles this differently
-        });
-        useGraphStore.getState().syncFromGraphology();
-        // Auto-fit connected nodes into viewport
-        window.dispatchEvent(new CustomEvent('omnious:focus-fit'));
-      },
+          state.neighborNodeIds = hop1;
+        }),
 
-      clearFocusMode: () => {
+      clearFocusMode: () =>
         set((state) => {
           state.focusedNodeId = null;
           state.connectedNodeIds = new Set();
           state.selectedNodeIds = new Set();
           state.neighborNodeIds = new Set();
           state.highlightedNodeId = null;
-        });
-        useGraphStore.getState().syncFromGraphology();
-        // Restore edge opacity without highlighting any node
-        useGraphStore.getState().highlightConnectedEdges(null);
-      },
+        }),
 
       setNodeSearchOpen: (open) =>
         set((state) => {
           state.nodeSearchOpen = open;
         }),
 
-      // ── Edge highlighting ──────────────────────────────────────────────────
-
-      highlightConnectedEdges: (nodeId) => {
+      highlightConnectedEdges: (nodeId) =>
         set((state) => {
           state.highlightedNodeId = nodeId;
-          // Update edge z-index and stroke for highlighted edges
-          const AMBER_STROKE = 'oklch(0.75 0.18 75)'; // amber/gold
-          for (const edge of state.rfEdges) {
-            if (nodeId && (edge.source === nodeId || edge.target === nodeId)) {
-              edge.zIndex = 10;
-              edge.style = { ...edge.style, stroke: AMBER_STROKE, strokeWidth: 2.5, opacity: 1 };
-            } else {
-              edge.zIndex = 0;
-              // Restore original color from graphology; dim non-connected edges when highlighting
-              const graph = graphRef.current;
-              if (graph && graph.hasEdge(edge.id)) {
-                const attrs = graph.getEdgeAttributes(edge.id);
-                edge.style = {
-                  ...edge.style,
-                  stroke: attrs.color,
-                  strokeWidth: attrs.size,
-                  opacity: nodeId ? 0.1 : 0.45,
-                };
-              }
-            }
-          }
-        });
-      },
-
-      // ── Edge routes ────────────────────────────────────────────────────────
-
-      setEdgeRoutes: (routes) =>
-        set((state) => {
-          state.edgeRoutes = routes;
         }),
 
-      // ── Node position lock ─────────────────────────────────────────────────
+      // ── AI query state ─────────────────────────────────────────────────
 
-      toggleNodesLocked: () => {
+      setQueryActive: (active) =>
         set((state) => {
-          state.nodesLocked = !state.nodesLocked;
-          // Update draggable on all RF nodes
-          const locked = state.nodesLocked;
-          for (const node of state.rfNodes) {
-            node.draggable = !locked;
-          }
-        });
-      },
+          state.queryActive = active;
+        }),
+
+      setQueryResult: (explanation, steps) =>
+        set((state) => {
+          state.queryExplanation = explanation;
+          state.querySteps = steps;
+          state.queryActive = false;
+        }),
+
+      clearQueryResult: () =>
+        set((state) => {
+          state.queryExplanation = null;
+          state.querySteps = [];
+        }),
+
+      setModuleGroups: (groups) =>
+        set((state) => {
+          state.moduleGroups = groups;
+        }),
+
+      clearModuleGroups: () =>
+        set((state) => {
+          state.moduleGroups = [];
+        }),
     })),
   ),
 );
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Convert backend subgraph nodes to React Flow nodes */
+export function toReactFlowNodes(
+  subgraphNodes: Array<{
+    id: string;
+    oir_id: string;
+    type: string;
+    name: string;
+    file_path: string;
+    line_start: number | null;
+    line_end: number | null;
+    signature: string | null;
+    doc_comment: string | null;
+    metadata: Record<string, unknown> | null;
+    source?: 'seed' | 'traversal' | 'semantic';
+    relevance?: number;
+  }>,
+): OmniousNode[] {
+  return subgraphNodes.map((n, i) => ({
+    id: n.id,
+    type: 'omnious',
+    // Temporary position — will be overridden by ELK layout
+    position: { x: (i % 6) * 300, y: Math.floor(i / 6) * 120 },
+    data: {
+      label: n.name,
+      oirType: n.type as OIRNodeType,
+      filePath: n.file_path,
+      lineStart: n.line_start,
+      lineEnd: n.line_end,
+      signature: n.signature,
+      docComment: n.doc_comment,
+      metadata: n.metadata ?? {},
+      oirId: n.oir_id,
+      source: n.source,
+      relevance: n.relevance,
+    },
+  }));
+}
+
+/** Convert backend subgraph edges to React Flow edges */
+export function toReactFlowEdges(
+  subgraphEdges: Array<{
+    id: string;
+    source_node_id: string;
+    target_node_id: string;
+    type: string;
+    metadata: Record<string, unknown> | null;
+  }>,
+): OmniousEdge[] {
+  return subgraphEdges.map((e) => ({
+    id: e.id,
+    source: e.source_node_id,
+    target: e.target_node_id,
+    type: 'animated-flow',
+    data: {
+      edgeType: e.type as OIREdgeType,
+    },
+  }));
+}

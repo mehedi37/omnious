@@ -7,6 +7,11 @@ export type Json =
   | Json[]
 
 export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
+  __InternalSupabase: {
+    PostgrestVersion: "14.1"
+  }
   public: {
     Tables: {
       ai_sessions: {
@@ -72,6 +77,13 @@ export type Database = {
             foreignKeyName: "ai_sessions_api_key_id_fkey"
             columns: ["api_key_id"]
             isOneToOne: false
+            referencedRelation: "api_key_metadata_view"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_sessions_api_key_id_fkey"
+            columns: ["api_key_id"]
+            isOneToOne: false
             referencedRelation: "user_api_keys"
             referencedColumns: ["id"]
           },
@@ -94,6 +106,70 @@ export type Database = {
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      api_key_audit_log: {
+        Row: {
+          action: string
+          created_at: string
+          id: string
+          ip_address: string | null
+          key_id: string | null
+          key_prefix: string | null
+          metadata: Json
+          project_id: string | null
+          provider: string | null
+          user_agent: string | null
+          user_id: string
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          id?: string
+          ip_address?: string | null
+          key_id?: string | null
+          key_prefix?: string | null
+          metadata?: Json
+          project_id?: string | null
+          provider?: string | null
+          user_agent?: string | null
+          user_id: string
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          id?: string
+          ip_address?: string | null
+          key_id?: string | null
+          key_prefix?: string | null
+          metadata?: Json
+          project_id?: string | null
+          provider?: string | null
+          user_agent?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "api_key_audit_log_key_id_fkey"
+            columns: ["key_id"]
+            isOneToOne: false
+            referencedRelation: "api_key_metadata_view"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "api_key_audit_log_key_id_fkey"
+            columns: ["key_id"]
+            isOneToOne: false
+            referencedRelation: "user_api_keys"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "api_key_audit_log_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
             referencedColumns: ["id"]
           },
         ]
@@ -356,13 +432,17 @@ export type Database = {
           fingerprint: string
           first_seen_at: string
           id: string
+          language: string | null
           last_seen_at: string
           metadata: Json
           occurrence_count: number
           project_id: string
           resolved_at: string | null
           resolved_by: string | null
+          severity: string
+          source: string
           span_id: string | null
+          span_otel_id: string | null
           trace_id: string | null
         }
         Insert: {
@@ -374,13 +454,17 @@ export type Database = {
           fingerprint: string
           first_seen_at?: string
           id?: string
+          language?: string | null
           last_seen_at?: string
           metadata?: Json
           occurrence_count?: number
           project_id: string
           resolved_at?: string | null
           resolved_by?: string | null
+          severity?: string
+          source?: string
           span_id?: string | null
+          span_otel_id?: string | null
           trace_id?: string | null
         }
         Update: {
@@ -392,13 +476,17 @@ export type Database = {
           fingerprint?: string
           first_seen_at?: string
           id?: string
+          language?: string | null
           last_seen_at?: string
           metadata?: Json
           occurrence_count?: number
           project_id?: string
           resolved_at?: string | null
           resolved_by?: string | null
+          severity?: string
+          source?: string
           span_id?: string | null
+          span_otel_id?: string | null
           trace_id?: string | null
         }
         Relationships: [
@@ -558,6 +646,7 @@ export type Database = {
           oir_version: string | null
           otel_endpoint: string | null
           primary_language: string | null
+          selected_key_id: string | null
           settings: Json
           slug: string
           status: Database["public"]["Enums"]["project_status"]
@@ -582,6 +671,7 @@ export type Database = {
           oir_version?: string | null
           otel_endpoint?: string | null
           primary_language?: string | null
+          selected_key_id?: string | null
           settings?: Json
           slug: string
           status?: Database["public"]["Enums"]["project_status"]
@@ -606,6 +696,7 @@ export type Database = {
           oir_version?: string | null
           otel_endpoint?: string | null
           primary_language?: string | null
+          selected_key_id?: string | null
           settings?: Json
           slug?: string
           status?: Database["public"]["Enums"]["project_status"]
@@ -614,6 +705,20 @@ export type Database = {
           workspace_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "projects_selected_key_id_fkey"
+            columns: ["selected_key_id"]
+            isOneToOne: false
+            referencedRelation: "api_key_metadata_view"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "projects_selected_key_id_fkey"
+            columns: ["selected_key_id"]
+            isOneToOne: false
+            referencedRelation: "user_api_keys"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "projects_workspace_id_fkey"
             columns: ["workspace_id"]
@@ -965,66 +1070,144 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      api_key_metadata_view: {
+        Row: {
+          created_at: string | null
+          id: string | null
+          is_active: boolean | null
+          key_prefix: string | null
+          label: string | null
+          last_used_at: string | null
+          provider: string | null
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string | null
+          is_active?: boolean | null
+          key_prefix?: string | null
+          label?: string | null
+          last_used_at?: string | null
+          provider?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string | null
+          is_active?: boolean | null
+          key_prefix?: string | null
+          label?: string | null
+          last_used_at?: string | null
+          provider?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "user_api_keys_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       check_trace_quota: { Args: { p_project_id: string }; Returns: boolean }
       get_error_heatmap: {
-        Args: { p_project_id: string; p_since?: string }
+        Args: {
+          p_project_id: string
+          p_severity_filter?: string
+          p_since?: string
+        }
         Returns: {
           code_node_id: string
-          node_name: string
-          node_type: Database["public"]["Enums"]["oir_node_type"]
-          file_path: string
           error_count: number
-          unique_errors: number
+          heat_level: string
           last_error_at: string
           severity: string
+          top_error_message: string
+          top_error_type: string
+          unique_errors: number
         }[]
+      }
+      get_error_occurrence_history: {
+        Args: { p_days?: number; p_fingerprint: string; p_project_id: string }
+        Returns: {
+          day: string
+          occurrences: number
+        }[]
+      }
+      is_workspace_member_for_project: {
+        Args: { p_project_id: string; p_user_id: string }
+        Returns: boolean
       }
       match_code_nodes: {
         Args: {
-          query_embedding: string
-          match_project_id: string
-          match_threshold?: number
           match_count?: number
+          match_threshold?: number
+          p_project_id: string
+          query_embedding: string
         }
         Returns: {
-          id: string
-          oir_id: string
-          name: string
-          type: Database["public"]["Enums"]["oir_node_type"]
           file_path: string
-          line_start: number
-          line_end: number
+          id: string
+          metadata: Json
+          name: string
+          oir_id: string
+          signature: string
           similarity: number
+          type: Database["public"]["Enums"]["oir_node_type"]
         }[]
       }
+      show_limit: { Args: never; Returns: number }
+      show_trgm: { Args: { "": string }; Returns: string[] }
+      text2ltree: { Args: { "": string }; Returns: unknown }
       traverse_graph: {
-        Args: { p_node_id: string; p_direction?: string; p_max_depth?: number }
+        Args: { p_direction?: string; p_max_depth?: number; p_node_id: string }
         Returns: {
           depth: number
+          edge_type: Database["public"]["Enums"]["oir_edge_type"]
           node_id: string
           node_name: string
           node_type: Database["public"]["Enums"]["oir_node_type"]
-          edge_type: Database["public"]["Enums"]["oir_edge_type"]
           parent_node_id: string
         }[]
       }
-      upsert_error_snapshot: {
-        Args: {
-          p_project_id: string
-          p_code_node_id: string
-          p_trace_id: string
-          p_span_id: string
-          p_error_type: string
-          p_error_message: string
-          p_error_stack: string
-          p_fingerprint: string
-          p_metadata?: Json
-        }
-        Returns: string
-      }
+      upsert_error_snapshot:
+        | {
+            Args: {
+              p_code_node_id: string
+              p_error_message: string
+              p_error_stack: string
+              p_error_type: string
+              p_fingerprint: string
+              p_metadata?: Json
+              p_project_id: string
+              p_source?: string
+              p_span_id: string
+              p_span_otel_id?: string
+              p_trace_id: string
+            }
+            Returns: string
+          }
+        | {
+            Args: {
+              p_code_node_id: string
+              p_error_message: string
+              p_error_stack: string
+              p_error_type: string
+              p_fingerprint: string
+              p_metadata?: Json
+              p_project_id: string
+              p_severity?: string
+              p_source?: string
+              p_span_id: string
+              p_span_otel_id?: string
+              p_trace_id: string
+            }
+            Returns: string
+          }
     }
     Enums: {
       ai_session_type:
@@ -1061,6 +1244,13 @@ export type Database = {
         | "external_api"
         | "variable"
         | "type_def"
+        | "struct"
+        | "enum"
+        | "interface"
+        | "namespace"
+        | "trait"
+        | "protocol"
+        | "package"
       project_status: "active" | "archived" | "importing" | "error"
       subscription_plan: "free" | "pro" | "team" | "enterprise"
       trace_status: "ok" | "error" | "timeout" | "partial"
@@ -1072,25 +1262,174 @@ export type Database = {
   }
 }
 
-// ─── Convenience helpers ─────────────────────────────────────────
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
 
-type DefaultSchema = Database[Extract<keyof Database, "public">]
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
 
 export type Tables<
-  T extends keyof (DefaultSchema["Tables"] & DefaultSchema["Views"]),
-> = (DefaultSchema["Tables"] & DefaultSchema["Views"])[T] extends {
-  Row: infer R
+  DefaultSchemaTableNameOrOptions extends
+    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
 }
-  ? R
-  : never
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+      Row: infer R
+    }
+    ? R
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])
+    ? (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+        Row: infer R
+      }
+      ? R
+      : never
+    : never
 
-export type TablesInsert<T extends keyof DefaultSchema["Tables"]> =
-  DefaultSchema["Tables"][T] extends { Insert: infer I } ? I : never
+export type TablesInsert<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Insert: infer I
+    }
+    ? I
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Insert: infer I
+      }
+      ? I
+      : never
+    : never
 
-export type TablesUpdate<T extends keyof DefaultSchema["Tables"]> =
-  DefaultSchema["Tables"][T] extends { Update: infer U } ? U : never
+export type TablesUpdate<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Update: infer U
+    }
+    ? U
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Update: infer U
+      }
+      ? U
+      : never
+    : never
 
-export type Enums<T extends keyof DefaultSchema["Enums"]> =
-  DefaultSchema["Enums"][T]
+export type Enums<
+  DefaultSchemaEnumNameOrOptions extends
+    | keyof DefaultSchema["Enums"]
+    | { schema: keyof DatabaseWithoutInternals },
+  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    : never = never,
+> = DefaultSchemaEnumNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
+    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+    : never
 
-export type DbFunctions = DefaultSchema["Functions"]
+export type CompositeTypes<
+  PublicCompositeTypeNameOrOptions extends
+    | keyof DefaultSchema["CompositeTypes"]
+    | { schema: keyof DatabaseWithoutInternals },
+  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    : never = never,
+> = PublicCompositeTypeNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
+    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+    : never
+
+export const Constants = {
+  public: {
+    Enums: {
+      ai_session_type: [
+        "explain_flow",
+        "why_broke",
+        "fix_it",
+        "general",
+        "security_scan",
+        "translate",
+      ],
+      git_provider: ["github", "gitlab", "bitbucket", "local"],
+      oir_edge_type: [
+        "calls",
+        "imports",
+        "extends",
+        "implements",
+        "renders",
+        "routes_to",
+        "queries",
+        "emits_event",
+        "subscribes_to",
+        "redirects_to",
+        "uses",
+        "exports",
+      ],
+      oir_node_type: [
+        "module",
+        "component",
+        "function",
+        "class",
+        "route",
+        "middleware",
+        "database_query",
+        "event_emitter",
+        "event_listener",
+        "external_api",
+        "variable",
+        "type_def",
+        "struct",
+        "enum",
+        "interface",
+        "namespace",
+        "trait",
+        "protocol",
+        "package",
+      ],
+      project_status: ["active", "archived", "importing", "error"],
+      subscription_plan: ["free", "pro", "team", "enterprise"],
+      trace_status: ["ok", "error", "timeout", "partial"],
+      workspace_role: ["owner", "admin", "member", "viewer"],
+    },
+  },
+} as const

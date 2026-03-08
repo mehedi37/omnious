@@ -1,0 +1,6 @@
+-- Migration: Consolidate get_error_heatmap overloads
+-- Applied to remote DB before local file was created; reconstructed for sync.
+-- Dropped the interval-based and timestamptz-based overloads, keeping only the
+-- text-based version. The function was later recreated in
+-- 20260301090801_fix_error_snapshots_and_heatmap.sql with the final signature.
+-- No-op: kept for migration history parity with remote.

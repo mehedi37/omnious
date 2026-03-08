@@ -5,6 +5,7 @@
   "private": true,
   "description": "Omnious — Visual Debugging Platform for the Vibe Coding Era",
   "workspaces": [
+    "packages/shared",
     "frontend",
     "backend",
     "cli",
@@ -24,9 +25,13 @@
     "db:types": "npm run db:types --workspace=@omnious/backend"
   },
   "devDependencies": {
+    "immer": "^11.1.4",
     "turbo": "^2.8.9"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "overrides": {
+    "zustand": "5.0.11"
   }
 }

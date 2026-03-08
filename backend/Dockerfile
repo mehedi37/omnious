@@ -3,12 +3,18 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Install deps first (cache layer)
+# Install deps first (cache layer) — include shared package so workspace symlinks resolve
 COPY package.json package-lock.json ./
+COPY packages/shared/package.json ./packages/shared/
 COPY backend/package.json ./backend/
-RUN npm ci --workspace=@omnious/backend --include-workspace-root
+RUN npm ci --workspace=@omnious/shared --workspace=@omnious/backend --include-workspace-root
 
-# Copy source and build
+# Build @omnious/shared first (backend imports from it)
+COPY packages/shared/tsconfig.json ./packages/shared/
+COPY packages/shared/src/ ./packages/shared/src/
+RUN npm run build --workspace=@omnious/shared
+
+# Copy source and build backend
 COPY backend/tsconfig.json ./backend/
 COPY backend/src/ ./backend/src/
 RUN npm run build --workspace=@omnious/backend
@@ -23,9 +29,12 @@ RUN apk add --no-cache tini && \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY packages/shared/package.json ./packages/shared/
 COPY backend/package.json ./backend/
-RUN npm ci --workspace=@omnious/backend --include-workspace-root --omit=dev
+RUN npm ci --workspace=@omnious/shared --workspace=@omnious/backend --include-workspace-root --omit=dev
 
+# Copy compiled output for both packages
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/backend/dist ./backend/dist
 
 # Non-root user

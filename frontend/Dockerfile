@@ -3,6 +3,7 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY packages/shared/package.json ./packages/shared/
 COPY frontend/package.json ./frontend/
 COPY backend/package.json ./backend/
 RUN npm ci
@@ -16,6 +17,12 @@ COPY --from=deps /app/frontend/node_modules ./frontend/node_modules
 COPY --from=deps /app/backend/node_modules ./backend/node_modules
 COPY package.json package-lock.json ./
 COPY frontend/ ./frontend/
+
+# Shared package — built before frontend (frontend imports @omnious/shared/oir-types)
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/shared/tsconfig.json ./packages/shared/
+COPY packages/shared/src/ ./packages/shared/src/
+RUN npm run build --workspace=@omnious/shared
 
 # Backend source needed for tRPC AppRouter type inference
 # (frontend/src/trpc/init.ts imports type from backend/src/routers)

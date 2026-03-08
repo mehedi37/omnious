@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, projectProcedure, publicProcedure } from '../trpc/index.js';
+import { router, projectProcedure, apiKeyProcedure } from '../trpc/index.js';
+import { logger } from '../lib/logger.js';
 
 const ingestTraceSchema = z.object({
   projectApiKey: z.string(),
@@ -43,22 +44,10 @@ export const traceRouter = router({
    * Ingest traces via project API key (no user auth — used by OTel SDK).
    * Authenticates using the project-level API key instead.
    */
-  ingest: publicProcedure
+  ingest: apiKeyProcedure
     .input(ingestTraceSchema)
     .mutation(async ({ ctx, input }) => {
-      // Authenticate via project API key
-      const { data: project, error: projectError } = await ctx.adminDb
-        .from('projects')
-        .select('id, trace_quota, workspace_id')
-        .eq('api_key', input.projectApiKey)
-        .single();
-
-      if (projectError || !project) {
-        throw new TRPCError({
-          code: 'UNAUTHORIZED',
-          message: 'Invalid project API key.',
-        });
-      }
+      const project = ctx.apiKeyProject;
 
       // Check quota
       const { data: withinQuota } = await ctx.adminDb.rpc(
@@ -147,22 +136,33 @@ export const traceRouter = router({
             const firstLine = s.error_message?.split('\n')[0] ?? '';
             const fingerprint = `${errorType}::${s.code_node_id}::${firstLine}`.slice(0, 255);
 
-            return ctx.adminDb.rpc('upsert_error_snapshot', {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            return (ctx.adminDb.rpc as any)('upsert_error_snapshot', {
               p_project_id: project.id,
               p_code_node_id: s.code_node_id!,
               p_trace_id: trace.id,
-              p_span_id: s.span_id,
+              p_span_id: null,           // UUID FK — we don't have it here; use span_otel_id instead
               p_error_type: errorType,
               p_error_message: s.error_message ?? '',
               p_error_stack: s.error_stack ?? '',
               p_fingerprint: fingerprint,
               p_metadata: (s.attributes ?? {}) as import('../lib/supabase/database.types.js').Json,
+              p_span_otel_id: s.span_id,  // raw OTel string span_id
+              p_source: 'runtime',
             });
           });
 
           // Fire-and-forget — don't block trace ingestion on error snapshot writes
-          Promise.allSettled(errorPromises).catch(() => {
-            // Silently ignore — error snapshots are best-effort
+          Promise.allSettled(errorPromises).then((results) => {
+            const failed = results.filter((r) => r.status === 'rejected');
+            if (failed.length > 0) {
+              logger.warn(
+                { failedCount: failed.length, traceId: trace.id },
+                'Some error snapshots failed to upsert',
+              );
+            }
+          }).catch((err) => {
+            logger.warn({ err }, 'Error snapshot upsert batch failed unexpectedly');
           });
         }
       }

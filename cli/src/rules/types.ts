@@ -47,7 +47,13 @@ export interface RulesConfig {
     max_fan_in?: number;
     max_fan_out?: number;
   };
-  /** Disable specific rules */
+  /** Skip tsc --noEmit even if tsc is available */
+  'tsc-errors'?: { skip?: boolean };
+  /** Skip eslint even if it is available */
+  'eslint-errors'?: { skip?: boolean };
+  /** Skip multi-language compiler checks (go vet, mypy, etc.) */
+  'compiler-errors'?: { skip?: boolean };
+  /** Disable specific rules by ID */
   disabled?: string[];
 }
 

@@ -340,4 +340,48 @@ export const projectRouter = router({
         sync_state: syncState,
       };
     }),
+
+  /** Set the selected API key for a project */
+  setSelectedKey: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        keyId: z.string().uuid().nullable(), // null = use account default
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Validate that the key belongs to this user
+      if (input.keyId) {
+        const { data: keyData } = await ctx.db
+          .from('user_api_keys')
+          .select('id')
+          .eq('id', input.keyId)
+          .eq('user_id', ctx.user.id)
+          .single();
+
+        if (!keyData) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: 'API key not found or does not belong to you',
+          });
+        }
+      }
+
+      // Update the project's selected_key_id
+      const { data, error } = await ctx.db
+        .from('projects')
+        .update({ selected_key_id: input.keyId })
+        .eq('id', input.projectId)
+        .select()
+        .single();
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      return data;
+    }),
 });

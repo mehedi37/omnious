@@ -1,0 +1,31 @@
+{
+  "name": "@omnious/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared types, constants, and Zod schemas for the Omnious monorepo",
+  "type": "module",
+  "exports": {
+    "./oir-types": {
+      "import": "./dist/oir-types.js",
+      "types": "./dist/oir-types.d.ts"
+    },
+    "./oir-schemas": {
+      "import": "./dist/oir-schemas.js",
+      "types": "./dist/oir-schemas.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

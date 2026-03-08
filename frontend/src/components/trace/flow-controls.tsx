@@ -61,8 +61,8 @@ function FlowControlsComponent({
   onExit,
 }: FlowControlsProps) {
   return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-2 duration-300">
-      <div className="bg-background/95 backdrop-blur-md border rounded-xl shadow-2xl px-4 py-3 flex flex-col gap-2 min-w-[520px] max-w-[680px]">
+    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] sm:w-auto animate-in slide-in-from-bottom-2 duration-300">
+      <div className="bg-background/95 backdrop-blur-md border rounded-xl shadow-2xl px-3 sm:px-4 py-3 flex flex-col gap-2 sm:min-w-[520px] max-w-[680px]">
         {/* Top row: current span info */}
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0 flex-1">

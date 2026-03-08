@@ -1,5 +1,19 @@
 import { z } from 'zod';
-import 'dotenv/config';
+import { config as dotenvConfig } from 'dotenv';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+
+// Load root monorepo .env (../.. from src/config/ = monorepo root)
+// Falls back to a local .env in cwd for overrides or standalone runs.
+const here = dirname(fileURLToPath(import.meta.url));
+const rootEnv = resolve(here, '../../../.env');
+const localEnv = resolve(process.cwd(), '.env');
+if (existsSync(rootEnv)) {
+  dotenvConfig({ path: rootEnv });
+} else if (existsSync(localEnv)) {
+  dotenvConfig({ path: localEnv });
+}
 
 /**
  * Environment variable schema — validated at startup.
@@ -21,6 +35,14 @@ const envSchema = z.object({
   SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_JWT_SECRET: z.string().min(1),
+
+  // AI — Platform keys (optional: enables free tier for users without BYOK keys)
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+
+  // API Key Encryption — required for BYOK encrypted storage (AES-256-GCM)
+  // Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  API_KEY_ENCRYPTION_KEY: z.string().length(64).regex(/^[0-9a-f]+$/i, 'Must be 64 hex chars'),
 
   // CORS
   CORS_ORIGINS: z.string().default('http://localhost:3000'),

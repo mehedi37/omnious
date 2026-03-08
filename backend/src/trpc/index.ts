@@ -148,3 +148,45 @@ const hasProjectAccess = t.middleware(async (opts) => {
 export const projectProcedure = t.procedure
   .use(isAuthed)
   .use(hasProjectAccess);
+
+// ─── API Key Authentication ─────────────────────────────────
+// Used by CLI & OTel SDK endpoints (no user session required).
+// Validates `input.projectApiKey` and injects `ctx.apiKeyProject`.
+// ─────────────────────────────────────────────────────────────
+
+const hasApiKeyAccess = t.middleware(async (opts) => {
+  const rawInput = (await opts.getRawInput()) as
+    | { projectApiKey?: string }
+    | undefined;
+  const apiKey = rawInput?.projectApiKey;
+
+  if (!apiKey) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'projectApiKey is required',
+    });
+  }
+
+  const { data: project, error } = await opts.ctx.adminDb
+    .from('projects')
+    .select('id, name, slug, workspace_id')
+    .eq('api_key', apiKey)
+    .single();
+
+  if (error || !project) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'Invalid project API key.',
+    });
+  }
+
+  return opts.next({
+    ctx: {
+      ...opts.ctx,
+      apiKeyProject: project,
+    },
+  });
+});
+
+/** API key procedure — authenticates via project-level API key (no JWT) */
+export const apiKeyProcedure = t.procedure.use(hasApiKeyAccess);

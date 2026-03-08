@@ -1,16 +1,13 @@
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, projectProcedure, publicProcedure } from '../trpc/index.js';
+import { router, projectProcedure, apiKeyProcedure } from '../trpc/index.js';
+import { oirNodeTypeSchema, oirNodeSchema, oirEdgeSchema, oirEdgeByOirIdSchema } from '@omnious/shared/oir-schemas';
+import { resolveApiKey, generateModuleGroups } from '../services/ai.service.js';
+import { logger } from '../lib/logger.js';
 
 const listNodesSchema = z.object({
   projectId: z.string().uuid(),
-  type: z
-    .enum([
-      'module', 'component', 'function', 'class', 'route', 'middleware',
-      'database_query', 'event_emitter', 'event_listener', 'external_api',
-      'variable', 'type_def',
-    ])
-    .optional(),
+  type: oirNodeTypeSchema.optional(),
   filePath: z.string().optional(),
   search: z.string().max(200).optional(),
   limit: z.number().int().min(1).max(2000).default(100),
@@ -19,40 +16,12 @@ const listNodesSchema = z.object({
 
 const upsertNodesSchema = z.object({
   projectId: z.string().uuid(),
-  nodes: z.array(
-    z.object({
-      oir_id: z.string(),
-      type: z.enum([
-        'module', 'component', 'function', 'class', 'route', 'middleware',
-        'database_query', 'event_emitter', 'event_listener', 'external_api',
-        'variable', 'type_def',
-      ]),
-      name: z.string(),
-      file_path: z.string(),
-      line_start: z.number().int().nullable().optional(),
-      line_end: z.number().int().nullable().optional(),
-      signature: z.string().nullable().optional(),
-      doc_comment: z.string().nullable().optional(),
-      metadata: z.record(z.unknown()).optional(),
-      content_hash: z.string(),
-    }),
-  ),
+  nodes: z.array(oirNodeSchema),
 });
 
 const upsertEdgesSchema = z.object({
   projectId: z.string().uuid(),
-  edges: z.array(
-    z.object({
-      source_node_id: z.string().uuid(),
-      target_node_id: z.string().uuid(),
-      type: z.enum([
-        'calls', 'imports', 'extends', 'implements', 'renders', 'routes_to',
-        'queries', 'emits_event', 'subscribes_to', 'redirects_to', 'uses',
-        'exports',
-      ]),
-      metadata: z.record(z.unknown()).optional(),
-    }),
-  ),
+  edges: z.array(oirEdgeSchema),
 });
 
 const semanticSearchSchema = z.object({
@@ -71,42 +40,10 @@ const traverseSchema = z.object({
 
 // ── CLI-specific schemas (API-key auth) ──
 
-const OIR_NODE_TYPE = z.enum([
-  'module', 'component', 'function', 'class', 'route', 'middleware',
-  'database_query', 'event_emitter', 'event_listener', 'external_api',
-  'variable', 'type_def',
-]);
-
-const OIR_EDGE_TYPE = z.enum([
-  'calls', 'imports', 'extends', 'implements', 'renders', 'routes_to',
-  'queries', 'emits_event', 'subscribes_to', 'redirects_to', 'uses',
-  'exports',
-]);
-
 const pushFromCLISchema = z.object({
   projectApiKey: z.string(),
-  nodes: z.array(
-    z.object({
-      oir_id: z.string(),
-      type: OIR_NODE_TYPE,
-      name: z.string(),
-      file_path: z.string(),
-      line_start: z.number().int().nullable().optional(),
-      line_end: z.number().int().nullable().optional(),
-      signature: z.string().nullable().optional(),
-      doc_comment: z.string().nullable().optional(),
-      metadata: z.record(z.unknown()).optional(),
-      content_hash: z.string(),
-    }),
-  ),
-  edges: z.array(
-    z.object({
-      source_oir_id: z.string(),
-      target_oir_id: z.string(),
-      type: OIR_EDGE_TYPE,
-      metadata: z.record(z.unknown()).optional(),
-    }),
-  ),
+  nodes: z.array(oirNodeSchema),
+  edges: z.array(oirEdgeByOirIdSchema),
   git_context: z
     .object({
       commit_hash: z.string().optional(),
@@ -268,8 +205,8 @@ export const graphRouter = router({
     .input(semanticSearchSchema)
     .query(async ({ ctx, input }) => {
       const { data, error } = await ctx.db.rpc('match_code_nodes', {
+        p_project_id: input.projectId,
         query_embedding: JSON.stringify(input.embedding),
-        match_project_id: input.projectId,
         match_threshold: input.threshold,
         match_count: input.limit,
       });
@@ -311,24 +248,18 @@ export const graphRouter = router({
    * Authenticates via project API key (same pattern as trace.ingest).
    * Accepts oir_id-based edges and resolves them to database UUIDs.
    */
-  pushFromCLI: publicProcedure
+  pushFromCLI: apiKeyProcedure
     .input(pushFromCLISchema)
     .mutation(async ({ ctx, input }) => {
-      // Authenticate via project API key — join workspace for slug
-      const { data: project, error: projectError } = await ctx.adminDb
+      // Fetch workspace slug for the response
+      const { data: projectWithWs } = await ctx.adminDb
         .from('projects')
-        .select('id, name, slug, workspaces(slug)')
-        .eq('api_key', input.projectApiKey)
+        .select('workspaces(slug)')
+        .eq('id', ctx.apiKeyProject.id)
         .single();
 
-      if (projectError || !project) {
-        throw new TRPCError({
-          code: 'UNAUTHORIZED',
-          message: 'Invalid project API key.',
-        });
-      }
-
-      const workspaceSlug = (project.workspaces as unknown as { slug: string } | null)?.slug ?? null;
+      const workspaceSlug = (projectWithWs?.workspaces as unknown as { slug: string } | null)?.slug ?? null;
+      const project = { ...ctx.apiKeyProject, workspaces: projectWithWs?.workspaces };
 
       // Dry run — just validate the key and return project info
       if (input.dry_run) {
@@ -531,20 +462,20 @@ export const graphRouter = router({
     }),
 
   /** Get project status via API key (used by CLI `omnious status --remote`) */
-  getProjectStatusFromCLI: publicProcedure
+  getProjectStatusFromCLI: apiKeyProcedure
     .input(getProjectStatusFromCLISchema)
-    .query(async ({ ctx, input }) => {
-      // Authenticate via project API key — join workspace for slug
+    .query(async ({ ctx }) => {
+      // Fetch the extra project fields needed for status
       const { data: project, error: projectError } = await ctx.adminDb
         .from('projects')
         .select('id, name, slug, status, last_indexed_at, last_index_hash, updated_at, workspace_id, workspaces(slug)')
-        .eq('api_key', input.projectApiKey)
+        .eq('id', ctx.apiKeyProject.id)
         .single();
 
       if (projectError || !project) {
         throw new TRPCError({
-          code: 'UNAUTHORIZED',
-          message: 'Invalid project API key.',
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to fetch project details.',
         });
       }
 
@@ -595,19 +526,19 @@ export const graphRouter = router({
    * Creates error_snapshots for each diagnostic linked to a code node.
    * Authenticated via project API key (same as pushFromCLI).
    */
-  pushDiagnostics: publicProcedure
+  pushDiagnostics: apiKeyProcedure
     .input(
       z.object({
         projectApiKey: z.string(),
         diagnostics: z.array(
           z.object({
-            code_node_oir_id: z.string(),
+            code_node_oir_id: z.string().nullable(),
             rule_id: z.string(),
             severity: z.enum(['error', 'warning', 'info']),
             message: z.string(),
             file_path: z.string(),
-            line_start: z.number().int().optional(),
-            line_end: z.number().int().optional(),
+            line_start: z.number().int().nullable().optional(),
+            line_end: z.number().int().nullable().optional(),
             suggestion: z.string().optional(),
             metadata: z.record(z.unknown()).optional(),
           }),
@@ -615,37 +546,36 @@ export const graphRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      // Auth via project API key
-      const { data: project, error: projectError } = await ctx.adminDb
-        .from('projects')
-        .select('id')
-        .eq('api_key', input.projectApiKey)
-        .single();
+      const project = ctx.apiKeyProject;
 
-      if (projectError || !project) {
-        throw new TRPCError({
-          code: 'UNAUTHORIZED',
-          message: 'Invalid project API key.',
-        });
-      }
-
-      // Resolve OIR IDs → code_node UUIDs
-      const oirIds = [...new Set(input.diagnostics.map((d) => d.code_node_oir_id))];
+      // Resolve OIR IDs → code_node UUIDs (filter out null OIR IDs from failed rules)
+      const oirIds = [
+        ...new Set(
+          input.diagnostics
+            .filter((d) => d.code_node_oir_id !== null)
+            .map((d) => d.code_node_oir_id as string)
+        ),
+      ];
       const { data: nodes } = await ctx.adminDb
         .from('code_nodes')
         .select('id, oir_id')
         .eq('project_id', project.id)
-        .in('oir_id', oirIds);
+        .in('oir_id', oirIds.length > 0 ? oirIds : ['']);
 
       const oirToUuid = new Map<string, string>();
       for (const n of nodes ?? []) {
         oirToUuid.set(n.oir_id, n.id);
       }
 
-      // Upsert error snapshots for each diagnostic
+      // Upsert error snapshots for each diagnostic (skip those with null code_node_oir_id)
       let created = 0;
       let skipped = 0;
       const upsertPromises = input.diagnostics.map(async (d) => {
+        // Skip diagnostics from failed rules that have null OIR ID
+        if (d.code_node_oir_id === null) {
+          skipped++;
+          return;
+        }
         const codeNodeId = oirToUuid.get(d.code_node_oir_id);
         if (!codeNodeId) {
           skipped++;
@@ -664,14 +594,15 @@ export const graphRouter = router({
           p_error_stack: d.suggestion ?? '',
           p_fingerprint: fingerprint.slice(0, 255),
           p_metadata: {
-            severity: d.severity,
             rule_id: d.rule_id,
             file_path: d.file_path,
             line_start: d.line_start,
             line_end: d.line_end,
-            source: 'cli-static-analysis',
             ...(d.metadata ?? {}),
           } as import('../lib/supabase/database.types.js').Json,
+          p_span_otel_id: null as unknown as string,
+          p_source: 'cli-static-analysis',
+          p_severity: d.severity,
         });
 
         if (!error) created++;
@@ -680,6 +611,44 @@ export const graphRouter = router({
 
       await Promise.allSettled(upsertPromises);
 
-      return { created, skipped, total: input.diagnostics.length };
+      return { upserted: created, skipped, total: input.diagnostics.length };
+    }),
+
+  /** Get AI-generated semantic module groups for a project's code nodes */
+  getModuleGroups: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      // Fetch all code nodes (compact projection)
+      const { data: nodes, error } = await ctx.db
+        .from('code_nodes')
+        .select('id, name, type, file_path')
+        .eq('project_id', input.projectId)
+        .order('file_path')
+        .limit(500);
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      if (!nodes || nodes.length === 0) {
+        return { groups: [] };
+      }
+
+      let resolvedKey;
+      try {
+        resolvedKey = await resolveApiKey(ctx.user.id, ctx.db, {
+          projectId: input.projectId,
+        });
+      } catch {
+        // No API key — return empty groups instead of failing
+        logger.info({ projectId: input.projectId }, 'No API key for module grouping');
+        return { groups: [] };
+      }
+
+      const groups = await generateModuleGroups(nodes, resolvedKey);
+      return { groups };
     }),
 });
