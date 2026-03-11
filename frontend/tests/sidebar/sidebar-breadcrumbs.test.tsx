@@ -129,31 +129,47 @@ vi.mock('@/components/ui/sidebar', async () => {
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe('AppSidebar breadcrumbs', () => {
+describe('AppSidebar', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('breadcrumb container has the collapsed-hidden class', async () => {
-    const { AppSidebar } = await import('@/components/shared/app-sidebar');
-
-    const { container } = render(React.createElement(AppSidebar));
-
-    // Find the breadcrumb text
-    const breadcrumbEl = screen.getByText('test-project');
-    const breadcrumbContainer = breadcrumbEl.closest('div.text-xs');
-
-    expect(breadcrumbContainer).toBeTruthy();
-    expect(breadcrumbContainer?.className).toContain('group-data-[collapsible=icon]:hidden');
-  });
-
-  it('breadcrumb shows workspace/project path', async () => {
+  it('collapse button does not render "Collapse" text label', async () => {
     const { AppSidebar } = await import('@/components/shared/app-sidebar');
 
     render(React.createElement(AppSidebar));
 
-    // "Test Workspace" appears in both the workspace switcher and breadcrumb
-    expect(screen.getAllByText('Test Workspace').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('test-project')).toBeInTheDocument();
+    // The toggle button should not contain the text "Collapse"
+    const buttons = screen.getAllByRole('button');
+    const collapseBtn = buttons.find((b) => b.textContent?.trim() === 'Collapse');
+    expect(collapseBtn).toBeUndefined();
+  });
+
+  it('renders project name in sidebar menu', async () => {
+    const { AppSidebar } = await import('@/components/shared/app-sidebar');
+
+    render(React.createElement(AppSidebar));
+
+    // Project name should be rendered
+    expect(screen.getByText('Test Project')).toBeInTheDocument();
+  });
+
+  it('renders workspace switcher', async () => {
+    const { AppSidebar } = await import('@/components/shared/app-sidebar');
+
+    render(React.createElement(AppSidebar));
+
+    expect(screen.getByText('Test Workspace')).toBeInTheDocument();
+  });
+
+  it('breadcrumb is NOT rendered in the sidebar', async () => {
+    const { AppSidebar } = await import('@/components/shared/app-sidebar');
+
+    render(React.createElement(AppSidebar));
+
+    // Breadcrumb was moved to project layout header
+    // "test-project" as a standalone breadcrumb text should not exist
+    // (project name "Test Project" exists in the project list, but the slug "test-project" does not)
+    expect(screen.queryByText('test-project')).toBeNull();
   });
 });

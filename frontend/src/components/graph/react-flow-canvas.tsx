@@ -63,16 +63,17 @@ export function ReactFlowCanvas() {
   const { onNodeContextMenu, onPaneContextMenu, setContainerRef, menuElement } =
     useGraphContextMenu();
 
-  // Pin all nodes when a new graph loads (lock-by-default)
+  // Track the graph's identity (sorted node IDs) so we only auto-pin when a new graph loads
+  const graphSignatureRef = useRef<string>('');
+
+  // Pin all nodes on initial graph load only (lock-by-default).
+  // We compare node-ID signatures so user pin toggles don't re-trigger this.
   useEffect(() => {
-    if (storeNodes.length > 0) {
-      const allIds = new Set(storeNodes.map((n) => n.id));
-      const currentPinned = useGraphStore.getState().pinnedNodeIds;
-      // Only auto-pin if there are new nodes not yet tracked
-      if (currentPinned.size === 0 || storeNodes.some((n) => !currentPinned.has(n.id))) {
-        useGraphStore.getState().pinAll();
-      }
-    }
+    if (storeNodes.length === 0) return;
+    const signature = storeNodes.map((n) => n.id).sort().join(',');
+    if (signature === graphSignatureRef.current) return; // same graph — respect user's pin state
+    graphSignatureRef.current = signature;
+    useGraphStore.getState().pinAll();
   }, [storeNodes]);
 
   // Sync store → React Flow state (with filtering + pinning)
@@ -124,14 +125,12 @@ export function ReactFlowCanvas() {
         fitView({ padding: 0.15, duration: 400 });
       });
     }
-  }, [nodes.length, fitView]);
+  }, [nodes, fitView]);
 
-  // Reset fit flag when graph is cleared
+  // Reset fit flag when graph is cleared or new graph data is set
   useEffect(() => {
-    if (storeNodes.length === 0) {
-      hasFittedRef.current = false;
-    }
-  }, [storeNodes.length]);
+    hasFittedRef.current = false;
+  }, [storeNodes]);
 
   // Listen for omnious:focus-fit event (layout complete, focus mode, etc.)
   useEffect(() => {
@@ -244,7 +243,7 @@ export function ReactFlowCanvas() {
             onClick={handleToggleLock}
             title={allPinned ? 'Unlock all nodes' : 'Lock all nodes'}
           >
-            {allPinned ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+            {allPinned ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
           </ControlButton>
         </Controls>
         {minimapVisible && (

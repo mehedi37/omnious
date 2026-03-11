@@ -4,10 +4,9 @@ import {
   Activity,
   AlertTriangle,
   Bot,
-  ChevronDown,
-  ChevronRight,
   ChevronsUpDown,
   ChevronUp,
+  EllipsisVertical,
   FolderKanban,
   GitGraph,
   LogOut,
@@ -17,6 +16,7 @@ import {
   Plus,
   Settings,
   Sun,
+  UserCog,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -24,7 +24,6 @@ import { useTheme } from 'next-themes';
 import { CreateProjectDialog } from '@/components/project/create-project-dialog';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,7 +31,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Sidebar,
   SidebarContent,
@@ -44,9 +42,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
   SidebarRail,
   useSidebar,
 } from '@/components/ui/sidebar';
@@ -55,7 +50,7 @@ import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { createClient } from '@/lib/supabase/client';
 import { trpc } from '@/trpc/client';
 
-/** In-project navigation items */
+/** In-project navigation items (used in 3-dot dropdown) */
 const projectNavItems = [
   { title: 'Graph', icon: GitGraph, segment: 'graph' },
   { title: 'Traces', icon: Activity, segment: 'traces' },
@@ -108,7 +103,6 @@ export function AppSidebar() {
   const workspacePlan = currentWorkspace?.workspace.plan ?? '';
 
   const isInWorkspace = !!workspaceSlug && pathname.startsWith(`/dashboard/${workspaceSlug}`);
-  const basePath = workspaceSlug && projectSlug ? `/dashboard/${workspaceSlug}/${projectSlug}` : '';
 
   async function handleSignOut() {
     const supabase = createClient();
@@ -129,10 +123,10 @@ export function AppSidebar() {
 
   return (
     <Sidebar collapsible="icon" variant="sidebar">
-      {/* ── Header: Collapse + Workspace Switcher + Breadcrumb ── */}
+      {/* ── Header: Collapse + Workspace Switcher ── */}
       <SidebarHeader>
         <SidebarMenu>
-          {/* Collapse/Expand toggle */}
+          {/* Collapse/Expand toggle (icon-only) */}
           <SidebarMenuItem>
             <SidebarMenuButton onClick={toggleSidebar} tooltip="Toggle sidebar">
               {sidebarState === 'collapsed' ? (
@@ -140,7 +134,6 @@ export function AppSidebar() {
               ) : (
                 <PanelLeftClose className="size-5" />
               )}
-              <span>Collapse</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
 
@@ -190,97 +183,69 @@ export function AppSidebar() {
             </DropdownMenu>
           </SidebarMenuItem>
         </SidebarMenu>
-
-        {/* Breadcrumb (shown when inside a project, hidden in icon-collapsed mode) */}
-        {projectSlug && isInWorkspace && (
-          <div className="text-xs text-muted-foreground px-2 py-1 group-data-[collapsible=icon]:hidden">
-            <div className="wrap-break-word">
-              <Link
-                href={`/dashboard/${workspaceSlug}`}
-                className="hover:text-foreground transition-colors"
-              >
-                {workspaceName}
-              </Link>
-              <span className="mx-1 opacity-50">/</span>
-              <span className="font-medium text-foreground">{projectSlug}</span>
-            </div>
-          </div>
-        )}
       </SidebarHeader>
 
-      <SidebarContent>
+      <SidebarContent className="flex flex-col">
         {/* ── Projects List (visible when inside a workspace) ── */}
         {isInWorkspace && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Projects</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <ScrollArea className="max-h-70 overflow-x-hidden">
-                <SidebarMenu>
-                  {projects?.map((project) => {
-                    const isActiveProject = project.slug === projectSlug;
+          <SidebarGroup className="flex-1 flex flex-col min-h-0">
+            <SidebarGroupLabel className="flex items-center justify-between">
+              <span>Projects</span>
+              {workspaceId && workspaceSlug && (
+                <CreateProjectDialog workspaceId={workspaceId} workspaceSlug={workspaceSlug}>
+                  <button
+                    className="inline-flex items-center justify-center rounded-md size-5 text-muted-foreground hover:text-foreground transition-colors"
+                    title="New Project"
+                  >
+                    <Plus className="size-3.5" />
+                  </button>
+                </CreateProjectDialog>
+              )}
+            </SidebarGroupLabel>
+            <SidebarGroupContent className="flex-1 overflow-y-auto">
+              <SidebarMenu>
+                {projects?.map((project) => {
+                  const isActiveProject = project.slug === projectSlug;
+                  const projectBasePath = `/dashboard/${workspaceSlug}/${project.slug}`;
 
-                    return (
-                      <Collapsible key={project.id} defaultOpen={isActiveProject} asChild>
-                        <SidebarMenuItem>
-                          <CollapsibleTrigger asChild>
-                            <SidebarMenuButton
-                              isActive={isActiveProject}
-                              tooltip={project.name}
-                              onClick={() => handleProjectSelect(project.id, project.slug)}
-                            >
-                              <div className="flex aspect-square size-5 items-center justify-center rounded bg-muted text-[10px] font-semibold uppercase shrink-0">
-                                {project.name.charAt(0)}
-                              </div>
-                              <span className="truncate">{project.name}</span>
-                              {isActiveProject && (
-                                <ChevronDown className="ml-auto size-4 transition-transform" />
-                              )}
-                              {!isActiveProject && (
-                                <ChevronRight className="ml-auto size-4 opacity-0 group-hover/menu-item:opacity-100 transition-opacity" />
-                              )}
-                            </SidebarMenuButton>
-                          </CollapsibleTrigger>
+                  return (
+                    <SidebarMenuItem key={project.id}>
+                      <SidebarMenuButton
+                        isActive={isActiveProject}
+                        tooltip={project.name}
+                        onClick={() => handleProjectSelect(project.id, project.slug)}
+                      >
+                        <div className="flex aspect-square size-5 items-center justify-center rounded bg-muted text-[10px] font-semibold uppercase shrink-0">
+                          {project.name.charAt(0)}
+                        </div>
+                        <span className="truncate flex-1">{project.name}</span>
+                      </SidebarMenuButton>
 
-                          {/* In-project nav (shown under active project) */}
-                          {isActiveProject && (
-                            <CollapsibleContent>
-                              <SidebarMenuSub>
-                                {projectNavItems.map((item) => {
-                                  const href = `${basePath}/${item.segment}`;
-                                  const isActive = pathname.startsWith(href);
-
-                                  return (
-                                    <SidebarMenuSubItem key={item.segment}>
-                                      <SidebarMenuSubButton asChild isActive={isActive}>
-                                        <Link href={href}>
-                                          <item.icon className="size-4" />
-                                          <span>{item.title}</span>
-                                        </Link>
-                                      </SidebarMenuSubButton>
-                                    </SidebarMenuSubItem>
-                                  );
-                                })}
-                              </SidebarMenuSub>
-                            </CollapsibleContent>
-                          )}
-                        </SidebarMenuItem>
-                      </Collapsible>
-                    );
-                  })}
-
-                  {/* New Project button */}
-                  {workspaceId && workspaceSlug && (
-                    <SidebarMenuItem>
-                      <CreateProjectDialog workspaceId={workspaceId} workspaceSlug={workspaceSlug}>
-                        <SidebarMenuButton className="text-muted-foreground">
-                          <Plus className="size-4" />
-                          <span>New Project</span>
-                        </SidebarMenuButton>
-                      </CreateProjectDialog>
+                      {/* 3-dot menu for project actions */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            className="absolute right-1 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded-md size-6 text-muted-foreground opacity-0 group-hover/menu-item:opacity-100 hover:text-foreground hover:bg-sidebar-accent transition-all group-data-[collapsible=icon]:hidden"
+                            title="Project options"
+                          >
+                            <EllipsisVertical className="size-3.5" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent side="right" align="start" className="min-w-44">
+                          {projectNavItems.map((item) => (
+                            <DropdownMenuItem key={item.segment} asChild>
+                              <Link href={`${projectBasePath}/${item.segment}`}>
+                                <item.icon className="mr-2 size-4" />
+                                {item.title}
+                              </Link>
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </SidebarMenuItem>
-                  )}
-                </SidebarMenu>
-              </ScrollArea>
+                  );
+                })}
+              </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
         )}
@@ -308,17 +273,21 @@ export function AppSidebar() {
                 align="start"
                 className="w-[--radix-dropdown-menu-trigger-width]"
               >
+                <DropdownMenuItem asChild>
+                  <Link href="/dashboard/profile">
+                    <UserCog className="mr-2 size-4" />
+                    Profile Settings
+                  </Link>
+                </DropdownMenuItem>
                 {isInWorkspace && (
-                  <>
-                    <DropdownMenuItem asChild>
-                      <Link href={`/dashboard/${workspaceSlug}/settings`}>
-                        <Settings className="mr-2 size-4" />
-                        Settings
-                      </Link>
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                  </>
+                  <DropdownMenuItem asChild>
+                    <Link href={`/dashboard/${workspaceSlug}/settings`}>
+                      <Settings className="mr-2 size-4" />
+                      Workspace Settings
+                    </Link>
+                  </DropdownMenuItem>
                 )}
+                <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
                   {theme === 'dark' ? (
                     <Sun className="mr-2 size-4" />

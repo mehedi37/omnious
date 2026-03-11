@@ -19,7 +19,6 @@ import {
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useState } from 'react';
 import { toast } from 'sonner';
-import { ApiKeyManager } from '@/components/ai/api-key-manager';
 import { deriveSyncState, SyncStatusBadge } from '@/components/project/sync-status-badge';
 import {
   AlertDialog,
@@ -37,7 +36,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
@@ -428,7 +426,7 @@ function SettingsPageContent() {
                   </div>
                   {(apiKeysQuery.data?.length ?? 0) === 0 && (
                     <div className="text-sm text-muted-foreground">
-                      No API keys added yet. Add one in the Account Keys section below.
+                      No API keys added yet. Add keys in your profile settings.
                     </div>
                   )}
                 </>
@@ -436,13 +434,16 @@ function SettingsPageContent() {
             </CardContent>
           </Card>
 
-          <Separator />
-
-          {/* Account-level key management */}
-          <div>
-            <h3 className="text-sm font-semibold mb-3">Account API Keys (BYOK)</h3>
-          </div>
-          <ApiKeyManager />
+          <Card>
+            <CardContent className="pt-6">
+              <p className="text-sm text-muted-foreground">
+                API keys are managed at the account level.{' '}
+                <a href="/dashboard/profile" className="text-primary hover:underline font-medium">
+                  Manage API keys in Profile Settings →
+                </a>
+              </p>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* ── Danger Tab ── */}

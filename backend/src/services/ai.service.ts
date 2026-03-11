@@ -173,6 +173,9 @@ export async function resolveApiKey(
   if (env.ANTHROPIC_API_KEY) {
     return { apiKey: env.ANTHROPIC_API_KEY, provider: 'anthropic', source: 'platform' };
   }
+  if (env.GROQ_API_KEY) {
+    return { apiKey: env.GROQ_API_KEY, provider: 'groq', source: 'platform' };
+  }
 
   throw new Error(
     'No API key available. Add an OpenAI, Anthropic, or Groq key in Settings → AI Keys, or configure a platform key.',
@@ -204,7 +207,7 @@ async function _resolveByokKey(
       if (keyRow?.encrypted_key) {
         return {
           apiKey: decryptApiKey(keyRow.encrypted_key as string),
-          provider: (keyRow.provider as LLMProvider) ?? 'openai',
+          provider: _detectProvider(keyRow.provider as string | null, keyRow.encrypted_key as string),
           source: 'byok',
         };
       }
@@ -233,12 +236,27 @@ async function _resolveByokKey(
   if (keyRow?.encrypted_key) {
     return {
       apiKey: decryptApiKey(keyRow.encrypted_key as string),
-      provider: (keyRow.provider as LLMProvider) ?? 'openai',
+      provider: _detectProvider(keyRow.provider as string | null, keyRow.encrypted_key as string),
       source: 'byok',
     };
   }
 
   return null;
+}
+
+/**
+ * Detect the LLM provider from the stored provider column, falling back to
+ * key-prefix heuristics so a Groq/Anthropic key never silently routes to OpenAI.
+ */
+function _detectProvider(storedProvider: string | null, encryptedKey: string): LLMProvider {
+  if (storedProvider === 'groq' || storedProvider === 'anthropic' || storedProvider === 'openai') {
+    return storedProvider;
+  }
+  // Defensive fallback: infer from decrypted key prefix
+  const plain = decryptApiKey(encryptedKey);
+  if (plain.startsWith('gsk_')) return 'groq';
+  if (plain.startsWith('sk-ant-')) return 'anthropic';
+  return 'openai';
 }
 
 // ─── LLM Chat ────────────────────────────────────────────────
@@ -511,22 +529,42 @@ export async function generateModuleGroups(
 ): Promise<ModuleGroup[]> {
   if (nodes.length === 0) return [];
 
-  // Build a compact representation for the LLM
+  // Build a compact representation for the LLM with strict size controls.
+  // Groq's smaller tiers are sensitive to large prompts, so keep this lean.
+  const MAX_NODES = 90;
+  const MAX_FIELD = 80;
   const nodeList = nodes
-    .slice(0, 200) // Cap at 200 nodes to stay within token limits
-    .map((n) => `${n.id}|${n.type}|${n.name}|${n.file_path}`)
+    .slice(0, MAX_NODES)
+    .map((n) => {
+      const name = n.name.slice(0, MAX_FIELD);
+      const file = n.file_path.slice(0, MAX_FIELD);
+      return `${n.id}|${n.type}|${name}|${file}`;
+    })
     .join('\n');
 
   const model = selectModel('overview', '', resolvedKey.provider, 'fast');
 
-  const result = await callLLM(
-    [
-      { role: 'system', content: SYSTEM_PROMPTS.moduleGrouping },
-      { role: 'user', content: `Group these code nodes:\n\n${nodeList}` },
-    ],
-    resolvedKey,
-    { model, maxTokens: 2048, temperature: 0.2 },
-  );
+  let result;
+  try {
+    result = await callLLM(
+      [
+        { role: 'system', content: SYSTEM_PROMPTS.moduleGrouping },
+        { role: 'user', content: `Group these code nodes:\n\n${nodeList}` },
+      ],
+      resolvedKey,
+      { model, maxTokens: 1024, temperature: 0.2 },
+    );
+  } catch (error) {
+    logger.warn(
+      {
+        provider: resolvedKey.provider,
+        nodeCount: nodes.length,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'Module grouping skipped due to LLM error',
+    );
+    return [];
+  }
 
   try {
     const parsed = JSON.parse(result.content) as ModuleGroup[];

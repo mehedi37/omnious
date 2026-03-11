@@ -1,9 +1,18 @@
 'use client';
 
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect } from 'react';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { SyncStatusBadge, deriveSyncState } from '@/components/project/sync-status-badge';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb';
 import { trpc } from '@/trpc/client';
 
 function formatRelativeTime(date: string | null | undefined): string {
@@ -21,6 +30,7 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
   const currentProjectSlug = useWorkspaceStore((s) => s.currentProjectSlug);
   const currentProjectId = useWorkspaceStore((s) => s.currentProjectId);
   const workspaceId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const workspaceSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
   // Fetch projects to resolve slug → id
   const { data: projects } = trpc.project.list.useQuery(
@@ -48,14 +58,29 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
     ? deriveSyncState(syncStatus.status ?? 'active', syncStatus.last_indexed_at, syncStatus.node_count)
     : 'unknown';
 
+  // Find current workspace name
+  const workspaceName = workspaceSlug ?? params.workspaceSlug;
+
   return (
     <div className="flex h-full flex-col">
-      {/* Compact project header with sync status */}
+      {/* Header: breadcrumb + sync status */}
       {currentProjectSlug && (
-        <div className="flex items-center gap-2 border-b bg-background/95 backdrop-blur-sm px-3 py-1">
-          <span className="text-xs font-medium text-muted-foreground truncate">
-            {currentProjectSlug}
-          </span>
+        <div className="flex items-center gap-2 border-b bg-background/95 backdrop-blur-sm px-3 py-1.5">
+          <Breadcrumb>
+            <BreadcrumbList className="text-xs">
+              <BreadcrumbItem>
+                <BreadcrumbLink asChild>
+                  <Link href={`/dashboard/${params.workspaceSlug}`}>
+                    {workspaceName}
+                  </Link>
+                </BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{currentProjectSlug}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
           <div className="ml-auto flex items-center gap-2">
             <SyncStatusBadge syncState={syncState} compact />
             {syncStatus?.last_indexed_at && (

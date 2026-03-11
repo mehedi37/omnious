@@ -339,7 +339,7 @@ function NodeErrorList({ nodeId, nodeLabel }: { nodeId: string; nodeLabel: strin
   if (!projectId || (!isLoading && errors.length === 0)) return null;
 
   const handleAskAI = (message: string) => {
-    window.dispatchEvent(new CustomEvent('omnious:prefill-ai', { detail: { message } }));
+    window.dispatchEvent(new CustomEvent('omnious:prefill-ai', { detail: { text: message } }));
   };
 
   return (

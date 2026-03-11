@@ -16,6 +16,7 @@ interface WorkerEdge {
 }
 
 interface LayoutRequest {
+  requestId: number;
   nodes: WorkerNode[];
   edges: WorkerEdge[];
   layoutMode: 'layered-tb' | 'layered-lr' | 'force' | 'stress';
@@ -80,7 +81,7 @@ function getOptions(layoutMode: string, nodeCount: number): Record<string, strin
 }
 
 self.onmessage = async (event: MessageEvent<LayoutRequest>) => {
-  const { nodes, edges, layoutMode } = event.data;
+  const { requestId, nodes, edges, layoutMode } = event.data;
   const options = getOptions(layoutMode, nodes.length);
 
   try {
@@ -217,8 +218,8 @@ self.onmessage = async (event: MessageEvent<LayoutRequest>) => {
       }
     }
 
-    self.postMessage({ positions, edgeRoutes });
+    self.postMessage({ requestId, positions, edgeRoutes });
   } catch (error) {
-    self.postMessage({ positions: [], edgeRoutes: [], error: String(error) });
+    self.postMessage({ requestId, positions: [], edgeRoutes: [], error: String(error) });
   }
 };

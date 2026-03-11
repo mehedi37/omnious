@@ -155,7 +155,12 @@ export function useGraphContextMenu() {
 
   const handleFocus = useCallback(() => {
     if (!menu?.nodeId) return;
-    useGraphStore.getState().setFocusMode(menu.nodeId);
+    const gs = useGraphStore.getState();
+    if (gs.focusedNodeId === menu.nodeId) {
+      gs.clearFocusMode();
+    } else {
+      gs.setFocusMode(menu.nodeId);
+    }
     window.dispatchEvent(new CustomEvent('omnious:focus-fit'));
     close();
   }, [menu?.nodeId, close]);
@@ -268,7 +273,9 @@ export function useGraphContextMenu() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const pinnedNodeIds = useGraphStore((s) => s.pinnedNodeIds);
+  const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
   const isNodePinned = menu?.nodeId ? pinnedNodeIds.has(menu.nodeId) : false;
+  const isNodeFocused = menu?.nodeId ? focusedNodeId === menu.nodeId : false;
   const minimapVisible = useUIStore((s) => s.minimapVisible);
 
   const pos = adjustedPos ?? menu?.position;
@@ -296,7 +303,7 @@ export function useGraphContextMenu() {
               {menu.nodeName}
             </div>
             <MenuSeparator />
-            <MenuItem icon={Crosshair} label="Focus (2-hop)" shortcut="N" onClick={handleFocus} />
+            <MenuItem icon={Crosshair} label={isNodeFocused ? 'Exit Focus' : 'Focus (2-hop)'} shortcut="N" onClick={handleFocus} />
             <MenuItem
               icon={Lock}
               label={isNodePinned ? 'Unlock Position' : 'Lock Position'}

@@ -39,6 +39,7 @@ const envSchema = z.object({
   // AI — Platform keys (optional: enables free tier for users without BYOK keys)
   OPENAI_API_KEY: z.string().min(1).optional(),
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  GROQ_API_KEY: z.string().min(1).optional(),
 
   // API Key Encryption — required for BYOK encrypted storage (AES-256-GCM)
   // Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"

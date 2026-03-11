@@ -4,11 +4,11 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useGraphStore, toReactFlowNodes, toReactFlowEdges } from '@/lib/stores/graph-store';
 import { useAIStore } from '@/lib/stores/ai-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { cancelScheduledGraphLayout, scheduleGraphLayout } from '@/lib/layout/schedule-layout';
 import { trpc } from '@/trpc/client';
 
 /**
  * Primary data hook for the AI-driven graph page.
- * Replaces `useGraphData` (which loaded ALL nodes via pagination).
  *
  * On mount: fetches overview graph (modules/packages/routes — ~20-50 nodes).
  * On AI query: calls `ai.queryGraph` → receives focused subgraph + explanation.
@@ -16,7 +16,10 @@ import { trpc } from '@/trpc/client';
  */
 export function useGraphQuery() {
   const projectId = useWorkspaceStore((s) => s.currentProjectId);
-  const hasLoadedOverview = useRef(false);
+  const prevProjectIdRef = useRef(projectId);
+  const moduleGroupsCount = useGraphStore((s) => s.moduleGroups.length);
+
+  useEffect(() => cancelScheduledGraphLayout, []);
 
   // ── Overview graph (landing page) ──────────────────────────────────────
 
@@ -29,35 +32,36 @@ export function useGraphQuery() {
     },
   );
 
-  // Push overview data into the graph store on first load
+  // Clear graph store when project changes (skip on initial mount)
   useEffect(() => {
-    if (!overviewQuery.data || hasLoadedOverview.current) return;
-    hasLoadedOverview.current = true;
+    if (prevProjectIdRef.current !== projectId) {
+      prevProjectIdRef.current = projectId;
+      useGraphStore.getState().clearGraph();
+      useGraphStore.getState().clearModuleGroups();
+    }
+  }, [projectId]);
+
+  // Sync overview data into the graph store whenever it arrives (or on remount with cached data)
+  useEffect(() => {
+    if (!overviewQuery.data) return;
 
     const nodes = toReactFlowNodes(overviewQuery.data.nodes);
     const edges = toReactFlowEdges(overviewQuery.data.edges);
 
     useGraphStore.getState().setGraph(nodes, edges);
-
-    // Trigger layout after a short delay
-    setTimeout(() => useGraphStore.getState().requestLayout(), 50);
+    scheduleGraphLayout();
   }, [overviewQuery.data]);
-
-  // Reset when project changes
-  useEffect(() => {
-    hasLoadedOverview.current = false;
-    useGraphStore.getState().clearGraph();
-    useGraphStore.getState().clearModuleGroups();
-  }, [projectId]);
 
   // ── Module groups (background fetch after overview loads) ──────────────
 
   const moduleGroupsQuery = trpc.graph.getModuleGroups.useQuery(
     { projectId: projectId ?? '' },
     {
-      enabled: !!projectId && hasLoadedOverview.current,
+      enabled: !!projectId && !!overviewQuery.data && moduleGroupsCount === 0,
       staleTime: 10 * 60_000,
       gcTime: 30 * 60_000,
+      retry: false,
+      refetchOnWindowFocus: false,
     },
   );
 
@@ -96,7 +100,7 @@ export function useGraphQuery() {
       });
 
       // Trigger layout
-      setTimeout(() => useGraphStore.getState().requestLayout(), 50);
+      scheduleGraphLayout();
     },
     onError: (error) => {
       useGraphStore.getState().setQueryActive(false);
@@ -145,7 +149,7 @@ export function useGraphQuery() {
       const nodes = toReactFlowNodes(data.nodes);
       const edges = toReactFlowEdges(data.edges);
       useGraphStore.getState().setGraph(nodes, edges);
-      setTimeout(() => useGraphStore.getState().requestLayout(), 50);
+      scheduleGraphLayout();
     });
   }, [projectId, queryErrorsMutation]);
 
@@ -158,7 +162,7 @@ export function useGraphQuery() {
     useGraphStore.getState().setGraph(nodes, edges);
     useGraphStore.getState().clearQueryResult();
     useAIStore.getState().clearSession();
-    setTimeout(() => useGraphStore.getState().requestLayout(), 50);
+    scheduleGraphLayout();
   }, [overviewQuery.data]);
 
   return {

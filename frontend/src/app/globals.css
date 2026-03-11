@@ -148,7 +148,6 @@
   background-color: var(--background);
   color: var(--foreground);
   border-color: var(--border);
-  fill: var(--foreground);
 }
 
 .react-flow__controls button:hover {

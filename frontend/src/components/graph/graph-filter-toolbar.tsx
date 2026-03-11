@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback } from 'react';
-import { AlertCircle, AlertTriangle, Info, Flame } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Info, Flame, Crosshair, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useGraphStore } from '@/lib/stores/graph-store';
 
@@ -48,6 +48,12 @@ function FilterChip({ icon: Icon, label, active, colorClass, onToggle }: FilterC
 export function GraphFilterToolbar() {
   const severityFilters = useGraphStore((s) => s.severityFilters);
   const heatmapActive = useGraphStore((s) => s.heatmapActive);
+  const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
+  const nodes = useGraphStore((s) => s.nodes);
+
+  const focusedNodeName = focusedNodeId
+    ? (nodes.find((n) => n.id === focusedNodeId)?.data.label ?? focusedNodeId)
+    : null;
 
   const toggleSeverity = useCallback((severity: Severity) => {
     useGraphStore.getState().toggleSeverityFilter(severity);
@@ -106,6 +112,26 @@ export function GraphFilterToolbar() {
         <Flame className="h-3 w-3" />
         Heatmap
       </button>
+
+      {/* Focus mode exit chip — only visible when a node is focused */}
+      {focusedNodeName && (
+        <>
+          <div className="mx-1 h-4 w-px bg-border" />
+          <button
+            type="button"
+            onClick={() => useGraphStore.getState().clearFocusMode()}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all',
+              'hover:shadow-sm text-primary bg-primary/10 border-primary/30 shadow-sm',
+            )}
+            title="Exit focus mode (Esc)"
+          >
+            <Crosshair className="h-3 w-3" />
+            <span className="max-w-35 truncate">{focusedNodeName}</span>
+            <X className="h-3 w-3 opacity-60" />
+          </button>
+        </>
+      )}
     </div>
   );
 }

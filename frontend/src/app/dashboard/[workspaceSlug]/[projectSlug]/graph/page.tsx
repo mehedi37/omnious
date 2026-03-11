@@ -15,6 +15,7 @@ import { NodeDetailPanel } from '@/components/graph/panels/node-detail-panel';
 import { useGraphQuery } from '@/hooks/use-graph-query';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import { useErrorHeatmap } from '@/hooks/use-error-heatmap';
+import { useElkLayout } from '@/hooks/use-elk-layout';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 import { useAIStore } from '@/lib/stores/ai-store';
@@ -84,6 +85,9 @@ function GraphPageInner() {
 
   // Wire up error heatmap data fetch
   useErrorHeatmap();
+
+  // Connect ELK layout worker to graph store
+  useElkLayout();
 
   // AI-driven data hook — loads overview on mount, supports AI queries
   const { isLoading: isDataLoading, isQuerying, queryGraph, showErrors, loadOverview } =

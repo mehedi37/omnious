@@ -182,7 +182,7 @@ export function MentionTextarea({
 
       {/* Floating autocomplete popup */}
       {popupOpen && suggestions.length > 0 && (
-        <div className="absolute bottom-full mb-1 left-0 z-50 w-full min-w-[260px] max-w-[400px] rounded-md border bg-popover shadow-lg">
+        <div className="absolute bottom-full mb-1 left-0 z-50 w-full min-w-65 max-w-100 rounded-md border bg-popover shadow-lg">
           <Command>
             <CommandList>
               <CommandEmpty>No matching nodes</CommandEmpty>
@@ -190,7 +190,7 @@ export function MentionTextarea({
                 {suggestions.map((node) => (
                   <CommandItem
                     key={node.id}
-                    value={node.name}
+                    value={`${node.name} ${node.file_path}`}
                     onSelect={() =>
                       selectSuggestion({
                         id: node.id,
@@ -199,16 +199,18 @@ export function MentionTextarea({
                         type: node.type,
                       })
                     }
-                    className="gap-2 cursor-pointer"
+                    className="gap-2 cursor-pointer flex-col items-start"
                   >
-                    <FileCode className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="flex-1 truncate font-medium text-sm">{node.name}</span>
-                    <span className="text-[10px] text-muted-foreground font-mono shrink-0">
-                      {node.type}
-                    </span>
+                    <div className="flex w-full items-center gap-2">
+                      <FileCode className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="flex-1 truncate font-medium text-sm">{node.name}</span>
+                      <span className="text-[10px] text-muted-foreground font-mono shrink-0">
+                        {node.type}
+                      </span>
+                    </div>
                     {node.file_path && (
-                      <span className="text-[10px] text-muted-foreground/60 truncate max-w-[120px] shrink-0">
-                        {node.file_path.split('/').slice(-2).join('/')}
+                      <span className="pl-5 text-[10px] text-muted-foreground/70 font-mono truncate w-full">
+                        {node.file_path.split('/').slice(-3).join('/')}
                       </span>
                     )}
                   </CommandItem>

@@ -5,6 +5,7 @@ import { useReactFlow } from '@xyflow/react';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 import { useAIStore } from '@/lib/stores/ai-store';
+import { scheduleGraphLayout } from '@/lib/layout/schedule-layout';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -212,24 +213,29 @@ export function useKeyboardShortcuts() {
 
         case '1': {
           useGraphStore.getState().setLayoutMode('layered-tb');
-          useGraphStore.getState().requestLayout();
+          scheduleGraphLayout();
           return;
         }
 
         case '2': {
           useGraphStore.getState().setLayoutMode('layered-lr');
-          useGraphStore.getState().requestLayout();
+          scheduleGraphLayout();
           return;
         }
 
         // ── Feature shortcuts ────────────────────────────────────────────
 
         case 'n': {
-          // N → Focus mode on selected node
-          const selectedIds = useGraphStore.getState().selectedNodeIds;
+          // N → Toggle focus mode on selected node
+          const gs = useGraphStore.getState();
+          const selectedIds = gs.selectedNodeIds;
           if (selectedIds.size > 0) {
             const firstId = selectedIds.values().next().value as string;
-            useGraphStore.getState().setFocusMode(firstId);
+            if (gs.focusedNodeId === firstId) {
+              gs.clearFocusMode();
+            } else {
+              gs.setFocusMode(firstId);
+            }
             window.dispatchEvent(new CustomEvent('omnious:focus-fit'));
           }
           return;
