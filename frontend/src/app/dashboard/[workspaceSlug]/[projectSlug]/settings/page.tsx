@@ -167,7 +167,7 @@ function SettingsPageContent() {
         <TabsList>
           <TabsTrigger value="general">General</TabsTrigger>
           <TabsTrigger value="indexing">Indexing</TabsTrigger>
-          <TabsTrigger value="ai-keys">AI Keys</TabsTrigger>
+          <TabsTrigger value="ai-keys">AI Runtime</TabsTrigger>
           <TabsTrigger value="danger" className="text-red-600 dark:text-red-400">
             Danger
           </TabsTrigger>
@@ -372,13 +372,15 @@ function SettingsPageContent() {
           </Card>
         </TabsContent>
 
-        {/* ── AI Keys Tab ── */}
+        {/* ── AI Runtime Tab ── */}
         <TabsContent value="ai-keys" className="space-y-4">
-          {/* Project default key selection */}
+          {/* Project runtime summary (BYOK controls paused) */}
           <Card>
             <CardHeader>
-              <CardTitle>Default AI Key</CardTitle>
-              <CardDescription>Select which API key this project uses by default</CardDescription>
+              <CardTitle>Local Ollama Runtime</CardTitle>
+              <CardDescription>
+                This project uses backend `OLLAMA_*` environment variables for AI chat and embeddings.
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               {apiKeysQuery.isLoading ? (
@@ -386,7 +388,7 @@ function SettingsPageContent() {
               ) : (
                 <>
                   <div className="space-y-2">
-                    <Label htmlFor="default-key">API Key</Label>
+                    <Label htmlFor="default-key">Legacy default provider key (paused)</Label>
                     <div className="flex gap-2">
                       <select
                         id="default-key"
@@ -395,6 +397,7 @@ function SettingsPageContent() {
                           const newKeyId = e.target.value || null;
                           setSelectedKeyId(newKeyId);
                         }}
+                        disabled
                         className="flex-1 px-3 py-2 rounded-md border border-input bg-background text-sm"
                       >
                         <option value="">Account default (primary active key)</option>
@@ -413,7 +416,7 @@ function SettingsPageContent() {
                             });
                           }
                         }}
-                        disabled={setSelectedKeyMutation.isPending}
+                        disabled
                         size="sm"
                       >
                         {setSelectedKeyMutation.isPending ? (
@@ -426,7 +429,7 @@ function SettingsPageContent() {
                   </div>
                   {(apiKeysQuery.data?.length ?? 0) === 0 && (
                     <div className="text-sm text-muted-foreground">
-                      No API keys added yet. Add keys in your profile settings.
+                      No legacy keys found. This is expected while BYOK is paused.
                     </div>
                   )}
                 </>
@@ -437,9 +440,9 @@ function SettingsPageContent() {
           <Card>
             <CardContent className="pt-6">
               <p className="text-sm text-muted-foreground">
-                API keys are managed at the account level.{' '}
+                BYOK controls are temporarily paused for this local testing phase.{' '}
                 <a href="/dashboard/profile" className="text-primary hover:underline font-medium">
-                  Manage API keys in Profile Settings →
+                  View AI runtime status in Profile Settings →
                 </a>
               </p>
             </CardContent>

@@ -4,7 +4,7 @@ import { env } from '../config/env.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
-export type LLMProvider = 'openai' | 'anthropic' | 'groq';
+export type LLMProvider = 'ollama' | 'openai' | 'anthropic';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
@@ -28,19 +28,24 @@ export interface ResolvedKey {
 
 // ─── Constants ───────────────────────────────────────────────
 
-const OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions';
-const OPENAI_EMBED_URL = 'https://api.openai.com/v1/embeddings';
-const ANTHROPIC_CHAT_URL = 'https://api.anthropic.com/v1/messages';
-const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
+function _normalizeOpenAIBase(url: string): string {
+  return url.endsWith('/') ? url.slice(0, -1) : url;
+}
 
+const OLLAMA_OPENAI_BASE = _normalizeOpenAIBase(env.OLLAMA_BASE_URL);
+const OLLAMA_CHAT_URL = `${OLLAMA_OPENAI_BASE}/chat/completions`;
+const OLLAMA_EMBED_URL = `${OLLAMA_OPENAI_BASE}/embeddings`;
+
+const OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions';
+const ANTHROPIC_CHAT_URL = 'https://api.anthropic.com/v1/messages';
+
+const DEFAULT_OLLAMA_MODEL = env.OLLAMA_MODEL;
+const POWERFUL_OLLAMA_MODEL = env.OLLAMA_MODEL;
 const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-haiku-20241022';
 const POWERFUL_OPENAI_MODEL = 'gpt-4o';
 const POWERFUL_ANTHROPIC_MODEL = 'claude-sonnet-4-20250514';
-const DEFAULT_GROQ_MODEL = 'llama-3.1-8b-instant';
-const POWERFUL_GROQ_MODEL = 'llama-3.3-70b-versatile';
-const EMBEDDING_MODEL = 'text-embedding-3-small';
-const EMBEDDING_DIMENSIONS = 1536;
+const EMBEDDING_MODEL = env.OLLAMA_EMBEDDING_MODEL;
 
 // Keywords that signal a complex query requiring the powerful model
 const COMPLEX_INTENT_KEYWORDS = [
@@ -48,6 +53,29 @@ const COMPLEX_INTENT_KEYWORDS = [
   'optimize', 'migration', 'debug', 'root cause', 'race condition',
   'memory leak', 'bottleneck', 'vulnerability', 'breaking change',
 ];
+
+function _formatOllamaConnectivityError(error: unknown, endpoint: string): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  const causeMessage =
+    error &&
+    typeof error === 'object' &&
+    'cause' in error &&
+    (error as { cause?: unknown }).cause instanceof Error
+      ? (error as { cause: Error }).cause.message
+      : '';
+  const combined = `${message} ${causeMessage}`.trim();
+
+  const hint =
+    `Cannot reach Ollama at ${endpoint}. ` +
+    `If backend runs in Docker, ensure Ollama is reachable from containers ` +
+    `(set OLLAMA_BASE_URL to host.docker.internal and run Ollama with OLLAMA_HOST=0.0.0.0:11434).`;
+
+  if (combined.toLowerCase().includes('econnrefused') || combined.toLowerCase().includes('fetch failed')) {
+    return new Error(hint);
+  }
+
+  return new Error(`Ollama request failed at ${endpoint}: ${message}`);
+}
 
 export type AITaskType =
   | 'graphQuery'
@@ -71,14 +99,14 @@ export function selectModel(
   tier: ModelTier = 'auto',
 ): string {
   const FAST_MODELS: Record<LLMProvider, string> = {
+    ollama: DEFAULT_OLLAMA_MODEL,
     openai: DEFAULT_OPENAI_MODEL,
     anthropic: DEFAULT_ANTHROPIC_MODEL,
-    groq: DEFAULT_GROQ_MODEL,
   };
   const POWERFUL_MODELS: Record<LLMProvider, string> = {
+    ollama: POWERFUL_OLLAMA_MODEL,
     openai: POWERFUL_OPENAI_MODEL,
     anthropic: POWERFUL_ANTHROPIC_MODEL,
-    groq: POWERFUL_GROQ_MODEL,
   };
   const fast = FAST_MODELS[provider];
   const powerful = POWERFUL_MODELS[provider];
@@ -162,24 +190,17 @@ export async function resolveApiKey(
     projectId?: string;
   },
 ): Promise<ResolvedKey> {
-  // Try BYOK first (explicit key ID takes precedence over project selection)
-  const byokKey = await _resolveByokKey(userId, db, options?.apiKeyId, options?.projectId);
-  if (byokKey) return byokKey;
-
-  // Fall back to platform key
-  if (env.OPENAI_API_KEY) {
-    return { apiKey: env.OPENAI_API_KEY, provider: 'openai', source: 'platform' };
-  }
-  if (env.ANTHROPIC_API_KEY) {
-    return { apiKey: env.ANTHROPIC_API_KEY, provider: 'anthropic', source: 'platform' };
-  }
-  if (env.GROQ_API_KEY) {
-    return { apiKey: env.GROQ_API_KEY, provider: 'groq', source: 'platform' };
+  // Keep BYOK resolution path in code for later re-enable, but default to local Ollama.
+  if (env.ENABLE_BYOK_AI) {
+    const byokKey = await _resolveByokKey(userId, db, options?.apiKeyId, options?.projectId);
+    if (byokKey) return byokKey;
   }
 
-  throw new Error(
-    'No API key available. Add an OpenAI, Anthropic, or Groq key in Settings → AI Keys, or configure a platform key.',
-  );
+  return {
+    apiKey: env.OLLAMA_API_KEY || 'ollama',
+    provider: 'ollama',
+    source: 'platform',
+  };
 }
 
 async function _resolveByokKey(
@@ -246,15 +267,15 @@ async function _resolveByokKey(
 
 /**
  * Detect the LLM provider from the stored provider column, falling back to
- * key-prefix heuristics so a Groq/Anthropic key never silently routes to OpenAI.
+ * key-prefix heuristics so legacy keys still route consistently.
  */
 function _detectProvider(storedProvider: string | null, encryptedKey: string): LLMProvider {
-  if (storedProvider === 'groq' || storedProvider === 'anthropic' || storedProvider === 'openai') {
+  if (storedProvider === 'ollama' || storedProvider === 'anthropic' || storedProvider === 'openai') {
     return storedProvider;
   }
   // Defensive fallback: infer from decrypted key prefix
   const plain = decryptApiKey(encryptedKey);
-  if (plain.startsWith('gsk_')) return 'groq';
+  if (plain.startsWith('ollama_')) return 'ollama';
   if (plain.startsWith('sk-ant-')) return 'anthropic';
   return 'openai';
 }
@@ -262,7 +283,8 @@ function _detectProvider(storedProvider: string | null, encryptedKey: string): L
 // ─── LLM Chat ────────────────────────────────────────────────
 
 /**
- * Call an LLM for chat completion. Supports OpenAI + Anthropic.
+ * Call an LLM for chat completion.
+ * Default runtime is local Ollama. Paid providers are only used when BYOK is enabled.
  */
 export async function callLLM(
   messages: LLMMessage[],
@@ -272,17 +294,17 @@ export async function callLLM(
   const maxTokens = options?.maxTokens ?? 2048;
   const temperature = options?.temperature ?? 0.3;
 
-  if (resolvedKey.provider === 'anthropic') {
-    return _callAnthropic(messages, resolvedKey.apiKey, {
-      model: options?.model ?? DEFAULT_ANTHROPIC_MODEL,
+  if (resolvedKey.provider === 'ollama') {
+    return _callOpenAICompatible(OLLAMA_CHAT_URL, 'Ollama', messages, resolvedKey.apiKey, {
+      model: options?.model ?? DEFAULT_OLLAMA_MODEL,
       maxTokens,
       temperature,
     });
   }
 
-  if (resolvedKey.provider === 'groq') {
-    return _callOpenAICompatible(GROQ_CHAT_URL, 'Groq', messages, resolvedKey.apiKey, {
-      model: options?.model ?? DEFAULT_GROQ_MODEL,
+  if (resolvedKey.provider === 'anthropic') {
+    return _callAnthropic(messages, resolvedKey.apiKey, {
+      model: options?.model ?? DEFAULT_ANTHROPIC_MODEL,
       maxTokens,
       temperature,
     });
@@ -303,7 +325,7 @@ async function _callOpenAI(
   return _callOpenAICompatible(OPENAI_CHAT_URL, 'OpenAI', messages, apiKey, opts);
 }
 
-/** Shared handler for OpenAI-compatible APIs (OpenAI, Groq, etc.) */
+/** Shared handler for OpenAI-compatible APIs (Ollama, OpenAI, etc.) */
 async function _callOpenAICompatible(
   baseUrl: string,
   providerLabel: string,
@@ -311,19 +333,28 @@ async function _callOpenAICompatible(
   apiKey: string,
   opts: { model: string; maxTokens: number; temperature: number },
 ): Promise<LLMResponse> {
-  const resp = await fetch(baseUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: opts.model,
-      max_tokens: opts.maxTokens,
-      temperature: opts.temperature,
-      messages,
-    }),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(baseUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: opts.model,
+        max_tokens: opts.maxTokens,
+        temperature: opts.temperature,
+        messages,
+      }),
+    });
+  } catch (error) {
+    if (providerLabel === 'Ollama') {
+      logger.error({ err: error, endpoint: baseUrl }, 'Ollama request failed');
+      throw _formatOllamaConnectivityError(error, baseUrl);
+    }
+    throw error;
+  }
 
   if (!resp.ok) {
     const errText = await resp.text();
@@ -399,33 +430,37 @@ async function _callAnthropic(
 // ─── Embeddings ──────────────────────────────────────────────
 
 /**
- * Generate a 1536-dim embedding using OpenAI text-embedding-3-small.
- * Uses platform key by default (embeddings are server-side only).
+ * Generate embeddings using Ollama's OpenAI-compatible endpoint.
  */
 export async function generateEmbedding(
   text: string,
   apiKey?: string,
 ): Promise<number[]> {
-  const key = apiKey ?? env.OPENAI_API_KEY;
-  if (!key) {
-    throw new Error('OPENAI_API_KEY is required for embedding generation');
-  }
+  const key = apiKey ?? env.OLLAMA_API_KEY ?? 'ollama';
 
   // Truncate to ~8k tokens (~32k chars) to stay within model limits
   const truncated = text.slice(0, 32_000);
 
-  const resp = await fetch(OPENAI_EMBED_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model: EMBEDDING_MODEL,
-      input: truncated,
-      dimensions: EMBEDDING_DIMENSIONS,
-    }),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(OLLAMA_EMBED_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model: EMBEDDING_MODEL,
+        input: truncated,
+        ...(env.OLLAMA_EMBEDDING_DIMENSIONS
+          ? { dimensions: env.OLLAMA_EMBEDDING_DIMENSIONS }
+          : {}),
+      }),
+    });
+  } catch (error) {
+    logger.error({ err: error, endpoint: OLLAMA_EMBED_URL }, 'Embedding request failed');
+    throw _formatOllamaConnectivityError(error, OLLAMA_EMBED_URL);
+  }
 
   if (!resp.ok) {
     const errText = await resp.text();
@@ -438,8 +473,16 @@ export async function generateEmbedding(
   };
 
   const embedding = body.data?.[0]?.embedding;
-  if (!embedding || embedding.length !== EMBEDDING_DIMENSIONS) {
-    throw new Error(`Invalid embedding response: expected ${EMBEDDING_DIMENSIONS} dimensions`);
+  if (!Array.isArray(embedding) || embedding.length === 0) {
+    throw new Error('Invalid embedding response from Ollama embeddings API');
+  }
+  if (
+    env.OLLAMA_EMBEDDING_DIMENSIONS &&
+    embedding.length !== env.OLLAMA_EMBEDDING_DIMENSIONS
+  ) {
+    throw new Error(
+      `Invalid embedding response: expected ${env.OLLAMA_EMBEDDING_DIMENSIONS} dimensions`,
+    );
   }
 
   return embedding;
@@ -530,7 +573,6 @@ export async function generateModuleGroups(
   if (nodes.length === 0) return [];
 
   // Build a compact representation for the LLM with strict size controls.
-  // Groq's smaller tiers are sensitive to large prompts, so keep this lean.
   const MAX_NODES = 90;
   const MAX_FIELD = 80;
   const nodeList = nodes

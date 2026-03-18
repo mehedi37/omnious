@@ -7,6 +7,19 @@ import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { cancelScheduledGraphLayout, scheduleGraphLayout } from '@/lib/layout/schedule-layout';
 import { trpc } from '@/trpc/client';
 
+function toSafeAiErrorMessage(raw: string): string {
+  if (/too_small|String must contain at least 3 character\(s\)/i.test(raw)) {
+    return 'Please enter at least 3 characters before running an AI query.';
+  }
+  if (/AI is not configured|OLLAMA_|No API key available/i.test(raw)) {
+    return 'AI runtime is not ready. Ensure Ollama is running and backend OLLAMA settings are correct.';
+  }
+  if (/OpenAI API error 401|Incorrect API key|Anthropic API error|Groq API error/i.test(raw)) {
+    return 'AI provider authentication failed. Local Ollama mode should not require a paid provider key.';
+  }
+  return 'AI query failed. Please try again.';
+}
+
 /**
  * Primary data hook for the AI-driven graph page.
  *
@@ -107,7 +120,7 @@ export function useGraphQuery() {
       useAIStore.getState().setStreaming(false);
       useAIStore.getState().addMessage({
         role: 'assistant',
-        content: `Error: ${error.message}`,
+        content: toSafeAiErrorMessage(error.message),
         timestamp: new Date().toISOString(),
       });
     },
@@ -116,17 +129,26 @@ export function useGraphQuery() {
   const queryGraph = useCallback(
     (query: string, contextNodeIds?: string[], apiKeyId?: string, modelPreference?: 'auto' | 'fast' | 'powerful') => {
       if (!projectId) return;
+      const trimmed = query.trim();
+      if (trimmed.length < 3) {
+        useAIStore.getState().addMessage({
+          role: 'assistant',
+          content: 'Please enter at least 3 characters before running an AI query.',
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
 
       // Add user message to chat
       useAIStore.getState().addMessage({
         role: 'user',
-        content: query,
+        content: trimmed,
         timestamp: new Date().toISOString(),
       });
 
       queryGraphMutation.mutate({
         projectId,
-        query,
+        query: trimmed,
         apiKeyId,
         contextNodeIds,
         modelPreference,

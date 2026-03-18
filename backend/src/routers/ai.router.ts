@@ -181,7 +181,7 @@ export const aiRouter = router({
 
   /**
    * Explain an error snapshot in natural language using an LLM.
-   * Fetches context from the code node + graph traversal, calls OpenAI,
+   * Fetches context from the code node + graph traversal, calls the configured LLM,
    * and returns a natural-language summary + session ID.
    */
   explainError: projectProcedure
@@ -219,7 +219,7 @@ export const aiRouter = router({
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
           message:
-            'No active API key found. Add an OpenAI or Anthropic key in Settings → AI Keys.',
+            'AI is not configured. Ensure Ollama is running and OLLAMA_* environment variables are set.',
         });
       }
 
@@ -400,7 +400,7 @@ export const aiRouter = router({
   addApiKey: protectedProcedure
     .input(
       z.object({
-        provider: z.enum(['openai', 'anthropic', 'groq']),
+        provider: z.enum(['openai', 'anthropic', 'ollama']),
         label: z.string().min(1).max(100).default('Default'),
         rawKey: z.string().min(1),
         keyPrefix: z.string().max(10).optional(),

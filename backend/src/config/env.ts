@@ -15,6 +15,21 @@ if (existsSync(rootEnv)) {
   dotenvConfig({ path: localEnv });
 }
 
+const booleanFromEnv = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off', ''].includes(normalized)) return false;
+  }
+  return value;
+}, z.boolean());
+
+const optionalPositiveIntFromEnv = z.preprocess((value) => {
+  if (value == null) return undefined;
+  if (typeof value === 'string' && value.trim() === '') return undefined;
+  return value;
+}, z.coerce.number().int().positive().optional());
+
 /**
  * Environment variable schema — validated at startup.
  * If any required var is missing, the server refuses to start.
@@ -36,10 +51,17 @@ const envSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_JWT_SECRET: z.string().min(1),
 
-  // AI — Platform keys (optional: enables free tier for users without BYOK keys)
+  // AI — Ollama local runtime (default)
+  OLLAMA_BASE_URL: z.string().url().default('http://localhost:11434/v1'),
+  OLLAMA_MODEL: z.string().min(1).default('llama3:latest'),
+  OLLAMA_EMBEDDING_MODEL: z.string().min(1).default('nomic-embed-text'),
+  OLLAMA_EMBEDDING_DIMENSIONS: optionalPositiveIntFromEnv,
+  OLLAMA_API_KEY: z.string().min(1).optional(),
+
+  // BYOK providers are kept in code for later enablement, but disabled by default.
+  ENABLE_BYOK_AI: booleanFromEnv.default(false),
   OPENAI_API_KEY: z.string().min(1).optional(),
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
-  GROQ_API_KEY: z.string().min(1).optional(),
 
   // API Key Encryption — required for BYOK encrypted storage (AES-256-GCM)
   // Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"

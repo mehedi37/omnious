@@ -270,12 +270,12 @@ export function ErrorDetail({ errorId }: Props) {
 
           {!aiResult && !explainMutation.isPending && (
             <p className="text-xs text-muted-foreground">
-              Requires an OpenAI or Anthropic key in{' '}
+              Requires local Ollama runtime configuration. Check{' '}
               <Link
                 href={`/dashboard/${workspaceSlug}/${projectSlug}/settings?tab=ai-keys`}
                 className="underline"
               >
-                Settings → AI Keys
+                Settings → AI Runtime
               </Link>
               .
             </p>

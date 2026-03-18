@@ -59,8 +59,12 @@ services:
       - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
       - API_KEY_ENCRYPTION_KEY=${API_KEY_ENCRYPTION_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL_DOCKER:-http://host.docker.internal:11434/v1}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:latest}
+      - OLLAMA_EMBEDDING_MODEL=${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      - OLLAMA_EMBEDDING_DIMENSIONS=${OLLAMA_EMBEDDING_DIMENSIONS:-}
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY:-ollama}
+      - ENABLE_BYOK_AI=${ENABLE_BYOK_AI:-false}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ENABLE_BILLING=${ENABLE_BILLING:-false}
     healthcheck:
@@ -75,6 +79,8 @@ services:
           memory: 512M
           cpus: "1.0"
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - omnious
 
