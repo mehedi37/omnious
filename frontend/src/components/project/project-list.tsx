@@ -63,8 +63,8 @@ export function ProjectList({ workspaceSlug }: { workspaceSlug: string }) {
       ))}
 
       <CreateProjectDialog workspaceId={workspaceId} workspaceSlug={workspaceSlug}>
-        <Card className="flex cursor-pointer items-center justify-center border-dashed transition-colors hover:border-primary/50">
-          <CardHeader className="items-center">
+        <Card className="flex cursor-pointer border-dashed transition-colors hover:border-primary/50">
+          <CardHeader className="flex flex-col items-center justify-center mt-4">
             <Plus className="mb-2 size-8 text-muted-foreground" />
             <CardTitle className="text-sm text-muted-foreground">New Project</CardTitle>
           </CardHeader>
