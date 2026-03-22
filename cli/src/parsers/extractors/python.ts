@@ -14,7 +14,7 @@ import type {
   OIRNode,
   OIREdge,
 } from '../../oir/types.js';
-import { generateOirId, hashNodeContent } from '../../oir/hasher.js';
+import { generateOirId, hashNodeContent, extractCodeBody } from '../../oir/hasher.js';
 
 export class PythonExtractor implements Extractor {
   readonly language = 'python' as const;
@@ -41,6 +41,7 @@ export class PythonExtractor implements Extractor {
       doc_comment: this.getModuleDocstring(tree.rootNode),
       metadata: { extension: ext },
       content_hash: '',
+      code_body: null,
     });
 
     const root = tree.rootNode;
@@ -136,6 +137,7 @@ export class PythonExtractor implements Extractor {
           doc_comment: null,
           metadata: { package: nameNode.text },
           content_hash: '',
+          code_body: null,
         });
         edges.push({
           source_oir_id: moduleOirId,
@@ -177,6 +179,7 @@ export class PythonExtractor implements Extractor {
           doc_comment: null,
           metadata: { package: importPath },
           content_hash: '',
+          code_body: null,
         });
       }
 
@@ -229,6 +232,7 @@ export class PythonExtractor implements Extractor {
       doc_comment: docComment,
       metadata: { is_async: isAsync, params, decorators },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     // Extract calls
@@ -273,6 +277,7 @@ export class PythonExtractor implements Extractor {
       doc_comment: this.getDocstring(node),
       metadata: { member_count: memberCount, decorators },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     // Superclasses → extends edges
@@ -343,6 +348,7 @@ export class PythonExtractor implements Extractor {
       doc_comment: null,
       metadata: {},
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
   }
 

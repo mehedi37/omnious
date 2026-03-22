@@ -14,7 +14,7 @@ import type {
   OIRNode,
   OIREdge,
 } from '../../oir/types.js';
-import { generateOirId, hashNodeContent } from '../../oir/hasher.js';
+import { generateOirId, hashNodeContent, extractCodeBody } from '../../oir/hasher.js';
 
 export class CSharpExtractor implements Extractor {
   readonly language = 'csharp' as const;
@@ -41,6 +41,7 @@ export class CSharpExtractor implements Extractor {
       doc_comment: null,
       metadata: { extension: ext },
       content_hash: '',
+      code_body: null,
     });
 
     this.walkCompilationUnit(tree.rootNode, source, filePath, moduleOirId, nodes, edges, errors);
@@ -125,6 +126,7 @@ export class CSharpExtractor implements Extractor {
       doc_comment: null,
       metadata: { namespace: usingPath },
       content_hash: '',
+      code_body: null,
     });
 
     edges.push({
@@ -236,6 +238,7 @@ export class CSharpExtractor implements Extractor {
       doc_comment: this.getDocComment(node),
       metadata: { kind: isRecord ? 'record' : 'class', is_exported: isPublic },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isPublic) {
@@ -295,6 +298,7 @@ export class CSharpExtractor implements Extractor {
       doc_comment: this.getDocComment(node),
       metadata: { kind: 'interface', is_exported: isPublic },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isPublic) {
@@ -338,6 +342,7 @@ export class CSharpExtractor implements Extractor {
       doc_comment: this.getDocComment(node),
       metadata: { kind: 'enum', is_exported: isPublic },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isPublic) {
@@ -381,6 +386,7 @@ export class CSharpExtractor implements Extractor {
       doc_comment: this.getDocComment(node),
       metadata: { kind: 'struct', is_exported: isPublic },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isPublic) {
@@ -485,6 +491,7 @@ export class CSharpExtractor implements Extractor {
             params,
           },
           content_hash: hashNodeContent(source, startLine, endLine),
+          code_body: extractCodeBody(source, startLine, endLine),
         });
 
         const methodBody = member.childForFieldName('body');

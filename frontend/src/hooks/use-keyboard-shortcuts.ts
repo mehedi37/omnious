@@ -1,11 +1,10 @@
 'use client';
 
-import { useEffect, useCallback } from 'react';
 import { useReactFlow } from '@xyflow/react';
+import { useCallback, useEffect } from 'react';
+import { scheduleGraphLayout } from '@/lib/layout/schedule-layout';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
-import { useAIStore } from '@/lib/stores/ai-store';
-import { scheduleGraphLayout } from '@/lib/layout/schedule-layout';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -55,9 +54,14 @@ export function useKeyboardShortcuts() {
           }
           case 'a': {
             if (shift) {
-              // Ctrl+Shift+A → Toggle AI panel
+              // Ctrl+Shift+A → Toggle AI inspector tab
               e.preventDefault();
-              useAIStore.getState().togglePanel();
+              const ui = useUIStore.getState();
+              if (ui.detailPanelOpen && ui.activeDetailTab === 'ai') {
+                ui.setDetailPanelOpen(false);
+              } else {
+                ui.setActiveDetailTab('ai');
+              }
               return;
             }
             // Ctrl+A → Select all visible nodes

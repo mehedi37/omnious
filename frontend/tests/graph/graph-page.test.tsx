@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import React from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -80,10 +80,9 @@ vi.mock('@/lib/stores/graph-store', () => {
     highlightConnectedEdges: vi.fn(),
   };
   return {
-    useGraphStore: Object.assign(
-      (selector: (s: typeof store) => unknown) => selector(store),
-      { getState: () => store },
-    ),
+    useGraphStore: Object.assign((selector: (s: typeof store) => unknown) => selector(store), {
+      getState: () => store,
+    }),
   };
 });
 
@@ -96,20 +95,27 @@ vi.mock('@/lib/stores/ui-store', () => {
     setActiveDetailTab: vi.fn(),
   };
   return {
-    useUIStore: Object.assign(
-      (selector: (s: typeof store) => unknown) => selector(store),
-      { getState: () => store },
-    ),
+    useUIStore: Object.assign((selector: (s: typeof store) => unknown) => selector(store), {
+      getState: () => store,
+    }),
   };
 });
 
 vi.mock('@/lib/stores/ai-store', () => {
-  const store = { panelOpen: false, openPanel: vi.fn(), closePanel: vi.fn() };
+  const store = {
+    projectId: null,
+    activeSessionId: null,
+    sessionType: null,
+    messages: [],
+    isStreaming: false,
+    prefillMessage: null,
+    setProjectId: vi.fn(),
+    setPrefillMessage: vi.fn(),
+  };
   return {
-    useAIStore: Object.assign(
-      (selector: (s: typeof store) => unknown) => selector(store),
-      { getState: () => store },
-    ),
+    useAIStore: Object.assign((selector: (s: typeof store) => unknown) => selector(store), {
+      getState: () => store,
+    }),
   };
 });
 

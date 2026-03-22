@@ -17,7 +17,7 @@ import type {
   OIREdge,
   OIRNodeType,
 } from '../../oir/types.js';
-import { generateOirId, hashNodeContent } from '../../oir/hasher.js';
+import { generateOirId, hashNodeContent, extractCodeBody } from '../../oir/hasher.js';
 
 export class TypeScriptExtractor implements Extractor {
   readonly language = 'typescript' as const;
@@ -44,6 +44,7 @@ export class TypeScriptExtractor implements Extractor {
       doc_comment: null,
       metadata: { extension: ext },
       content_hash: '',
+      code_body: null,
     });
 
     const root = tree.rootNode;
@@ -140,6 +141,7 @@ export class TypeScriptExtractor implements Extractor {
         doc_comment: null,
         metadata: { package: importPath },
         content_hash: '',
+        code_body: null,
       });
     }
 
@@ -211,6 +213,7 @@ export class TypeScriptExtractor implements Extractor {
           doc_comment: null,
           metadata: { is_exported: true, is_default: true },
           content_hash: hashNodeContent(source, startLine, endLine),
+          code_body: extractCodeBody(source, startLine, endLine),
         });
         edges.push({
           source_oir_id: moduleOirId,
@@ -290,6 +293,7 @@ export class TypeScriptExtractor implements Extractor {
       doc_comment: docComment,
       metadata: { is_async: isAsync, is_exported: isExported, params },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isExported) {
@@ -365,6 +369,7 @@ export class TypeScriptExtractor implements Extractor {
             params,
           },
           content_hash: hashNodeContent(source, startLine, endLine),
+          code_body: extractCodeBody(source, startLine, endLine),
         });
 
         if (isExported) {
@@ -397,6 +402,7 @@ export class TypeScriptExtractor implements Extractor {
           doc_comment: this.getDocComment(node),
           metadata: { is_exported: isExported },
           content_hash: hashNodeContent(source, startLine, endLine),
+          code_body: extractCodeBody(source, startLine, endLine),
         });
 
         if (isExported) {
@@ -444,6 +450,7 @@ export class TypeScriptExtractor implements Extractor {
       doc_comment: this.getDocComment(node),
       metadata: { is_exported: isExported, member_count: memberCount },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isExported) {
@@ -538,6 +545,7 @@ export class TypeScriptExtractor implements Extractor {
       doc_comment: this.getDocComment(node),
       metadata: { kind, is_exported: isExported },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isExported) {

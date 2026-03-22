@@ -1,28 +1,15 @@
 'use client';
 
+import { Handle, type NodeProps, Position } from '@xyflow/react';
+import { FileCode, Lock } from 'lucide-react';
 import { memo } from 'react';
-import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { NODE_BG_CLASSES_STRONG, NODE_ICONS } from '@/lib/oir/constants';
-import { useGraphStore } from '@/lib/stores/graph-store';
-import type { OmniousNodeData } from '@/lib/stores/graph-store';
+import { NODE_BG_CLASSES_STRONG, NODE_TYPE_ICONS } from '@/lib/oir/constants';
 import type { OIRNodeType } from '@/lib/oir/types';
-import {
-  Braces, Component, Route, Database, FileCode, Box,
-  Layers, Radio, Antenna, Globe, Variable, Type,
-  Cuboid, List, FileInput, FolderTree, Puzzle, Shield, Package,
-  Lock,
-} from 'lucide-react';
-
-// Icon map — matches NODE_ICONS Lucide names to components
-const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
-  Braces, Component, Route, Database, FileCode, Box,
-  Layers, Radio, Antenna, Globe, Variable, Type,
-  Cuboid, List, FileInput, FolderTree, Puzzle, Shield, Package,
-};
+import type { OmniousNodeData } from '@/lib/stores/graph-store';
+import { useGraphStore } from '@/lib/stores/graph-store';
 
 function getIcon(oirType: OIRNodeType) {
-  const iconName = NODE_ICONS[oirType] ?? 'FileCode';
-  return ICON_MAP[iconName] ?? FileCode;
+  return NODE_TYPE_ICONS[oirType] ?? FileCode;
 }
 
 /** Show parent-dir/filename for index/main/app files, otherwise just the name */
@@ -50,19 +37,24 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
 
   const isSeed = nodeData.source === 'seed';
   const hasError = (nodeData.errorCount ?? 0) > 0;
+
+  // Subscribe to only the primitive boolean for THIS node, not the whole Set
   const isPinned = useGraphStore((s) => s.pinnedNodeIds.has(id));
   const heatmapActive = useGraphStore((s) => s.heatmapActive);
 
-  // Heatmap glow class based on error severity/count
-  const heatmapClass = heatmapActive && hasError
-    ? (nodeData.errorCount ?? 0) >= 10
-      ? 'omnious-heatmap-critical'
-      : (nodeData.errorCount ?? 0) >= 5
-        ? 'omnious-heatmap-high'
-        : (nodeData.errorCount ?? 0) >= 2
-          ? 'omnious-heatmap-medium'
-          : 'omnious-heatmap-low'
-    : '';
+  // Compute heatmap class only when needed
+  let heatmapClass = '';
+  if (heatmapActive && hasError) {
+    const count = nodeData.errorCount ?? 0;
+    heatmapClass =
+      count >= 10
+        ? 'omnious-heatmap-critical'
+        : count >= 5
+          ? 'omnious-heatmap-high'
+          : count >= 2
+            ? 'omnious-heatmap-medium'
+            : 'omnious-heatmap-low';
+  }
 
   return (
     <>
@@ -130,7 +122,11 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
         )}
       </div>
 
-      <Handle type="source" position={Position.Bottom} className="w-2! h-2! bg-muted-foreground/40!" />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="w-2! h-2! bg-muted-foreground/40!"
+      />
     </>
   );
 }

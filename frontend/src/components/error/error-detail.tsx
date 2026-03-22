@@ -17,6 +17,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { toast } from 'sonner';
+import { MarkdownRenderer } from '@/components/shared/markdown-renderer';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -40,7 +41,9 @@ export function ErrorDetail({ errorId }: Props) {
   const pathname = usePathname();
 
   const [aiAction, setAiAction] = useState<'why_broke' | 'fix_it' | null>(null);
-  const [aiResult, setAiResult] = useState<{ summary: string; sessionId: string | null } | null>(null);
+  const [aiResult, setAiResult] = useState<{ summary: string; sessionId: string | null } | null>(
+    null,
+  );
 
   const errorQuery = trpc.error.getById.useQuery(
     { projectId: currentProjectId ?? '', errorId },
@@ -131,12 +134,18 @@ export function ErrorDetail({ errorId }: Props) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-1">
             {isResolved ? (
-              <Badge variant="outline" className="bg-green-500/20 text-green-700 dark:text-green-400 shrink-0">
+              <Badge
+                variant="outline"
+                className="bg-green-500/20 text-green-700 dark:text-green-400 shrink-0"
+              >
                 <Check className="h-3 w-3 mr-1" />
                 Resolved
               </Badge>
             ) : (
-              <Badge variant="outline" className="bg-red-500/20 text-red-700 dark:text-red-400 shrink-0">
+              <Badge
+                variant="outline"
+                className="bg-red-500/20 text-red-700 dark:text-red-400 shrink-0"
+              >
                 <AlertCircle className="h-3 w-3 mr-1" />
                 Open
               </Badge>
@@ -156,9 +165,7 @@ export function ErrorDetail({ errorId }: Props) {
               variant="outline"
               size="sm"
               disabled={unresolveMutation.isPending}
-              onClick={() =>
-                unresolveMutation.mutate({ projectId: currentProjectId!, errorId })
-              }
+              onClick={() => unresolveMutation.mutate({ projectId: currentProjectId!, errorId })}
             >
               <RotateCcw className="h-3 w-3 mr-1" />
               Reopen
@@ -239,7 +246,10 @@ export function ErrorDetail({ errorId }: Props) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => { setAiResult(null); setAiAction(null); }}
+                onClick={() => {
+                  setAiResult(null);
+                  setAiAction(null);
+                }}
               >
                 <RefreshCw className="h-3 w-3 mr-1" />
                 Clear
@@ -256,7 +266,7 @@ export function ErrorDetail({ errorId }: Props) {
 
           {aiResult && (
             <div className="rounded-md bg-muted/50 p-4 space-y-2">
-              <p className="text-sm whitespace-pre-wrap leading-relaxed">{aiResult.summary}</p>
+              <MarkdownRenderer content={aiResult.summary} />
               {aiResult.sessionId && (
                 <Link
                   href={`/dashboard/${workspaceSlug}/${projectSlug}/ai?session=${aiResult.sessionId}`}
@@ -270,12 +280,12 @@ export function ErrorDetail({ errorId }: Props) {
 
           {!aiResult && !explainMutation.isPending && (
             <p className="text-xs text-muted-foreground">
-              Requires an OpenAI or Anthropic key in{' '}
+              Requires local Ollama runtime configuration. Check{' '}
               <Link
                 href={`/dashboard/${workspaceSlug}/${projectSlug}/settings?tab=ai-keys`}
                 className="underline"
               >
-                Settings → AI Keys
+                Settings → AI Runtime
               </Link>
               .
             </p>
@@ -316,7 +326,9 @@ export function ErrorDetail({ errorId }: Props) {
             <p className="text-xs text-muted-foreground font-mono">
               {String(node.file_path ?? '')}
               {node.line_start ? `:${String(node.line_start)}` : ''}
-              {node.line_end && node.line_end !== node.line_start ? `–${String(node.line_end)}` : ''}
+              {node.line_end && node.line_end !== node.line_start
+                ? `–${String(node.line_end)}`
+                : ''}
             </p>
             {!!node.signature && (
               <pre className="text-xs font-mono bg-muted/40 rounded p-2 overflow-x-auto">

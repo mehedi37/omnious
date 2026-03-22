@@ -1,18 +1,14 @@
 'use client';
 
 import {
-  Activity,
-  AlertTriangle,
-  Bot,
   ChevronsUpDown,
   ChevronUp,
-  EllipsisVertical,
   FolderKanban,
   GitGraph,
   LogOut,
   Moon,
-  PanelLeftClose,
   PanelLeft,
+  PanelLeftClose,
   Plus,
   Settings,
   Sun,
@@ -49,15 +45,6 @@ import { CreateWorkspaceDialog } from '@/components/workspace/create-workspace-d
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { createClient } from '@/lib/supabase/client';
 import { trpc } from '@/trpc/client';
-
-/** In-project navigation items (used in 3-dot dropdown) */
-const projectNavItems = [
-  { title: 'Graph', icon: GitGraph, segment: 'graph' },
-  { title: 'Traces', icon: Activity, segment: 'traces' },
-  { title: 'Errors', icon: AlertTriangle, segment: 'errors' },
-  { title: 'AI Sessions', icon: Bot, segment: 'ai' },
-  { title: 'Settings', icon: Settings, segment: 'settings' },
-];
 
 export function AppSidebar() {
   const pathname = usePathname();
@@ -127,8 +114,8 @@ export function AppSidebar() {
       <SidebarHeader>
         <SidebarMenu>
           {/* Collapse/Expand toggle (icon-only) */}
-          <SidebarMenuItem>
-            <SidebarMenuButton onClick={toggleSidebar} tooltip="Toggle sidebar">
+          <SidebarMenuItem className="flex justify-end">
+            <SidebarMenuButton onClick={toggleSidebar} tooltip="Toggle sidebar" className="ml-auto">
               {sidebarState === 'collapsed' ? (
                 <PanelLeft className="size-5" />
               ) : (
@@ -194,6 +181,7 @@ export function AppSidebar() {
               {workspaceId && workspaceSlug && (
                 <CreateProjectDialog workspaceId={workspaceId} workspaceSlug={workspaceSlug}>
                   <button
+                    type="button"
                     className="inline-flex items-center justify-center rounded-md size-5 text-muted-foreground hover:text-foreground transition-colors"
                     title="New Project"
                   >
@@ -206,7 +194,6 @@ export function AppSidebar() {
               <SidebarMenu>
                 {projects?.map((project) => {
                   const isActiveProject = project.slug === projectSlug;
-                  const projectBasePath = `/dashboard/${workspaceSlug}/${project.slug}`;
 
                   return (
                     <SidebarMenuItem key={project.id}>
@@ -220,28 +207,6 @@ export function AppSidebar() {
                         </div>
                         <span className="truncate flex-1">{project.name}</span>
                       </SidebarMenuButton>
-
-                      {/* 3-dot menu for project actions */}
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <button
-                            className="absolute right-1 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded-md size-6 text-muted-foreground opacity-0 group-hover/menu-item:opacity-100 hover:text-foreground hover:bg-sidebar-accent transition-all group-data-[collapsible=icon]:hidden"
-                            title="Project options"
-                          >
-                            <EllipsisVertical className="size-3.5" />
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent side="right" align="start" className="min-w-44">
-                          {projectNavItems.map((item) => (
-                            <DropdownMenuItem key={item.segment} asChild>
-                              <Link href={`${projectBasePath}/${item.segment}`}>
-                                <item.icon className="mr-2 size-4" />
-                                {item.title}
-                              </Link>
-                            </DropdownMenuItem>
-                          ))}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
                     </SidebarMenuItem>
                   );
                 })}

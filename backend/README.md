@@ -95,7 +95,7 @@ src/
 │   ├── graph.router.ts     # Code graph (nodes, edges, search)
 │   ├── trace.router.ts     # Trace/span ingestion + queries
 │   ├── error.router.ts     # Error snapshots + heatmap
-│   └── ai.router.ts        # AI sessions + BYOK keys
+│   └── ai.router.ts        # AI sessions + provider key management (BYOK currently paused in UI)
 └── server.ts               # Fastify server entry point
 ```
 
@@ -167,7 +167,7 @@ Most procedures require a `Bearer <supabase-jwt>` in the `Authorization` header.
 | `graph.listEdges` | query | project | `projectId`, `sourceNodeId?`, `targetNodeId?`, pagination | List code edges |
 | `graph.upsertNodes` | mutation | project | `projectId`, `nodes[]` | Bulk upsert code nodes (parser) |
 | `graph.upsertEdges` | mutation | project | `projectId`, `edges[]` | Bulk upsert code edges |
-| `graph.semanticSearch` | query | project | `projectId`, `embedding[1536]`, `threshold?`, `limit?` | pgvector similarity search |
+| `graph.semanticSearch` | query | project | `projectId`, `embedding[]`, `threshold?`, `limit?` | pgvector similarity search |
 | `graph.traverse` | query | project | `projectId`, `nodeId`, `direction?`, `maxDepth?` | Recursive graph traversal |
 
 ### trace
@@ -195,8 +195,8 @@ Most procedures require a `Bearer <supabase-jwt>` in the `Authorization` header.
 | `ai.getSession` | query | protected | `sessionId` | Get session with messages |
 | `ai.appendMessage` | mutation | protected | `sessionId`, `messages[]`, `tokenUsage?` | Append messages + track tokens |
 | `ai.listSessions` | query | project | `projectId`, pagination | List AI sessions |
-| `ai.listApiKeys` | query | protected | — | List BYOK API keys |
-| `ai.addApiKey` | mutation | protected | `provider`, `label?`, `encryptedKey`, `keyPrefix?` | Add BYOK API key |
+| `ai.listApiKeys` | query | protected | — | List stored provider keys (BYOK currently paused in UI) |
+| `ai.addApiKey` | mutation | protected | `provider`, `label?`, `encryptedKey`, `keyPrefix?` | Add provider key (BYOK currently paused in UI) |
 | `ai.deleteApiKey` | mutation | protected | `keyId` | Delete API key |
 
 ---
@@ -289,7 +289,7 @@ All dependencies are permissively licensed and safe for commercial use:
 
 This backend does **not** send telemetry, analytics, or any project data to third parties. All data stays in your Supabase instance. The only external calls are:
 - Supabase Auth (your own instance)
-- Any AI provider calls you configure via BYOK API keys (OpenAI, etc.)
+- Local Ollama endpoint configured via environment variables (`OLLAMA_*`)
 
 ---
 

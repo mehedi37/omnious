@@ -4,7 +4,7 @@ interface UIState {
   sidebarCollapsed: boolean;
   commandPaletteOpen: boolean;
   detailPanelOpen: boolean;
-  activeDetailTab: 'properties' | 'code' | 'errors' | 'traces';
+  activeDetailTab: 'details' | 'ai';
   pendingReplayTraceId: string | null;
   filtersOpen: boolean;
   keyboardShortcutsOpen: boolean;
@@ -30,8 +30,8 @@ interface UIState {
 export const useUIStore = create<UIState>()((set) => ({
   sidebarCollapsed: false,
   commandPaletteOpen: false,
-  detailPanelOpen: false,
-  activeDetailTab: 'properties',
+  detailPanelOpen: true,
+  activeDetailTab: 'details',
   pendingReplayTraceId: null,
   filtersOpen: false,
   keyboardShortcutsOpen: false,
@@ -57,7 +57,8 @@ export const useUIStore = create<UIState>()((set) => ({
 
   setFiltersOpen: (open) => set({ filtersOpen: open }),
 
-  toggleKeyboardShortcuts: () => set((state) => ({ keyboardShortcutsOpen: !state.keyboardShortcutsOpen })),
+  toggleKeyboardShortcuts: () =>
+    set((state) => ({ keyboardShortcutsOpen: !state.keyboardShortcutsOpen })),
 
   setKeyboardShortcutsOpen: (open) => set({ keyboardShortcutsOpen: open }),
 

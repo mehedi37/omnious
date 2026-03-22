@@ -14,7 +14,7 @@ import type {
   OIRNode,
   OIREdge,
 } from '../../oir/types.js';
-import { generateOirId, hashNodeContent } from '../../oir/hasher.js';
+import { generateOirId, hashNodeContent, extractCodeBody } from '../../oir/hasher.js';
 
 export class GoExtractor implements Extractor {
   readonly language = 'go' as const;
@@ -41,6 +41,7 @@ export class GoExtractor implements Extractor {
       doc_comment: null,
       metadata: { extension: ext },
       content_hash: '',
+      code_body: null,
     });
 
     const root = tree.rootNode;
@@ -131,6 +132,7 @@ export class GoExtractor implements Extractor {
         doc_comment: null,
         metadata: { package: importPath },
         content_hash: '',
+        code_body: null,
       });
 
       edges.push({
@@ -181,6 +183,7 @@ export class GoExtractor implements Extractor {
       doc_comment: docComment,
       metadata: { is_exported: isExported, params },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isExported) {
@@ -244,6 +247,7 @@ export class GoExtractor implements Extractor {
       doc_comment: this.getDocComment(node),
       metadata: { is_exported: isExported, receiver_type: receiverType, is_method: true },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isExported) {
@@ -305,6 +309,7 @@ export class GoExtractor implements Extractor {
           doc_comment: this.getDocComment(spec.parent ?? spec),
           metadata: { kind: 'struct', is_exported: isExported, field_count: fieldCount },
           content_hash: hashNodeContent(source, startLine, endLine),
+          code_body: extractCodeBody(source, startLine, endLine),
         });
 
         if (isExported) {
@@ -349,6 +354,7 @@ export class GoExtractor implements Extractor {
           doc_comment: this.getDocComment(spec.parent ?? spec),
           metadata: { kind: 'interface', is_exported: isExported },
           content_hash: hashNodeContent(source, startLine, endLine),
+          code_body: extractCodeBody(source, startLine, endLine),
         });
 
         if (isExported) {
@@ -374,6 +380,7 @@ export class GoExtractor implements Extractor {
           doc_comment: this.getDocComment(spec.parent ?? spec),
           metadata: { kind: 'alias', is_exported: isExported },
           content_hash: hashNodeContent(source, startLine, endLine),
+          code_body: extractCodeBody(source, startLine, endLine),
         });
 
         if (isExported) {
@@ -427,6 +434,7 @@ export class GoExtractor implements Extractor {
         doc_comment: this.getDocComment(node),
         metadata: { kind, is_exported: isExported },
         content_hash: hashNodeContent(source, startLine, endLine),
+        code_body: extractCodeBody(source, startLine, endLine),
       });
 
       if (isExported) {

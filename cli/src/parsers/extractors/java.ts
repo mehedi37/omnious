@@ -14,7 +14,7 @@ import type {
   OIRNode,
   OIREdge,
 } from '../../oir/types.js';
-import { generateOirId, hashNodeContent } from '../../oir/hasher.js';
+import { generateOirId, hashNodeContent, extractCodeBody } from '../../oir/hasher.js';
 
 export class JavaExtractor implements Extractor {
   readonly language = 'java' as const;
@@ -41,6 +41,7 @@ export class JavaExtractor implements Extractor {
       doc_comment: null,
       metadata: { extension: ext },
       content_hash: '',
+      code_body: null,
     });
 
     const root = tree.rootNode;
@@ -121,6 +122,7 @@ export class JavaExtractor implements Extractor {
       doc_comment: null,
       metadata: { package: importPath },
       content_hash: '',
+      code_body: null,
     });
 
     edges.push({
@@ -163,6 +165,7 @@ export class JavaExtractor implements Extractor {
       doc_comment: this.getDocComment(node),
       metadata: { kind: isRecord ? 'record' : 'class', is_exported: isPublic },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isPublic) {
@@ -242,6 +245,7 @@ export class JavaExtractor implements Extractor {
       doc_comment: this.getDocComment(node),
       metadata: { kind: 'interface', is_exported: isPublic },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isPublic) {
@@ -298,6 +302,7 @@ export class JavaExtractor implements Extractor {
       doc_comment: this.getDocComment(node),
       metadata: { kind: 'enum', is_exported: isPublic },
       content_hash: hashNodeContent(source, startLine, endLine),
+      code_body: extractCodeBody(source, startLine, endLine),
     });
 
     if (isPublic) {
@@ -352,6 +357,7 @@ export class JavaExtractor implements Extractor {
             params,
           },
           content_hash: hashNodeContent(source, startLine, endLine),
+          code_body: extractCodeBody(source, startLine, endLine),
         });
 
         // Extract calls in method body

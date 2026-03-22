@@ -1,10 +1,10 @@
 'use client';
 
+import { Activity, AlertTriangle, Bot, GitGraph, Settings } from 'lucide-react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, usePathname } from 'next/navigation';
 import { useEffect } from 'react';
-import { useWorkspaceStore } from '@/lib/stores/workspace-store';
-import { SyncStatusBadge, deriveSyncState } from '@/components/project/sync-status-badge';
+import { deriveSyncState, SyncStatusBadge } from '@/components/project/sync-status-badge';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -13,7 +13,18 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
+import { useAIStore } from '@/lib/stores/ai-store';
+import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { cn } from '@/lib/utils';
 import { trpc } from '@/trpc/client';
+
+const PROJECT_TABS = [
+  { title: 'Graph', icon: GitGraph, segment: 'graph' },
+  { title: 'Traces', icon: Activity, segment: 'traces' },
+  { title: 'Errors', icon: AlertTriangle, segment: 'errors' },
+  { title: 'AI', icon: Bot, segment: 'ai' },
+  { title: 'Settings', icon: Settings, segment: 'settings' },
+] as const;
 
 function formatRelativeTime(date: string | null | undefined): string {
   if (!date) return 'Never';
@@ -26,6 +37,7 @@ function formatRelativeTime(date: string | null | undefined): string {
 
 export default function ProjectLayout({ children }: { children: React.ReactNode }) {
   const params = useParams<{ workspaceSlug: string; projectSlug: string }>();
+  const pathname = usePathname();
   const setCurrentProject = useWorkspaceStore((s) => s.setCurrentProject);
   const currentProjectSlug = useWorkspaceStore((s) => s.currentProjectSlug);
   const currentProjectId = useWorkspaceStore((s) => s.currentProjectId);
@@ -54,44 +66,77 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
     }
   }, [params.projectSlug, projects, currentProjectSlug, currentProjectId, setCurrentProject]);
 
+  // Clear AI session state when project changes
+  useEffect(() => {
+    useAIStore.getState().setProjectId(currentProjectId);
+  }, [currentProjectId]);
+
   const syncState = syncStatus
-    ? deriveSyncState(syncStatus.status ?? 'active', syncStatus.last_indexed_at, syncStatus.node_count)
+    ? deriveSyncState(
+        syncStatus.status ?? 'active',
+        syncStatus.last_indexed_at,
+        syncStatus.node_count,
+      )
     : 'unknown';
 
   // Find current workspace name
   const workspaceName = workspaceSlug ?? params.workspaceSlug;
+  const basePath = `/dashboard/${params.workspaceSlug}/${params.projectSlug}`;
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header: breadcrumb + sync status */}
+      {/* Header: breadcrumb + sync status + tab bar */}
       {currentProjectSlug && (
-        <div className="flex items-center gap-2 border-b bg-background/95 backdrop-blur-sm px-3 py-1.5">
-          <Breadcrumb>
-            <BreadcrumbList className="text-xs">
-              <BreadcrumbItem>
-                <BreadcrumbLink asChild>
-                  <Link href={`/dashboard/${params.workspaceSlug}`}>
-                    {workspaceName}
-                  </Link>
-                </BreadcrumbLink>
-              </BreadcrumbItem>
-              <BreadcrumbSeparator />
-              <BreadcrumbItem>
-                <BreadcrumbPage>{currentProjectSlug}</BreadcrumbPage>
-              </BreadcrumbItem>
-            </BreadcrumbList>
-          </Breadcrumb>
-          <div className="ml-auto flex items-center gap-2">
-            <SyncStatusBadge syncState={syncState} compact />
-            {syncStatus?.last_indexed_at && (
-              <span className="text-[10px] text-muted-foreground">
-                {formatRelativeTime(syncStatus.last_indexed_at)}
-              </span>
-            )}
+        <div className="border-b bg-background/95 backdrop-blur-sm">
+          <div className="flex items-center gap-2 px-3 py-1.5">
+            <Breadcrumb>
+              <BreadcrumbList className="text-xs">
+                <BreadcrumbItem>
+                  <BreadcrumbLink asChild>
+                    <Link href={`/dashboard/${params.workspaceSlug}`}>{workspaceName}</Link>
+                  </BreadcrumbLink>
+                </BreadcrumbItem>
+                <BreadcrumbSeparator />
+                <BreadcrumbItem>
+                  <BreadcrumbPage>{currentProjectSlug}</BreadcrumbPage>
+                </BreadcrumbItem>
+              </BreadcrumbList>
+            </Breadcrumb>
+            <div className="ml-auto flex items-center gap-2">
+              <SyncStatusBadge syncState={syncState} compact />
+              {syncStatus?.last_indexed_at && (
+                <span className="text-[10px] text-muted-foreground">
+                  {formatRelativeTime(syncStatus.last_indexed_at)}
+                </span>
+              )}
+            </div>
           </div>
+          {/* Project tab navigation */}
+          <nav className="flex items-center gap-0.5 px-3 pb-1">
+            {PROJECT_TABS.map((tab) => {
+              const href = `${basePath}/${tab.segment}`;
+              const isActive = pathname.startsWith(href);
+              const Icon = tab.icon;
+              return (
+                <Link
+                  key={tab.segment}
+                  href={href}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
+                    isActive
+                      ? 'bg-accent text-accent-foreground'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+                  )}
+                >
+                  <Icon className="h-3 w-3" />
+                  {tab.title}
+                </Link>
+              );
+            })}
+          </nav>
         </div>
       )}
-      <div className="flex-1 overflow-auto">{children}</div>
+      <div className="flex-1 overflow-hidden min-h-0">{children}</div>
     </div>
   );
 }

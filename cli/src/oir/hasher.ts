@@ -39,6 +39,21 @@ export function hashNodeContent(
 }
 
 /**
+ * Extract the code body for a node (first ~200 lines of the node's source).
+ * Used for LLM context in AI queries and graph-aware embeddings.
+ */
+export function extractCodeBody(
+  source: string,
+  lineStart: number,
+  lineEnd: number,
+  maxLines = 200,
+): string | null {
+  const lines = source.split('\n').slice(lineStart - 1, Math.min(lineEnd, lineStart - 1 + maxLines));
+  const body = lines.join('\n').trim();
+  return body.length > 0 ? body : null;
+}
+
+/**
  * SHA-256 of the entire project index — sorted file hashes concatenated.
  * Used for quick sync comparison.
  */

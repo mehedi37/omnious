@@ -1,24 +1,23 @@
 'use client';
 
-import { Suspense } from 'react';
-import { useEffect } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
-import { MessageSquare } from 'lucide-react';
+import { FolderTree, PanelRight } from 'lucide-react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { AstTreeSidebar } from '@/components/graph/ast-tree-sidebar';
+import { GraphFilterToolbar } from '@/components/graph/graph-filter-toolbar';
+import { InspectorPanel } from '@/components/graph/panels/inspector-panel';
+import { ReactFlowCanvas } from '@/components/graph/react-flow-canvas';
 import { EmptyProjectState } from '@/components/project/empty-project-state';
 import { Button } from '@/components/ui/button';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Sheet, SheetContent } from '@/components/ui/sheet';
-import { ReactFlowCanvas } from '@/components/graph/react-flow-canvas';
-import { GraphFilterToolbar } from '@/components/graph/graph-filter-toolbar';
-import { UnifiedAIPanel } from '@/components/ai/unified-ai-panel';
-import { NodeDetailPanel } from '@/components/graph/panels/node-detail-panel';
+import { useElkLayout } from '@/hooks/use-elk-layout';
+import { useErrorHeatmap } from '@/hooks/use-error-heatmap';
 import { useGraphQuery } from '@/hooks/use-graph-query';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
-import { useErrorHeatmap } from '@/hooks/use-error-heatmap';
-import { useElkLayout } from '@/hooks/use-elk-layout';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
-import { useAIStore } from '@/lib/stores/ai-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
 
@@ -38,10 +37,7 @@ function GraphPageContent() {
     { enabled: !!projectId, staleTime: 30_000 },
   );
 
-  const isLoading =
-    !projectId ||
-    nodeCountQuery.isLoading ||
-    projectQuery.isLoading;
+  const isLoading = !projectId || nodeCountQuery.isLoading || projectQuery.isLoading;
 
   const hasNodes = (nodeCountQuery.data?.total ?? 0) > 0;
 
@@ -78,7 +74,10 @@ function GraphPageContent() {
 
 function GraphPageInner() {
   const detailPanelOpen = useUIStore((s) => s.detailPanelOpen);
-  const panelOpen = useAIStore((s) => s.panelOpen);
+  const isMobile = useIsMobile();
+  const [mobileTreeOpen, setMobileTreeOpen] = useState(false);
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
 
   // Wire up all keyboard shortcuts
   useKeyboardShortcuts();
@@ -90,20 +89,28 @@ function GraphPageInner() {
   useElkLayout();
 
   // AI-driven data hook — loads overview on mount, supports AI queries
-  const { isLoading: isDataLoading, isQuerying, queryGraph, showErrors, loadOverview } =
-    useGraphQuery();
+  const {
+    isLoading: isDataLoading,
+    isQuerying,
+    streamQuery,
+    showErrors,
+    loadOverview,
+  } = useGraphQuery();
 
   // Handle expand-deps event from context menu
   useEffect(() => {
     function handleExpandDeps(e: Event) {
-      const { nodeId } = (e as CustomEvent<{ nodeId: string }>).detail;
+      const { nodeId, nodeName } = (e as CustomEvent<{ nodeId: string; nodeName?: string }>).detail;
       if (!nodeId) return;
-      queryGraph(`Show me the dependencies of node ${nodeId}`, [nodeId]);
-      useAIStore.getState().openPanel();
+      const label = nodeName?.trim() || 'selected node';
+      streamQuery(`Show me the dependencies of #${label}`, [nodeId], undefined, undefined, [
+        { kind: 'node', id: nodeId, label },
+      ]);
+      useUIStore.getState().setActiveDetailTab('ai');
     }
     window.addEventListener('omnious:expand-deps', handleExpandDeps);
     return () => window.removeEventListener('omnious:expand-deps', handleExpandDeps);
-  }, [queryGraph]);
+  }, [streamQuery]);
 
   // Pick up focus-node from sessionStorage (coming from error list "Focus on Graph")
   useEffect(() => {
@@ -114,87 +121,146 @@ function GraphPageInner() {
         useGraphStore.getState().selectNode(focusNodeId);
         useGraphStore.getState().setFocusMode(focusNodeId);
         useGraphStore.getState().highlightConnectedEdges(focusNodeId);
-        useUIStore.getState().setDetailPanelOpen(true);
+        useUIStore.getState().setActiveDetailTab('details');
+        // Zoom to the focused node after layout settles
+        window.dispatchEvent(
+          new CustomEvent('omnious:focus-node', { detail: { nodeId: focusNodeId } }),
+        );
       }, 500);
       return () => clearTimeout(timer);
     }
   }, []);
 
-  return (
-    <div className="flex h-full">
-      {/* Main canvas area */}
-      <div className="relative flex-1 min-w-0 flex flex-col">
-        <GraphFilterToolbar />
-        <div className="relative flex-1 min-w-0">
-          <ReactFlowCanvas />
+  const inspectorProps = {
+    onQuery: streamQuery,
+    onShowErrors: showErrors,
+    onLoadOverview: loadOverview,
+    isQuerying,
+  };
 
-          {/* AI panel open button — shown when panel is closed */}
-          {!panelOpen && (
-            <Button
-              variant="secondary"
-              size="sm"
-              className="absolute top-2 right-2 z-10 gap-1.5 shadow-md"
-              onClick={() => useAIStore.getState().openPanel()}
-              title="Open AI Explorer (Ctrl+Shift+A)"
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              <span className="text-xs">AI</span>
-            </Button>
-          )}
+  const handleDesktopInspectorClose = useCallback(() => {
+    useUIStore.getState().setDetailPanelOpen(false);
+  }, []);
+
+  const handleDesktopInspectorOpen = useCallback(() => {
+    useUIStore.getState().setDetailPanelOpen(true);
+  }, []);
+
+  const handleLeftToggle = useCallback(() => {
+    setLeftPanelOpen((prev) => !prev);
+  }, []);
+
+  const handleRightToggle = useCallback(() => {
+    if (detailPanelOpen) {
+      handleDesktopInspectorClose();
+    } else {
+      handleDesktopInspectorOpen();
+    }
+  }, [detailPanelOpen, handleDesktopInspectorClose, handleDesktopInspectorOpen]);
+
+  // ── Loading overlay shared between mobile & desktop ──
+  const loadingOverlay = isDataLoading ? (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/50 backdrop-blur-sm pointer-events-none">
+      <div className="space-y-4 text-center">
+        <Skeleton className="h-16 w-16 rounded-full mx-auto" />
+        <Skeleton className="h-4 w-48 mx-auto" />
+        <Skeleton className="h-3 w-32 mx-auto" />
+      </div>
+    </div>
+  ) : null;
+
+  // ── Mobile: full-width canvas + Sheet side panels ──
+  if (isMobile) {
+    return (
+      <div className="relative h-full flex flex-col">
+        <GraphFilterToolbar />
+        <div className="relative flex-1 min-h-0">
+          <ReactFlowCanvas />
+          {loadingOverlay}
+
+          {/* FAB: open file tree */}
+          <Button
+            size="icon"
+            variant="secondary"
+            className="absolute bottom-4 left-4 z-10 h-11 w-11 rounded-full shadow-md"
+            onClick={() => setMobileTreeOpen(true)}
+            aria-label="Open file tree"
+          >
+            <FolderTree className="h-5 w-5" />
+          </Button>
+
+          {/* FAB: open inspector */}
+          <Button
+            size="icon"
+            variant="secondary"
+            className="absolute bottom-4 right-4 z-10 h-11 w-11 rounded-full shadow-md"
+            onClick={() => setMobileInspectorOpen(true)}
+            aria-label="Open inspector"
+          >
+            <PanelRight className="h-5 w-5" />
+          </Button>
         </div>
 
-        {/* Loading overlay */}
-        {isDataLoading && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/50 backdrop-blur-sm">
-            <div className="space-y-4 text-center">
-              <Skeleton className="h-16 w-16 rounded-full mx-auto" />
-              <Skeleton className="h-4 w-48 mx-auto" />
-              <Skeleton className="h-3 w-32 mx-auto" />
+        {/* File tree sheet (slides from left) */}
+        <Sheet open={mobileTreeOpen} onOpenChange={setMobileTreeOpen}>
+          <SheetContent side="left" className="w-[85vw] sm:max-w-sm p-0 flex flex-col gap-0">
+            <SheetHeader className="border-b px-3 py-2 shrink-0">
+              <SheetTitle className="text-sm font-medium">File Tree</SheetTitle>
+            </SheetHeader>
+            <div className="flex-1 overflow-hidden min-h-0">
+              <AstTreeSidebar />
             </div>
-          </div>
-        )}
+          </SheetContent>
+        </Sheet>
+
+        {/* Inspector sheet (slides from right, InspectorPanel has its own header) */}
+        <Sheet open={mobileInspectorOpen} onOpenChange={setMobileInspectorOpen}>
+          <SheetContent
+            side="right"
+            showCloseButton={false}
+            className="w-[90vw] sm:max-w-md p-0 flex flex-col gap-0"
+          >
+            <InspectorPanel {...inspectorProps} onClose={() => setMobileInspectorOpen(false)} />
+          </SheetContent>
+        </Sheet>
+      </div>
+    );
+  }
+
+  // ── Desktop: 3-panel CSS grid layout ──
+  return (
+    <div
+      className="h-full grid overflow-hidden"
+      style={{
+        gridTemplateColumns: `${leftPanelOpen ? '280px' : '0px'} 1fr ${
+          detailPanelOpen ? '360px' : '0px'
+        }`,
+        transition: 'grid-template-columns 200ms ease',
+      }}
+    >
+      {/* Left: AST File Tree Sidebar */}
+      <div className="overflow-hidden min-w-0">
+        <AstTreeSidebar />
       </div>
 
-      {/* AI Panel — Sheet from right */}
-      <Sheet
-        open={panelOpen}
-        onOpenChange={(open) => {
-          if (!open) useAIStore.getState().closePanel();
-        }}
-        modal={false}
-      >
-        <SheetContent
-          side="right"
-          className="w-full sm:w-95 md:w-105 p-0 border-l"
-          showCloseButton={false}
-        >
-          <UnifiedAIPanel
-            mode="graph"
-            onQuery={queryGraph}
-            onShowErrors={showErrors}
-            onLoadOverview={loadOverview}
-            isQuerying={isQuerying}
-            onClose={() => useAIStore.getState().closePanel()}
-          />
-        </SheetContent>
-      </Sheet>
+      {/* Center: Graph Canvas */}
+      <div className="relative flex flex-col overflow-hidden min-w-0">
+        <GraphFilterToolbar
+          leftPanelOpen={leftPanelOpen}
+          rightPanelOpen={detailPanelOpen}
+          onToggleLeft={handleLeftToggle}
+          onToggleRight={handleRightToggle}
+        />
+        <div className="relative flex-1 min-h-0 min-w-0">
+          <ReactFlowCanvas />
+        </div>
+        {loadingOverlay}
+      </div>
 
-      {/* Node detail sheet (slides from right) */}
-      <Sheet
-        open={detailPanelOpen}
-        onOpenChange={(open) => {
-          if (!open) useUIStore.getState().setDetailPanelOpen(false);
-        }}
-        modal={false}
-      >
-        <SheetContent
-          side="right"
-          className="w-full sm:w-95 md:w-105 p-0 border-l"
-          showCloseButton={false}
-        >
-          <NodeDetailPanel />
-        </SheetContent>
-      </Sheet>
+      {/* Right: Inspector Panel (Details + AI tabs) */}
+      <div className="overflow-hidden min-w-0">
+        <InspectorPanel {...inspectorProps} onClose={handleDesktopInspectorClose} />
+      </div>
     </div>
   );
 }

@@ -320,6 +320,7 @@ export type Database = {
       }
       code_nodes: {
         Row: {
+          code_body: string | null
           content_hash: string
           created_at: string
           doc_comment: string | null
@@ -339,6 +340,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          code_body?: string | null
           content_hash: string
           created_at?: string
           doc_comment?: string | null
@@ -358,6 +360,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          code_body?: string | null
           content_hash?: string
           created_at?: string
           doc_comment?: string | null
@@ -379,6 +382,50 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "code_nodes_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      code_summaries: {
+        Row: {
+          content_hash: string
+          created_at: string
+          id: string
+          node_count: number
+          path: string
+          project_id: string
+          scope: string
+          summary: string
+          updated_at: string
+        }
+        Insert: {
+          content_hash: string
+          created_at?: string
+          id?: string
+          node_count?: number
+          path: string
+          project_id: string
+          scope: string
+          summary: string
+          updated_at?: string
+        }
+        Update: {
+          content_hash?: string
+          created_at?: string
+          id?: string
+          node_count?: number
+          path?: string
+          project_id?: string
+          scope?: string
+          summary?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "code_summaries_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
@@ -1114,6 +1161,16 @@ export type Database = {
     }
     Functions: {
       check_trace_quota: { Args: { p_project_id: string }; Returns: boolean }
+      detect_communities: {
+        Args: { p_max_iterations?: number; p_project_id: string }
+        Returns: {
+          community: string
+          file_path: string
+          node_id: string
+          node_name: string
+          node_type: Database["public"]["Enums"]["oir_node_type"]
+        }[]
+      }
       get_error_heatmap: {
         Args: {
           p_project_id: string
@@ -1157,6 +1214,61 @@ export type Database = {
           oir_id: string
           signature: string
           similarity: number
+          type: Database["public"]["Enums"]["oir_node_type"]
+        }[]
+      }
+      match_code_nodes_hybrid: {
+        Args: {
+          match_count?: number
+          match_threshold?: number
+          p_project_id: string
+          query_embedding: string
+          query_text?: string
+        }
+        Returns: {
+          combined_score: number
+          doc_comment: string
+          file_path: string
+          id: string
+          metadata: Json
+          name: string
+          oir_id: string
+          signature: string
+          similarity: number
+          trigram_score: number
+          type: Database["public"]["Enums"]["oir_node_type"]
+        }[]
+      }
+      match_code_nodes_ranked: {
+        Args: {
+          match_count?: number
+          match_threshold?: number
+          p_project_id: string
+          query_embedding: string
+          query_text?: string
+          w_centrality?: number
+          w_error?: number
+          w_recency?: number
+          w_semantic?: number
+          w_trigram?: number
+        }
+        Returns: {
+          centrality: number
+          code_body: string
+          doc_comment: string
+          error_signal: number
+          file_path: string
+          id: string
+          line_end: number
+          line_start: number
+          metadata: Json
+          name: string
+          oir_id: string
+          ranked_score: number
+          recency_score: number
+          signature: string
+          similarity: number
+          trigram_score: number
           type: Database["public"]["Enums"]["oir_node_type"]
         }[]
       }
@@ -1217,6 +1329,7 @@ export type Database = {
         | "general"
         | "security_scan"
         | "translate"
+        | "graph_query"
       git_provider: "github" | "gitlab" | "bitbucket" | "local"
       oir_edge_type:
         | "calls"
@@ -1389,6 +1502,7 @@ export const Constants = {
         "general",
         "security_scan",
         "translate",
+        "graph_query",
       ],
       git_provider: ["github", "gitlab", "bitbucket", "local"],
       oir_edge_type: [

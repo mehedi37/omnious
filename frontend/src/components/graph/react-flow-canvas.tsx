@@ -1,30 +1,30 @@
 'use client';
 
-import { useCallback, useEffect, useRef } from 'react';
 import {
-  ReactFlow,
   Background,
-  Controls,
-  ControlButton,
-  MiniMap,
-  useReactFlow,
-  useNodesState,
-  useEdgesState,
-  type OnConnect,
-  type NodeMouseHandler,
   BackgroundVariant,
+  ControlButton,
+  Controls,
+  MiniMap,
+  type NodeMouseHandler,
+  type OnConnect,
+  ReactFlow,
+  useEdgesState,
+  useNodesState,
+  useReactFlow,
 } from '@xyflow/react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 
 import { Loader2, Lock, Unlock } from 'lucide-react';
 import { toast } from 'sonner';
+import type { OmniousEdge, OmniousNode as OmniousNodeType } from '@/lib/stores/graph-store';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
-import { OmniousNode } from './nodes/omnious-node';
-import { ModuleGroupNode } from './nodes/module-group-node';
 import { AnimatedFlowEdge } from './edges/animated-flow-edge';
 import { useGraphContextMenu } from './graph-context-menu';
-import type { OmniousNode as OmniousNodeType, OmniousEdge } from '@/lib/stores/graph-store';
+import { ModuleGroupNode } from './nodes/module-group-node';
+import { OmniousNode } from './nodes/omnious-node';
 
 // Register custom node/edge types
 const nodeTypes = {
@@ -36,6 +36,13 @@ const edgeTypes = {
   'animated-flow': AnimatedFlowEdge,
 };
 
+/** Shallow compare two Sets by size + membership */
+function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
 /**
  * React Flow canvas for AI-driven subgraph visualization.
  * Replaces sigma-canvas.tsx — renders focused subgraphs (<100 nodes)
@@ -45,19 +52,13 @@ export function ReactFlowCanvas() {
   const storeNodes = useGraphStore((s) => s.nodes);
   const storeEdges = useGraphStore((s) => s.edges);
   const isLayouting = useGraphStore((s) => s.isLayouting);
-  const selectedNodeIds = useGraphStore((s) => s.selectedNodeIds);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
-  const connectedNodeIds = useGraphStore((s) => s.connectedNodeIds);
-  const nodeTypeFilters = useGraphStore((s) => s.nodeTypeFilters);
-  const severityFilters = useGraphStore((s) => s.severityFilters);
-  const pinnedNodeIds = useGraphStore((s) => s.pinnedNodeIds);
   const minimapVisible = useUIStore((s) => s.minimapVisible);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<OmniousNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<OmniousEdge>([]);
 
-  const { fitView } = useReactFlow();
-  const hasFittedRef = useRef(false);
+  const { fitView, getNodes } = useReactFlow();
 
   // Context menu hook
   const { onNodeContextMenu, onPaneContextMenu, setContainerRef, menuElement } =
@@ -66,85 +67,141 @@ export function ReactFlowCanvas() {
   // Track the graph's identity (sorted node IDs) so we only auto-pin when a new graph loads
   const graphSignatureRef = useRef<string>('');
 
+  // Refs to track Set state without re-renders
+  const selectedRef = useRef<Set<string>>(new Set());
+  const pinnedRef = useRef<Set<string>>(new Set());
+  const connectedRef = useRef<Set<string>>(new Set());
+  const nodeTypeFiltersRef = useRef(new Set());
+  const severityFiltersRef = useRef(new Set());
+
   // Pin all nodes on initial graph load only (lock-by-default).
-  // We compare node-ID signatures so user pin toggles don't re-trigger this.
   useEffect(() => {
     if (storeNodes.length === 0) return;
-    const signature = storeNodes.map((n) => n.id).sort().join(',');
-    if (signature === graphSignatureRef.current) return; // same graph — respect user's pin state
+    const signature = storeNodes
+      .map((n) => n.id)
+      .sort()
+      .join(',');
+    if (signature === graphSignatureRef.current) return;
     graphSignatureRef.current = signature;
     useGraphStore.getState().pinAll();
   }, [storeNodes]);
 
-  // Sync store → React Flow state (with filtering + pinning)
+  // ── Effect 1: Sync store nodes/edges → React Flow (filtering only) ───────
+  // Runs when the graph data, filters, or focus changes — NOT on selection/pin toggles.
+  const nodeTypeFilters = useGraphStore((s) => s.nodeTypeFilters);
+  const severityFilters = useGraphStore((s) => s.severityFilters);
+  const connectedNodeIds = useGraphStore((s) => s.connectedNodeIds);
+
   useEffect(() => {
     let filteredNodes = storeNodes;
 
-    // Apply node type filters
     if (nodeTypeFilters.size > 0) {
       filteredNodes = storeNodes.filter((n) => !nodeTypeFilters.has(n.data.oirType));
     }
 
-    // Apply severity filters — hide error-annotated nodes whose severity isn't in the active set
     if (severityFilters.size > 0) {
       filteredNodes = filteredNodes.filter((n) => {
         const sev = n.data.errorSeverity as string | undefined;
-        if (!sev) return true; // always show nodes with no errors
+        if (!sev) return true;
         return severityFilters.has(sev as 'error' | 'warning' | 'info');
       });
     }
 
-    // Apply focus mode — hide non-connected nodes
     if (focusedNodeId && connectedNodeIds.size > 0) {
       filteredNodes = filteredNodes.filter((n) => connectedNodeIds.has(n.id));
     }
 
-    // Mark selected nodes + apply pin state
-    const withSelection = filteredNodes.map((n) => ({
+    // Apply current selection + pin state without subscribing to them
+    const selected = useGraphStore.getState().selectedNodeIds;
+    const pinned = useGraphStore.getState().pinnedNodeIds;
+    selectedRef.current = selected;
+    pinnedRef.current = pinned;
+    connectedRef.current = connectedNodeIds;
+    nodeTypeFiltersRef.current = nodeTypeFilters;
+    severityFiltersRef.current = severityFilters;
+
+    const withState = filteredNodes.map((n) => ({
       ...n,
-      selected: selectedNodeIds.has(n.id),
-      draggable: !pinnedNodeIds.has(n.id),
+      selected: selected.has(n.id),
+      draggable: !pinned.has(n.id),
     }));
 
-    setNodes(withSelection);
+    setNodes(withState);
 
-    // Filter edges to only include those between visible nodes
-    const visibleIds = new Set(withSelection.map((n) => n.id));
+    const visibleIds = new Set(withState.map((n) => n.id));
     const filteredEdges = storeEdges.filter(
       (e) => visibleIds.has(e.source) && visibleIds.has(e.target),
     );
     setEdges(filteredEdges);
-  }, [storeNodes, storeEdges, nodeTypeFilters, severityFilters, focusedNodeId, connectedNodeIds, selectedNodeIds, pinnedNodeIds, setNodes, setEdges]);
+  }, [
+    storeNodes,
+    storeEdges,
+    nodeTypeFilters,
+    severityFilters,
+    focusedNodeId,
+    connectedNodeIds,
+    setNodes,
+    setEdges,
+  ]);
 
-  // Fit view when new data arrives
+  // ── Effect 2: Selection changes — patch in-place via callback ─────────
+  const selectedNodeIds = useGraphStore((s) => s.selectedNodeIds);
+
   useEffect(() => {
-    if (nodes.length > 0 && !hasFittedRef.current) {
-      hasFittedRef.current = true;
-      // Small delay to let React Flow render nodes first
-      requestAnimationFrame(() => {
-        fitView({ padding: 0.15, duration: 400 });
-      });
-    }
-  }, [nodes, fitView]);
+    if (setsEqual(selectedRef.current, selectedNodeIds)) return;
+    selectedRef.current = selectedNodeIds;
+    setNodes((prev) =>
+      prev.map((n) => {
+        const shouldBeSelected = selectedNodeIds.has(n.id);
+        if (n.selected === shouldBeSelected) return n; // preserve identity
+        return { ...n, selected: shouldBeSelected };
+      }),
+    );
+  }, [selectedNodeIds, setNodes]);
 
-  // Reset fit flag when graph is cleared or new graph data is set
+  // ── Effect 3: Pin changes — patch draggable in-place ──────────────────
+  const pinnedNodeIds = useGraphStore((s) => s.pinnedNodeIds);
+
   useEffect(() => {
-    hasFittedRef.current = false;
-  }, [storeNodes]);
+    if (setsEqual(pinnedRef.current, pinnedNodeIds)) return;
+    pinnedRef.current = pinnedNodeIds;
+    setNodes((prev) =>
+      prev.map((n) => {
+        const shouldBeDraggable = !pinnedNodeIds.has(n.id);
+        if (n.draggable === shouldBeDraggable) return n;
+        return { ...n, draggable: shouldBeDraggable };
+      }),
+    );
+  }, [pinnedNodeIds, setNodes]);
 
-  // Listen for omnious:focus-fit event (layout complete, focus mode, etc.)
+  // ── fitView: triggered after layout completes ────────────────────────
   useEffect(() => {
     function handleFit() {
-      fitView({ padding: 0.15, duration: 400 });
+      fitView({ padding: 0.15, duration: 0 });
     }
     window.addEventListener('omnious:focus-fit', handleFit);
     return () => window.removeEventListener('omnious:focus-fit', handleFit);
   }, [fitView]);
 
-  // Node click → select + open detail panel
+  // ── focus-node: zoom to a specific node ───────────────────────────────
+  useEffect(() => {
+    function handleFocusNode(e: Event) {
+      const { nodeId } = (e as CustomEvent<{ nodeId: string }>).detail;
+      if (!nodeId) return;
+      const target = getNodes().find((n) => n.id === nodeId);
+      if (target) {
+        fitView({ nodes: [target], padding: 0.5, duration: 300, maxZoom: 1.5 });
+      }
+    }
+    window.addEventListener('omnious:focus-node', handleFocusNode);
+    return () => window.removeEventListener('omnious:focus-node', handleFocusNode);
+  }, [fitView, getNodes]);
+
+  // Node click → select + open detail panel + zoom to node
   const onNodeClick: NodeMouseHandler<OmniousNodeType> = useCallback((_event, node) => {
     useGraphStore.getState().selectNode(node.id);
     useUIStore.getState().setDetailPanelOpen(true);
+    window.dispatchEvent(new CustomEvent('omnious:focus-node', { detail: { nodeId: node.id } }));
   }, []);
 
   // Double-click → focus mode (2-hop subgraph)
@@ -167,10 +224,9 @@ export function ReactFlowCanvas() {
     }
   }, []);
 
-  // Canvas click → deselect
+  // Canvas click → deselect only (do NOT close inspector — use toolbar button)
   const onPaneClick = useCallback(() => {
     useGraphStore.getState().deselectAll();
-    useUIStore.getState().setDetailPanelOpen(false);
   }, []);
 
   // Prevent adding edges by dragging
@@ -202,6 +258,9 @@ export function ReactFlowCanvas() {
     return colorMap[type ?? ''] ?? '#64748b';
   }, []);
 
+  // Disable edge animation for large graphs (> 300 nodes) to improve render perf
+  const edgeAnimated = storeNodes.length <= 300;
+
   return (
     <div className="h-full w-full relative" ref={setContainerRef}>
       <ReactFlow
@@ -218,27 +277,18 @@ export function ReactFlowCanvas() {
         onPaneClick={onPaneClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        fitView
-        fitViewOptions={{ padding: 0.15 }}
         minZoom={0.1}
         maxZoom={3}
+        elevateNodesOnSelect={false}
         proOptions={{ hideAttribution: true }}
         className="bg-background"
         defaultEdgeOptions={{
           type: 'animated-flow',
-          animated: true,
+          animated: edgeAnimated,
         }}
       >
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={20}
-          size={1}
-          className="bg-background!"
-        />
-        <Controls
-          showInteractive={false}
-          className="bg-background! border-border! shadow-md!"
-        >
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1} className="bg-background!" />
+        <Controls showInteractive={false} className="bg-background! border-border! shadow-md!">
           <ControlButton
             onClick={handleToggleLock}
             title={allPinned ? 'Unlock all nodes' : 'Lock all nodes'}
@@ -262,14 +312,33 @@ export function ReactFlowCanvas() {
       {menuElement}
 
       {/* Layout processing overlay */}
-      {isLayouting && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/50 backdrop-blur-sm pointer-events-none">
-          <div className="flex items-center gap-2 rounded-lg border bg-background/90 px-4 py-3 shadow-lg">
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">Processing layout…</span>
-          </div>
+      {isLayouting && <LayoutOverlay nodeCount={storeNodes.length} />}
+    </div>
+  );
+}
+
+/** Shows layout progress with node count and a delayed hint for large graphs */
+function LayoutOverlay({ nodeCount }: { nodeCount: number }) {
+  const [showHint, setShowHint] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setShowHint(true), 3000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/50 backdrop-blur-sm pointer-events-none">
+      <div className="flex flex-col items-center gap-1 rounded-lg border bg-background/90 px-4 py-3 shadow-lg">
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          <span className="text-sm text-muted-foreground">
+            Laying out {nodeCount} node{nodeCount !== 1 ? 's' : ''}…
+          </span>
         </div>
-      )}
+        {showHint && (
+          <span className="text-xs text-muted-foreground/70">Large graphs may take longer</span>
+        )}
+      </div>
     </div>
   );
 }

@@ -49,6 +49,7 @@ omnious/                    # Turborepo monorepo root
 - **Node.js** ≥ 20
 - **npm** ≥ 10
 - **Supabase** project (cloud or self-hosted via `supabase start`)
+- **Ollama** running locally with `llama3:latest` and `nomic-embed-text`
 
 ### Setup
 
@@ -59,7 +60,11 @@ npm install
 
 # 2. Configure environment
 cp .env.example .env
-# Fill in your Supabase credentials (see .env.example)
+# Fill in your Supabase credentials and confirm OLLAMA_* values (see .env.example)
+
+# 2.1 Ensure local models are available
+ollama pull llama3:latest
+ollama pull nomic-embed-text
 
 # 3. Start development (all services via Turborepo)
 npm run dev
@@ -113,6 +118,8 @@ npm run docker:down
 ```
 
 The Docker setup expects Supabase hosted externally. Use a reverse proxy (Caddy, Traefik, nginx) for HTTPS termination in production.
+
+If backend runs in Docker and Ollama runs on the host, ensure Ollama listens on a non-loopback interface. On Linux, run Ollama with `OLLAMA_HOST=0.0.0.0:11434` and keep `OLLAMA_BASE_URL_DOCKER=http://host.docker.internal:11434/v1`.
 
 | Service | Image Base | Port | Notes |
 |---------|-----------|------|-------|

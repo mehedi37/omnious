@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, projectProcedure, apiKeyProcedure } from '../trpc/index.js';
 import { oirNodeTypeSchema, oirNodeSchema, oirEdgeSchema, oirEdgeByOirIdSchema } from '@omnious/shared/oir-schemas';
-import { resolveApiKey, generateModuleGroups } from '../services/ai.service.js';
+import { resolveApiKey, generateModuleGroups, backfillNodeEmbeddings, selectModel } from '../services/ai.service.js';
+import { generateCodeSummaries, getCodeSummaries } from '../services/summary.service.js';
 import { logger } from '../lib/logger.js';
 
 const listNodesSchema = z.object({
@@ -346,6 +347,7 @@ export const graphRouter = router({
           doc_comment: n.doc_comment ?? null,
           metadata: (n.metadata ?? {}) as import('../lib/supabase/database.types.js').Json,
           content_hash: n.content_hash,
+          code_body: n.code_body ?? null,
         }));
 
         const { data: upsertedNodes, error: nodeError } = await ctx.adminDb
@@ -449,6 +451,28 @@ export const graphRouter = router({
         .from('projects')
         .update(projectUpdate)
         .eq('id', project.id);
+
+      // Backfill embeddings for new/changed nodes (non-blocking — fire and forget)
+      // Collect OIR IDs of pushed nodes so we regenerate their embeddings with graph context
+      const pushedOirIds = input.nodes.map((n) => n.oir_id);
+      backfillNodeEmbeddings(project.id, ctx.adminDb, {
+        changedOirIds: pushedOirIds.length > 0 ? pushedOirIds : undefined,
+      }).catch((err) => {
+        logger.warn(
+          { projectId: project.id, error: err instanceof Error ? err.message : String(err) },
+          'Embedding backfill failed (non-fatal)',
+        );
+      });
+
+      // Generate hierarchical code summaries (non-blocking — fire and forget)
+      const summaryKey = { apiKey: 'ollama', provider: 'ollama' as const, source: 'platform' as const };
+      const summaryModel = selectModel('overview', '', 'ollama', 'fast');
+      generateCodeSummaries(project.id, summaryKey, ctx.adminDb, summaryModel).catch((err) => {
+        logger.warn(
+          { projectId: project.id, error: err instanceof Error ? err.message : String(err) },
+          'Summary generation failed (non-fatal)',
+        );
+      });
 
       return {
         project_id: project.id,
@@ -650,5 +674,97 @@ export const graphRouter = router({
 
       const groups = await generateModuleGroups(nodes, resolvedKey);
       return { groups };
+    }),
+
+  /** Fetch hierarchical code summaries for the tree sidebar */
+  getSummaries: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const summaries = await getCodeSummaries(input.projectId, ctx.db);
+      return { summaries };
+    }),
+
+  /** Lightweight full-project tree — all code nodes (id, name, type, file_path, line_start only).
+   *  Used by the AST sidebar to show the complete project structure, not just the active subgraph. */
+  getProjectTree: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const { data, error } = await ctx.db
+        .from('code_nodes')
+        .select('id, oir_id, type, name, file_path, line_start')
+        .eq('project_id', input.projectId)
+        .order('file_path')
+        .order('line_start')
+        .limit(5000);
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      return { nodes: data ?? [] };
+    }),
+
+  /** Detect communities using algorithmic label propagation (LLM-free) */
+  detectCommunities: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const { data, error } = await ctx.adminDb.rpc('detect_communities', {
+        p_project_id: input.projectId,
+        p_max_iterations: 10,
+      });
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Community detection failed: ${error.message}`,
+        });
+      }
+
+      // Group by community label and assign colors
+      const COMMUNITY_COLORS = [
+        '#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6',
+        '#ec4899', '#06b6d4', '#f97316', '#14b8a6', '#6366f1',
+        '#84cc16', '#e11d48',
+      ];
+
+      const communityMap = new Map<string, Array<{ id: string; name: string; type: string; file_path: string }>>();
+      for (const row of data ?? []) {
+        const communityId = row.community;
+        const arr = communityMap.get(communityId) ?? [];
+        arr.push({
+          id: row.node_id,
+          name: row.node_name,
+          type: row.node_type,
+          file_path: row.file_path,
+        });
+        communityMap.set(communityId, arr);
+      }
+
+      // Convert to labeled groups, sorted by size descending
+      const communities = [...communityMap.entries()]
+        .sort((a, b) => b[1].length - a[1].length)
+        .slice(0, 20) // Cap at 20 communities
+        .map(([_id, members], idx) => {
+          // Derive community name from most common directory prefix
+          const dirs = members.map((m) => {
+            const parts = m.file_path.split('/');
+            return parts.length > 1 ? parts.slice(0, -1).join('/') : '/';
+          });
+          const dirCounts = new Map<string, number>();
+          for (const d of dirs) dirCounts.set(d, (dirCounts.get(d) ?? 0) + 1);
+          const topDir = [...dirCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'misc';
+
+          return {
+            label: topDir,
+            color: COMMUNITY_COLORS[idx % COMMUNITY_COLORS.length],
+            nodeIds: members.map((m) => m.id),
+            nodeCount: members.length,
+          };
+        });
+
+      return { communities };
     }),
 });

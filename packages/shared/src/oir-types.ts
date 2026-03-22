@@ -73,6 +73,8 @@ export interface OIRNode {
   metadata: Record<string, unknown>;
   /** SHA-256 of the source code for this node */
   content_hash: string;
+  /** First ~200 lines of source code for this node (optional, sent during push) */
+  code_body?: string | null;
 }
 
 /** An edge between two OIR nodes */
@@ -156,7 +158,8 @@ export type AISessionType =
   | 'fix_it'
   | 'general'
   | 'security_scan'
-  | 'translate';
+  | 'translate'
+  | 'graph_query';
 
 /** Backend code_nodes row */
 export interface CodeNode {

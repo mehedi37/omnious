@@ -25,7 +25,7 @@ export default function ProfilePage() {
       <div>
         <h2 className="text-lg font-semibold">Profile Settings</h2>
         <p className="text-sm text-muted-foreground">
-          Manage your account and API keys
+          Manage your account and AI runtime settings
         </p>
       </div>
 
@@ -52,11 +52,11 @@ export default function ProfilePage() {
 
       <Separator />
 
-      {/* API Keys */}
+      {/* AI Runtime */}
       <div>
-        <h3 className="text-sm font-semibold mb-3">API Keys (BYOK)</h3>
+        <h3 className="text-sm font-semibold mb-3">AI Runtime</h3>
         <p className="text-sm text-muted-foreground mb-4">
-          Add your own API keys for AI-powered features. Keys are stored securely and available across all your projects.
+          Omnious is currently configured for local Ollama usage. BYOK provider key management is paused for this testing phase.
         </p>
       </div>
       <ApiKeyManager />
