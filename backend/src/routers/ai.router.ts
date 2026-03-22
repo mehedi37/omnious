@@ -9,6 +9,7 @@ import {
   getErrorSubgraph,
   getTraceSubgraph,
   getDependencySubgraph,
+  buildGraphSlice,
 } from '../services/graph-query.service.js';
 
 const aiMessageAttachmentSchema = z.object({
@@ -859,5 +860,175 @@ export const aiRouter = router({
         }));
 
       return { slices };
+    }),
+
+  // ─── OIR-Based Graph Slices (portable across re-indexes) ───
+
+  /**
+   * Save a graph slice using oir_id references (not UUIDs).
+   * These slices survive re-indexes since oir_ids are deterministic.
+   */
+  saveAiSlice: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        title: z.string().min(1).max(200),
+        explanationMd: z.string().max(20000),
+        nodeOirIds: z.array(z.string()).min(1).max(300),
+        edgePairs: z.array(z.object({
+          source: z.string(),
+          target: z.string(),
+          type: z.string(),
+        })).max(1000).default([]),
+        entryPointOirId: z.string().nullish(),
+        queryText: z.string().max(2000).nullish(),
+        sessionId: z.string().uuid().nullish(),
+        sliceType: z.enum(['ai_generated', 'user_saved', 'auto_explain']).default('ai_generated'),
+        tags: z.array(z.string()).max(20).default([]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { data, error } = await ctx.db
+        .from('ai_graph_slices')
+        .insert({
+          project_id: input.projectId,
+          user_id: ctx.user.id,
+          session_id: input.sessionId ?? null,
+          title: input.title,
+          explanation_md: input.explanationMd,
+          node_oir_ids: input.nodeOirIds,
+          edge_pairs: input.edgePairs,
+          entry_point_oir_id: input.entryPointOirId ?? null,
+          query_text: input.queryText ?? null,
+          slice_type: input.sliceType,
+          tags: input.tags,
+        })
+        .select('id, created_at')
+        .single();
+
+      if (error || !data) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error?.message ?? 'Failed to save AI graph slice',
+        });
+      }
+
+      return { sliceId: data.id, createdAt: data.created_at };
+    }),
+
+  /**
+   * Load an AI graph slice and resolve oir_ids back to current node data.
+   */
+  getAiSlice: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        sliceId: z.string().uuid(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { data: slice, error: sliceError } = await ctx.db
+        .from('ai_graph_slices')
+        .select('*')
+        .eq('id', input.sliceId)
+        .eq('project_id', input.projectId)
+        .single();
+
+      if (sliceError || !slice) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'AI graph slice not found' });
+      }
+
+      // Resolve oir_ids to current node data
+      const { data: nodes, error: nodesError } = await ctx.adminDb
+        .from('code_nodes')
+        .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+        .eq('project_id', input.projectId)
+        .in('oir_id', slice.node_oir_ids ?? []);
+
+      if (nodesError) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Failed to resolve slice nodes' });
+      }
+
+      // Resolve edges by matching source/target oir_ids in the project
+      const resolvedNodes = nodes ?? [];
+      const nodeIdSet = new Set(resolvedNodes.map((n: Record<string, unknown>) => String(n.id)));
+      const nodeIds = [...nodeIdSet];
+
+      const { data: edges } = nodeIds.length > 0
+        ? await ctx.adminDb
+          .from('code_edges')
+          .select('id, source_node_id, target_node_id, type, metadata')
+          .eq('project_id', input.projectId)
+          .in('source_node_id', nodeIds)
+          .in('target_node_id', nodeIds)
+        : { data: [] };
+
+      return {
+        sliceId: slice.id,
+        title: slice.title,
+        explanationMd: slice.explanation_md,
+        queryText: slice.query_text,
+        entryPointOirId: slice.entry_point_oir_id,
+        sliceType: slice.slice_type,
+        tags: slice.tags ?? [],
+        createdAt: slice.created_at,
+        nodes: resolvedNodes.map((n: Record<string, unknown>) => ({
+          id: String(n.id),
+          oir_id: String(n.oir_id),
+          type: String(n.type),
+          name: String(n.name),
+          file_path: String(n.file_path),
+          line_start: n.line_start as number | null,
+          line_end: n.line_end as number | null,
+          signature: n.signature as string | null,
+          doc_comment: n.doc_comment as string | null,
+          metadata: n.metadata as Record<string, unknown> | null,
+          source: 'seed' as const,
+        })),
+        edges: (edges ?? []).map((e: Record<string, unknown>) => ({
+          id: String(e.id),
+          source_node_id: String(e.source_node_id),
+          target_node_id: String(e.target_node_id),
+          type: String(e.type),
+          metadata: e.metadata as Record<string, unknown> | null,
+        })),
+      };
+    }),
+
+  /**
+   * List AI graph slices for a project.
+   */
+  listAiSlices: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        limit: z.number().int().min(1).max(50).default(10),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { data, error } = await ctx.db
+        .from('ai_graph_slices')
+        .select('id, title, query_text, slice_type, tags, entry_point_oir_id, created_at, updated_at, user_id')
+        .eq('project_id', input.projectId)
+        .order('created_at', { ascending: false })
+        .limit(input.limit);
+
+      if (error) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: error.message });
+      }
+
+      return {
+        slices: (data ?? []).map((row: Record<string, unknown>) => ({
+          sliceId: String(row.id),
+          title: String(row.title ?? ''),
+          queryText: (row.query_text as string | null) ?? null,
+          sliceType: String(row.slice_type ?? 'ai_generated'),
+          tags: (row.tags as string[]) ?? [],
+          entryPointOirId: (row.entry_point_oir_id as string | null) ?? null,
+          createdAt: String(row.created_at),
+          updatedAt: String(row.updated_at),
+          isOwnedByCurrentUser: String(row.user_id) === ctx.user.id,
+        })),
+      };
     }),
 });

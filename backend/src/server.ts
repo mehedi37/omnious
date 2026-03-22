@@ -19,6 +19,7 @@ import {
   resolveApiKey,
   selectModel,
   SYSTEM_PROMPTS,
+  compressSessionHistory,
   type LLMMessage,
 } from './services/ai.service.js';
 
@@ -137,12 +138,12 @@ async function buildServer() {
       reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
     };
 
-    const llmMessages: LLMMessage[] = [
+    const llmMessages: LLMMessage[] = compressSessionHistory([
       { role: 'system', content: SYSTEM_PROMPTS.chatAssistant },
       ...messages
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    ];
+    ]);
 
     let fullContent = '';
     try {

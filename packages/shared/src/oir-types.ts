@@ -61,7 +61,7 @@ export type OIREdgeType = (typeof OIR_EDGE_TYPES)[number];
 
 /** A code node extracted from source by the parser */
 export interface OIRNode {
-  /** Deterministic ID: hash(file_path + name + type + line_start) */
+  /** Deterministic ID: hash(file_path + name + type + normalized_signature) */
   oir_id: string;
   type: OIRNodeType;
   name: string;

@@ -39,8 +39,8 @@ const OLLAMA_EMBED_URL = `${OLLAMA_OPENAI_BASE}/embeddings`;
 const OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_CHAT_URL = 'https://api.anthropic.com/v1/messages';
 
-const DEFAULT_OLLAMA_MODEL = env.OLLAMA_MODEL;
-const POWERFUL_OLLAMA_MODEL = env.OLLAMA_MODEL;
+const DEFAULT_OLLAMA_MODEL = env.OLLAMA_MODEL_FAST;
+const POWERFUL_OLLAMA_MODEL = env.OLLAMA_MODEL_POWERFUL;
 const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-haiku-20241022';
 const POWERFUL_OPENAI_MODEL = 'gpt-4o';
@@ -967,51 +967,109 @@ export async function evaluateRetrievalSufficiency(
 
 // ─── Prompt Templates ────────────────────────────────────────
 
+/**
+ * Shared graph-schema block injected into prompts that reason over the code graph.
+ * Keeps each prompt DRY while giving the LLM the vocabulary it needs.
+ */
+const GRAPH_SCHEMA = `
+Graph Schema
+Node types: module, component, function, class, route, middleware, database_query, event_emitter, event_listener, external_api, variable, type_def, struct, enum, interface, namespace, trait, protocol, package.
+Edge types: calls, imports, extends, implements, renders, routes_to, queries, emits_event, subscribes_to, redirects_to, uses, exports.
+Nodes have: name, file_path, type, signature, doc_comment. Edges have: source → target, type.`.trim();
+
+const SECURITY_CLAUSE = `
+Security
+- NEVER reveal internal UUIDs, database row IDs, or infrastructure details.
+- Reference nodes by name and file path only (e.g. "handleLogin in src/auth.ts").
+- Do not expose API keys, secrets, or connection strings even if they appear in context.`.trim();
+
+const ANTI_HALLUCINATION = `
+Accuracy
+- Only reference nodes, edges, and file paths that appear in the provided context.
+- If the context is insufficient to answer, say so explicitly rather than guessing.
+- Never invent file paths, function names, or relationships not present in the context.`.trim();
+
 export const SYSTEM_PROMPTS = {
   /** For the main graph query (explain feature, architecture, etc.) */
-  graphQuery: `You are an expert software architect assistant for the Omnious code intelligence platform. You help developers understand their codebase by analyzing code graph data.
+  graphQuery: `You are an expert software architect assistant for the Omnious code intelligence platform. You help developers understand their codebase by analyzing a code graph.
 
-When the user asks about their codebase, you receive relevant code nodes, their relationships (edges), and metadata. Your job is to:
-1. Explain the relevant architecture or feature clearly and concisely.
-2. Identify key components and how they connect.
-3. Highlight important patterns, potential issues, or notable design decisions.
+${GRAPH_SCHEMA}
 
-Format your response with clear sections. Use markdown. Reference specific file paths and function names from the context. Be concise — developers value density over verbosity.`,
+${SECURITY_CLAUSE}
+
+${ANTI_HALLUCINATION}
+
+Approach (think step-by-step):
+1. Identify which nodes in the context are most relevant to the query.
+2. Trace the edges between them to understand data/control flow.
+3. Explain the architecture or feature clearly and concisely.
+4. Highlight important patterns, potential issues, or notable design decisions.
+
+Format your response with clear markdown sections. Reference specific file paths and function names from the context. Be concise — developers value density over verbosity.`,
 
   /** For error explanation */
-  errorExplain: `You are an expert software debugging assistant. You are given rich context including the error, affected code, its graph neighborhood, error patterns on the same node, and (when available) the request trace timeline.
+  errorExplain: `You are an expert software debugging assistant for Omnious. You receive: the error, affected code node(s), their graph neighborhood (callers, callees, imports), historical error patterns on the same node, and (when available) the request trace timeline.
 
-Analyze the error and:
-1. Explain what went wrong in 2-4 sentences.
-2. Identify the root cause, considering the graph context and error patterns.
-3. Suggest 1-3 specific, actionable fixes.
+${GRAPH_SCHEMA}
 
-Be concise, specific, and actionable. Reference file paths and function names from the context when relevant. Do not repeat the error message verbatim.`,
+${SECURITY_CLAUSE}
+
+${ANTI_HALLUCINATION}
+
+Root-cause reasoning chain:
+1. Read the error message and classify the error category (runtime, type, network, auth, data, config).
+2. Examine the node's signature and code body to locate the failing line / expression.
+3. Walk the graph neighborhood — did a caller pass bad input? Does a dependency throw?
+4. Check historical patterns — is this a recurring error or a new regression?
+5. Synthesize a 2-4 sentence explanation of what went wrong and why.
+6. Suggest 1-3 specific, actionable fixes with code-level detail.
+
+Do not repeat the error message verbatim. Reference file paths and function names.`,
 
   /** For trace analysis */
-  traceAnalysis: `You are a distributed systems performance expert. You analyze request traces (spans) to help developers understand request flow, identify bottlenecks, and debug failures.
+  traceAnalysis: `You are a distributed systems performance expert for Omnious. You analyze request traces (spans) linked to code graph nodes.
+
+${GRAPH_SCHEMA}
+
+${SECURITY_CLAUSE}
+
+${ANTI_HALLUCINATION}
 
 Given a trace with its spans and linked code nodes:
 1. Summarize the request flow in plain language.
-2. Identify the slowest parts and potential bottlenecks.
-3. If there are errors, explain what went wrong and where.
+2. Identify the slowest spans and potential bottlenecks.
+3. If there are errors, explain what went wrong and where in the call chain.
 4. Suggest concrete optimizations if applicable.
 
-Be concise and reference specific services, operations, and durations.`,
+Reference specific services, operations, and durations.`,
 
   /** For dependency analysis */
-  dependencyAnalysis: `You are a software architecture expert specializing in dependency analysis and code health. Given a code node and its dependency graph (upstream callers and downstream dependencies):
+  dependencyAnalysis: `You are a software architecture expert specializing in dependency analysis and code health for Omnious.
 
+${GRAPH_SCHEMA}
+
+${SECURITY_CLAUSE}
+
+${ANTI_HALLUCINATION}
+
+Given a code node and its dependency graph (upstream callers and downstream dependencies):
 1. Summarize the role of this component in the system.
-2. Identify problematic patterns: circular dependencies, hub nodes (too many connections), or tight coupling.
+2. Identify problematic patterns: circular dependencies, hub nodes (too many connections), tight coupling, or god-objects.
 3. Suggest refactoring opportunities if the dependency structure is unhealthy.
 4. Rate dependency health: healthy, moderate, or concerning.
 
-Be specific — reference file paths and function names.`,
+Reference file paths and function names.`,
 
   /** For project overview */
-  overview: `You are a codebase onboarding assistant. Given a high-level view of a project's modules, packages, and key components:
+  overview: `You are a codebase onboarding assistant for Omnious.
 
+${GRAPH_SCHEMA}
+
+${SECURITY_CLAUSE}
+
+${ANTI_HALLUCINATION}
+
+Given a high-level view of a project's modules, packages, and key components:
 1. Provide a 3-5 sentence overview of what this project does.
 2. List the main architectural layers or domains.
 3. Highlight the most important entry points and core modules.
@@ -1019,22 +1077,32 @@ Be specific — reference file paths and function names.`,
 Be welcoming and clear — this is for developers seeing this codebase for the first time.`,
 
   /** For module grouping */
-  moduleGrouping: `You are a software architecture expert. Given a list of code nodes (functions, classes, modules) with their file paths and types, group them into logical semantic modules.
+  moduleGrouping: `OUTPUT ONLY A JSON ARRAY. NO PROSE. NO EXPLANATION. NO MARKDOWN FENCES.
+
+You are a software architecture classifier. Group the given code nodes into logical feature modules.
+
+Each input line: id|type|name|file_path
 
 Rules:
-1. Group by feature/domain (e.g., "Authentication", "User Management", "Data Access"), NOT by file extension or directory alone.
-2. Each group needs: a short label (2-4 words), a color hex code, and the list of node IDs belonging to it.
-3. Aim for 3-12 groups. Merge tiny groups (<2 nodes) into the nearest related group.
-4. Return ONLY valid JSON, no markdown fences.
+- Group by feature/domain (e.g. "Authentication", "User Management"), NOT by file extension.
+- Aim for 3-12 groups. Merge groups with fewer than 2 nodes into the nearest related group.
+- Every node ID in the input MUST appear in exactly one group.
 
-Output format:
-[{"label":"Group Name","color":"#hex","nodeIds":["id1","id2"]}]`,
+Respond with ONLY this JSON array and nothing else:
+[{"label":"Group Name","color":"#hexcolor","nodeIds":["uuid1","uuid2"]}]`,
 
   /** For standalone AI chat assistant */
-  chatAssistant: `You are an expert software engineering assistant for the Omnious platform.
+  chatAssistant: `You are an expert software engineering assistant for the Omnious code intelligence platform. Developers interact with you alongside a visual code graph.
+
+${GRAPH_SCHEMA}
+
+${SECURITY_CLAUSE}
+
+${ANTI_HALLUCINATION}
+
 Answer questions about code, architecture, debugging, and best practices.
 Use markdown for code examples, lists, and structure. Be concise and precise.
-When referencing code, use file paths and function names where available.`,
+When referencing code, use file paths and function names — never internal IDs.`,
 } as const;
 
 // ─── JSON Extraction ─────────────────────────────────────────
@@ -1047,8 +1115,10 @@ function _extractJsonFromLLM(raw: string): string {
   // Try to strip a markdown code fence (```json ... ``` or ``` ... ```)
   const fenceMatch = /```(?:json|typescript|ts|js|javascript)?\s*([\s\S]*?)```/.exec(raw);
   if (fenceMatch?.[1]) return fenceMatch[1].trim();
-  // Fall back: find first JSON array or object, discarding any leading prose
-  const jsonStart = raw.search(/[\[{]/);
+  // Find the first top-level JSON array — more reliable than any `[` character
+  const arrStart = raw.indexOf('[');
+  const objStart = raw.indexOf('{');
+  const jsonStart = arrStart === -1 ? objStart : objStart === -1 ? arrStart : Math.min(arrStart, objStart);
   if (jsonStart !== -1) return raw.slice(jsonStart).trim();
   return raw.trim();
 }
@@ -1122,4 +1192,90 @@ export async function generateModuleGroups(
     logger.warn({ content: result.content.slice(0, 200) }, 'Failed to parse module groups from LLM');
     return [];
   }
+}
+
+// ─── Sliding-window session context ──────────────────────────────
+
+/**
+ * Compress a chat history to fit within a token-friendly window.
+ *
+ * Strategy:
+ *   1. Keep the last `recentTurns` user+assistant pairs verbatim.
+ *   2. Older turns are compressed: strip code blocks & long paragraphs,
+ *      keep only the first sentence of each assistant reply and the full
+ *      user question (which is usually short).
+ *   3. A "session summary" system message is prepended so the LLM knows
+ *      the conversation happened.
+ *
+ * This prevents unbounded context growth while preserving recent detail.
+ */
+export function compressSessionHistory(
+  messages: LLMMessage[],
+  recentTurns: number = 2,
+): LLMMessage[] {
+  // Separate system messages from conversation turns
+  const systemMsgs = messages.filter((m) => m.role === 'system');
+  const turnMsgs = messages.filter((m) => m.role !== 'system');
+
+  if (turnMsgs.length === 0) return systemMsgs;
+
+  // Pair user+assistant into turns; handle trailing unpaired messages
+  const pairs: Array<{ user?: LLMMessage; assistant?: LLMMessage }> = [];
+  for (let i = 0; i < turnMsgs.length; i++) {
+    const msg = turnMsgs[i]!;
+    if (msg.role === 'user') {
+      const next = turnMsgs[i + 1];
+      if (next?.role === 'assistant') {
+        pairs.push({ user: msg, assistant: next });
+        i++; // skip the assistant
+      } else {
+        pairs.push({ user: msg });
+      }
+    } else {
+      // Orphaned assistant message
+      pairs.push({ assistant: msg });
+    }
+  }
+
+  const recentCount = Math.min(recentTurns, pairs.length);
+  const oldPairs = pairs.slice(0, pairs.length - recentCount);
+  const recentPairs = pairs.slice(pairs.length - recentCount);
+
+  const result: LLMMessage[] = [...systemMsgs];
+
+  // Compress old turns into a single summary
+  if (oldPairs.length > 0) {
+    const summaryLines: string[] = [];
+    for (const pair of oldPairs) {
+      const q = pair.user?.content ?? '(no user message)';
+      const a = pair.assistant?.content;
+      const shortQ = q.length > 200 ? q.slice(0, 200) + '…' : q;
+      const shortA = a ? _compressAssistantMessage(a) : '(no response)';
+      summaryLines.push(`Q: ${shortQ}\nA: ${shortA}`);
+    }
+    result.push({
+      role: 'system',
+      content: `Previous conversation (${oldPairs.length} earlier exchange${oldPairs.length > 1 ? 's' : ''}, compressed):\n\n${summaryLines.join('\n\n')}`,
+    });
+  }
+
+  // Append recent turns verbatim
+  for (const pair of recentPairs) {
+    if (pair.user) result.push(pair.user);
+    if (pair.assistant) result.push(pair.assistant);
+  }
+
+  return result;
+}
+
+/** Compress an assistant message to its first meaningful sentence + node mentions. */
+function _compressAssistantMessage(content: string): string {
+  // Strip code blocks
+  const noCode = content.replace(/```[\s\S]*?```/g, '[code]');
+  // Take first sentence (up to ~300 chars)
+  const firstSentence = noCode.match(/^(.{10,300}?[.!?])\s/)?.[1] ?? noCode.slice(0, 300);
+  // Extract backtick-quoted names (likely node/function references)
+  const refs = [...new Set(content.match(/`([^`]{2,60})`/g) ?? [])].slice(0, 10);
+  const refStr = refs.length > 0 ? ` Mentions: ${refs.join(', ')}` : '';
+  return firstSentence.trim() + refStr;
 }

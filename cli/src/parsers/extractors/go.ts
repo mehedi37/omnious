@@ -29,7 +29,7 @@ export class GoExtractor implements Extractor {
     const lastLine = source.split('\n').length;
 
     // Module node
-    const moduleOirId = generateOirId(filePath, baseName, 'module', 1);
+    const moduleOirId = generateOirId(filePath, baseName, 'module', '');
     nodes.push({
       oir_id: moduleOirId,
       type: 'module',
@@ -120,7 +120,7 @@ export class GoExtractor implements Extractor {
       const importPath = pathNode.text.replace(/^"|"$/g, '');
       const pkgName = importPath.split('/').pop() ?? importPath;
 
-      const targetOirId = generateOirId(`external:${pkgName}`, pkgName, 'external_api', 0);
+      const targetOirId = generateOirId(`external:${pkgName}`, pkgName, 'external_api', '');
       nodes.push({
         oir_id: targetOirId,
         type: 'external_api',
@@ -168,8 +168,8 @@ export class GoExtractor implements Extractor {
     // In Go, exported = starts with uppercase
     const isExported = /^[A-Z]/.test(name);
 
-    const oirId = generateOirId(filePath, name, 'function', startLine);
     const params = this.extractParams(node);
+    const oirId = generateOirId(filePath, name, 'function', `func ${name}(${params.join(', ')})`);
     const docComment = this.getDocComment(node);
 
     nodes.push({
@@ -234,7 +234,7 @@ export class GoExtractor implements Extractor {
     }
 
     const fullName = receiverType ? `${receiverType}.${name}` : name;
-    const oirId = generateOirId(filePath, fullName, 'function', startLine);
+    const oirId = generateOirId(filePath, fullName, 'function', `func (${receiverType}) ${name}(...)`);
 
     nodes.push({
       oir_id: oirId,
@@ -290,7 +290,7 @@ export class GoExtractor implements Extractor {
 
       if (typeNode.type === 'struct_type') {
         // Struct → class
-        const oirId = generateOirId(filePath, name, 'class', startLine);
+        const oirId = generateOirId(filePath, name, 'class', `type ${name} struct`);
         const fieldList = typeNode.childForFieldName('body') ?? typeNode.namedChildren.find(
           (c) => c.type === 'field_declaration_list',
         );
@@ -341,7 +341,7 @@ export class GoExtractor implements Extractor {
         }
       } else if (typeNode.type === 'interface_type') {
         // Interface → type_def
-        const oirId = generateOirId(filePath, name, 'type_def', startLine);
+        const oirId = generateOirId(filePath, name, 'type_def', `type ${name} interface`);
 
         nodes.push({
           oir_id: oirId,
@@ -367,7 +367,7 @@ export class GoExtractor implements Extractor {
         }
       } else {
         // Type alias → type_def
-        const oirId = generateOirId(filePath, name, 'type_def', startLine);
+        const oirId = generateOirId(filePath, name, 'type_def', `type ${name} ${typeNode.type}`);
 
         nodes.push({
           oir_id: oirId,
@@ -421,7 +421,7 @@ export class GoExtractor implements Extractor {
       const isExported = /^[A-Z]/.test(name);
       const kind = node.type === 'const_declaration' ? 'const' : 'var';
 
-      const oirId = generateOirId(filePath, name, 'variable', startLine);
+      const oirId = generateOirId(filePath, name, 'variable', `${kind} ${name}`);
 
       nodes.push({
         oir_id: oirId,

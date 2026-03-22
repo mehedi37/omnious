@@ -13,6 +13,111 @@ import {
   type ResolvedKey,
 } from './ai.service.js';
 
+// ─── Semantic Cache Helpers ──────────────────────────────────
+
+interface CacheHit {
+  id: string;
+  query_text: string;
+  response_text: string;
+  response_model: string;
+  context_hash: string;
+  similarity: number;
+}
+
+/**
+ * Check the semantic knowledge cache for a similar query.
+ * Uses pgvector cosine similarity with a high threshold (>= 0.92)
+ * so only semantically near-identical queries trigger a cache hit.
+ */
+async function _checkSemanticCache(
+  projectId: string,
+  queryEmbedding: number[],
+  adminDb: DbClient,
+): Promise<CacheHit | null> {
+  try {
+    const { data, error } = await adminDb.rpc('match_knowledge_cache', {
+      p_project_id: projectId,
+      query_embedding: JSON.stringify(queryEmbedding),
+      similarity_threshold: 0.92,
+    });
+    if (error || !data || (data as unknown[]).length === 0) return null;
+    const hit = (data as CacheHit[])[0]!;
+
+    // Bump hit count
+    await adminDb
+      .from('knowledge_cache')
+      .update({ hit_count: hit.id, last_hit_at: new Date().toISOString() })
+      .eq('id', hit.id)
+      .then(() => { /* fire-and-forget */ });
+
+    return hit;
+  } catch {
+    return null; // cache miss on any error
+  }
+}
+
+/**
+ * Store a query + response in the semantic cache for future reuse.
+ */
+async function _writeSemanticCache(
+  projectId: string,
+  queryText: string,
+  queryEmbedding: number[],
+  responseText: string,
+  responseModel: string,
+  contextNodeOirIds: string[],
+  adminDb: DbClient,
+): Promise<void> {
+  try {
+    // Create a simple hash from sorted oir_ids for invalidation
+    const sortedIds = [...contextNodeOirIds].sort();
+    const contextHash = sortedIds.join(',').slice(0, 500);
+
+    await adminDb.from('knowledge_cache').insert({
+      project_id: projectId,
+      query_text: queryText,
+      query_embedding: JSON.stringify(queryEmbedding),
+      response_text: responseText,
+      response_model: responseModel,
+      context_hash: contextHash,
+    });
+  } catch (err) {
+    logger.debug({ err }, 'Failed to write semantic cache — non-critical');
+  }
+}
+
+/**
+ * Fetch relevant global knowledge entries (library docs, patterns, best practices)
+ * that match the query. Used to enrich the LLM context with "global intelligence".
+ */
+async function _fetchGlobalKnowledge(
+  queryEmbedding: number[],
+  adminDb: DbClient,
+): Promise<string> {
+  try {
+    const { data, error } = await adminDb.rpc('match_global_knowledge', {
+      query_embedding: JSON.stringify(queryEmbedding),
+      match_threshold: 0.7,
+      match_count: 3,
+    });
+    if (error || !data || (data as unknown[]).length === 0) return '';
+
+    const entries = data as Array<{
+      title: string;
+      category: string;
+      content: string;
+      similarity: number;
+    }>;
+
+    const lines = entries.map(
+      (e) => `### ${e.title} (${e.category})\n${e.content}`,
+    );
+    return `\n\n## Reference Knowledge\n${lines.join('\n\n')}`;
+  } catch {
+    return ''; // degrade gracefully
+  }
+}
+
 // ─── Types ───────────────────────────────────────────────────
 
 /** A node returned as part of a subgraph query result */
@@ -87,6 +192,8 @@ interface SubgraphPayload {
   llmMessages: LLMMessage[];
   model: string;
   steps: string[];
+  /** Query embedding for semantic cache writes */
+  queryEmbedding: number[];
 }
 
 // DB client type — matches Supabase client interface
@@ -396,6 +503,7 @@ async function _buildSubgraphPayload(
       ],
       model,
       steps,
+      queryEmbedding: embedding,
     };
   }
 
@@ -426,6 +534,27 @@ async function _buildSubgraphPayload(
     }
   }
   steps.push(`Expanded to ${allNodeIds.size} nodes via ${traversalDepth}-hop traversal`);
+
+  // SQL edge fallback: if traverse_graph returned no neighbors (e.g. RPC returned empty,
+  // project has no edges indexed yet, or RPC is project-unaware), directly query code_edges.
+  if (traversalNodes.length === 0 && topSeeds.length > 0) {
+    const seedIds = topSeeds.map((s) => s.id);
+    const [{ data: outEdges }, { data: inEdges }] = await Promise.all([
+      adminDb.from('code_edges').select('target_node_id').eq('project_id', projectId).in('source_node_id', seedIds).limit(60),
+      adminDb.from('code_edges').select('source_node_id').eq('project_id', projectId).in('target_node_id', seedIds).limit(60),
+    ]);
+    const prevSize = allNodeIds.size;
+    for (const e of outEdges ?? []) {
+      const nid = String((e as Record<string, unknown>).target_node_id ?? '');
+      if (nid && !allNodeIds.has(nid)) allNodeIds.add(nid);
+    }
+    for (const e of inEdges ?? []) {
+      const nid = String((e as Record<string, unknown>).source_node_id ?? '');
+      if (nid && !allNodeIds.has(nid)) allNodeIds.add(nid);
+    }
+    const added = allNodeIds.size - prevSize;
+    if (added > 0) steps.push(`SQL edge fallback added ${added} direct neighbor(s)`);
+  }
 
   // 6. Cap total nodes — fit within the model's context window using token estimation.
   //    (step log added after nodeIds slice)
@@ -578,11 +707,17 @@ async function _buildSubgraphPayload(
     }
   }
 
+  // 12. Enrich context with global knowledge (library docs, patterns)
+  const globalKnowledge = await _fetchGlobalKnowledge(embedding, adminDb);
+  if (globalKnowledge) {
+    steps.push('Added global reference knowledge to context');
+  }
+
   const llmMessages: LLMMessage[] = [
     { role: 'system', content: SYSTEM_PROMPTS.graphQuery },
     {
       role: 'user',
-      content: `User question: "${query}"\n\n${contextText}${mentionContext}`,
+      content: `User question: "${query}"\n\n${contextText}${mentionContext}${globalKnowledge}`,
     },
   ];
 
@@ -593,13 +728,14 @@ async function _buildSubgraphPayload(
     llmMessages,
     model,
     steps,
+    queryEmbedding: embedding,
   };
 }
 
 /**
  * AI-driven graph query. The primary entry point for "ask anything about your codebase".
  *
- * Pipeline: embed query → vector search → traverse neighbors → merge → LLM explain
+ * Pipeline: cache check → embed query → vector search → traverse neighbors → merge → LLM explain → cache write
  */
 export async function querySubgraph(
   projectId: string,
@@ -615,11 +751,33 @@ export async function querySubgraph(
   const payload = await _buildSubgraphPayload(
     projectId, query, userId, db, adminDb, apiKeyId, contextNodeIds, attachments, modelPreference,
   );
+
+  // Semantic cache: check before calling the LLM
+  const cacheHit = await _checkSemanticCache(projectId, payload.queryEmbedding, adminDb);
+  if (cacheHit) {
+    payload.steps.push(`Semantic cache hit (similarity: ${cacheHit.similarity.toFixed(3)})`);
+    return {
+      nodes: payload.nodes,
+      edges: payload.edges,
+      explanation: cacheHit.response_text,
+      steps: payload.steps,
+      usage: { promptTokens: 0, completionTokens: 0, model: cacheHit.response_model },
+    };
+  }
+
   const llmResult = await callLLM(payload.llmMessages, payload.resolvedKey, {
     maxTokens: 2048,
     model: payload.model,
   });
   payload.steps.push('Generated AI explanation');
+
+  // Write to semantic cache (fire-and-forget)
+  const nodeOirIds = payload.nodes.map((n) => n.oir_id);
+  _writeSemanticCache(
+    projectId, query, payload.queryEmbedding,
+    llmResult.content, llmResult.model, nodeOirIds, adminDb,
+  ).catch(() => { /* non-critical */ });
+
   return {
     nodes: payload.nodes,
     edges: payload.edges,
@@ -636,6 +794,7 @@ export async function querySubgraph(
 /**
  * Streaming variant of querySubgraph.
  * Yields step progress events, then LLM delta events, then a final done event.
+ * Also checks the semantic cache before running the LLM.
  */
 export async function* querySubgraphStream(
   projectId: string,
@@ -657,19 +816,98 @@ export async function* querySubgraphStream(
     yield { type: 'step', text: step };
   }
 
-  // Stream the LLM response token-by-token
+  // Semantic cache: check before calling the LLM
+  const cacheHit = await _checkSemanticCache(projectId, payload.queryEmbedding, adminDb);
+  if (cacheHit) {
+    yield { type: 'step', text: `Semantic cache hit (similarity: ${cacheHit.similarity.toFixed(3)})` };
+    yield { type: 'delta', text: cacheHit.response_text };
+    yield {
+      type: 'done',
+      nodes: payload.nodes,
+      edges: payload.edges,
+      steps: [...payload.steps, `Semantic cache hit (similarity: ${cacheHit.similarity.toFixed(3)})`],
+    };
+    return;
+  }
+
+  // Stream the LLM response token-by-token, collecting for cache write
+  let fullResponse = '';
   for await (const delta of callLLMStream(payload.llmMessages, payload.resolvedKey, {
     maxTokens: 2048,
     model: payload.model,
   })) {
+    fullResponse += delta;
     yield { type: 'delta', text: delta };
   }
+
+  // Write to semantic cache (fire-and-forget)
+  const nodeOirIds = payload.nodes.map((n) => n.oir_id);
+  _writeSemanticCache(
+    projectId, query, payload.queryEmbedding,
+    fullResponse, payload.model, nodeOirIds, adminDb,
+  ).catch(() => { /* non-critical */ });
 
   yield {
     type: 'done',
     nodes: payload.nodes,
     edges: payload.edges,
     steps: [...payload.steps, 'Generated AI explanation'],
+  };
+}
+
+// ─── Graph Slice Generation ──────────────────────────────────
+
+/** Data needed to save an AI graph slice using portable oir_id references */
+export interface GraphSliceData {
+  title: string;
+  explanationMd: string;
+  nodeOirIds: string[];
+  edgePairs: Array<{ source: string; target: string; type: string }>;
+  entryPointOirId: string | null;
+  queryText: string | null;
+  sliceType: 'ai_generated' | 'user_saved' | 'auto_explain';
+  tags: string[];
+}
+
+/**
+ * Extract a lightweight graph slice from query results.
+ * Uses oir_ids (not UUIDs) so slices survive re-indexes.
+ */
+export function buildGraphSlice(
+  nodes: SubgraphNode[],
+  edges: SubgraphEdge[],
+  explanation: string,
+  query: string,
+): GraphSliceData {
+  // Map UUID → oir_id for edge reference translation
+  const idToOirId = new Map<string, string>();
+  for (const n of nodes) idToOirId.set(n.id, n.oir_id);
+
+  const nodeOirIds = nodes.map((n) => n.oir_id);
+
+  const edgePairs = edges
+    .map((e) => ({
+      source: idToOirId.get(e.source_node_id) ?? '',
+      target: idToOirId.get(e.target_node_id) ?? '',
+      type: e.type,
+    }))
+    .filter((e) => e.source && e.target);
+
+  // Entry point: highest-relevance seed node
+  const seedNodes = nodes.filter((n) => n.source === 'seed');
+  const entryPoint = seedNodes.length > 0
+    ? seedNodes.reduce((a, b) => ((a.relevance ?? 0) >= (b.relevance ?? 0) ? a : b))
+    : null;
+
+  return {
+    title: query.length > 100 ? `${query.slice(0, 97)}...` : query,
+    explanationMd: explanation,
+    nodeOirIds,
+    edgePairs,
+    entryPointOirId: entryPoint?.oir_id ?? null,
+    queryText: query,
+    sliceType: 'ai_generated',
+    tags: [],
   };
 }
 
