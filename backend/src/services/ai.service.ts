@@ -427,7 +427,395 @@ async function _callAnthropic(
   };
 }
 
+// ─── Streaming LLM Chat ──────────────────────────────────────
+
+/**
+ * Streaming variant of `callLLM`. Yields string deltas as the model generates them.
+ * Delegates to provider-specific stream helpers below.
+ */
+export async function* callLLMStream(
+  messages: LLMMessage[],
+  resolvedKey: ResolvedKey,
+  options?: { model?: string; maxTokens?: number; temperature?: number },
+): AsyncGenerator<string> {
+  const maxTokens = options?.maxTokens ?? 2048;
+  const temperature = options?.temperature ?? 0.3;
+
+  if (resolvedKey.provider === 'ollama') {
+    yield* _callOpenAICompatibleStream(OLLAMA_CHAT_URL, 'Ollama', messages, resolvedKey.apiKey, {
+      model: options?.model ?? DEFAULT_OLLAMA_MODEL,
+      maxTokens,
+      temperature,
+    });
+    return;
+  }
+
+  if (resolvedKey.provider === 'anthropic') {
+    yield* _callAnthropicStream(messages, resolvedKey.apiKey, {
+      model: options?.model ?? DEFAULT_ANTHROPIC_MODEL,
+      maxTokens,
+      temperature,
+    });
+    return;
+  }
+
+  yield* _callOpenAICompatibleStream(OPENAI_CHAT_URL, 'OpenAI', messages, resolvedKey.apiKey, {
+    model: options?.model ?? DEFAULT_OPENAI_MODEL,
+    maxTokens,
+    temperature,
+  });
+}
+
+/** Streaming handler for OpenAI-compatible APIs (Ollama, OpenAI, etc.) */
+async function* _callOpenAICompatibleStream(
+  baseUrl: string,
+  providerLabel: string,
+  messages: LLMMessage[],
+  apiKey: string,
+  opts: { model: string; maxTokens: number; temperature: number },
+): AsyncGenerator<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+
+  let resp: Response;
+  try {
+    resp = await fetch(baseUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: opts.model,
+        max_tokens: opts.maxTokens,
+        temperature: opts.temperature,
+        messages,
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timeout);
+    if (providerLabel === 'Ollama') {
+      throw _formatOllamaConnectivityError(error, baseUrl);
+    }
+    throw error;
+  }
+
+  if (!resp.ok) {
+    clearTimeout(timeout);
+    const errText = await resp.text();
+    logger.warn({ status: resp.status, body: errText.slice(0, 300) }, `${providerLabel} stream API error`);
+    throw new Error(`${providerLabel} API error ${resp.status}: ${errText.slice(0, 200)}`);
+  }
+
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') return;
+        try {
+          const chunk = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+          const content = chunk.choices?.[0]?.delta?.content;
+          if (content) yield content;
+        } catch {
+          // Ignore malformed SSE JSON lines
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timeout);
+    reader.releaseLock();
+  }
+}
+
+/** Streaming handler for Anthropic's Messages API. */
+async function* _callAnthropicStream(
+  messages: LLMMessage[],
+  apiKey: string,
+  opts: { model: string; maxTokens: number; temperature: number },
+): AsyncGenerator<string> {
+  const systemMsg = messages.find((m) => m.role === 'system')?.content;
+  const chatMessages = messages
+    .filter((m) => m.role !== 'system')
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+
+  let resp: Response;
+  try {
+    resp = await fetch(ANTHROPIC_CHAT_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: opts.model,
+        max_tokens: opts.maxTokens,
+        temperature: opts.temperature,
+        ...(systemMsg ? { system: systemMsg } : {}),
+        messages: chatMessages,
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timeout);
+    throw error;
+  }
+
+  if (!resp.ok) {
+    clearTimeout(timeout);
+    const errText = await resp.text();
+    logger.warn({ status: resp.status, body: errText.slice(0, 300) }, 'Anthropic stream API error');
+    throw new Error(`Anthropic API error ${resp.status}: ${errText.slice(0, 200)}`);
+  }
+
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    let eventType = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim();
+          if (eventType === 'content_block_delta') {
+            try {
+              const chunk = JSON.parse(data) as { delta?: { type?: string; text?: string } };
+              if (chunk.delta?.type === 'text_delta' && chunk.delta.text) {
+                yield chunk.delta.text;
+              }
+            } catch {
+              // Ignore malformed SSE JSON lines
+            }
+          }
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timeout);
+    reader.releaseLock();
+  }
+}
+
 // ─── Embeddings ──────────────────────────────────────────────
+
+/** Shape of a code node row needed for building embedding text */
+export interface EmbeddableNode {
+  id: string;
+  oir_id: string;
+  type: string;
+  name: string;
+  file_path: string;
+  signature: string | null;
+  doc_comment: string | null;
+  code_body: string | null;
+}
+
+/** Shape of a neighbor row returned by a simple join for embedding context */
+export interface EmbeddingNeighbor {
+  name: string;
+  type: string;
+  edge_type: string;
+  direction: 'in' | 'out';
+}
+
+/**
+ * Build a rich, graph-aware text representation of a code node for embedding.
+ * Prepends structural context (file path, neighbors, imports) so the embedding
+ * captures relational position in the graph, not just textual content.
+ */
+export function buildNodeEmbeddingText(
+  node: EmbeddableNode,
+  neighbors: EmbeddingNeighbor[] = [],
+): string {
+  const parts: string[] = [];
+
+  // Location context
+  parts.push(`${node.type} ${node.name} in ${node.file_path}`);
+
+  // Signature
+  if (node.signature) parts.push(`signature: ${node.signature}`);
+
+  // Doc comment
+  if (node.doc_comment) parts.push(node.doc_comment.slice(0, 500));
+
+  // Graph neighborhood (imports, callers, callees)
+  if (neighbors.length > 0) {
+    const incoming = neighbors
+      .filter((n) => n.direction === 'in')
+      .map((n) => `${n.edge_type}: ${n.name} (${n.type})`)
+      .slice(0, 10);
+    const outgoing = neighbors
+      .filter((n) => n.direction === 'out')
+      .map((n) => `${n.edge_type}: ${n.name} (${n.type})`)
+      .slice(0, 10);
+
+    if (incoming.length > 0) parts.push(`called by: ${incoming.join(', ')}`);
+    if (outgoing.length > 0) parts.push(`depends on: ${outgoing.join(', ')}`);
+  }
+
+  // Code body (first ~2000 chars for embedding, not the full thing)
+  if (node.code_body) parts.push(node.code_body.slice(0, 2000));
+
+  return parts.join(' | ');
+}
+
+/**
+ * Backfill embeddings for code nodes that are missing them (or whose content changed).
+ * Called after a CLI push to ensure all nodes are searchable via semantic search.
+ *
+ * Uses graph-aware embedding text for better retrieval quality.
+ */
+export async function backfillNodeEmbeddings(
+  projectId: string,
+  db: { from: (...args: any[]) => any; rpc: (...args: any[]) => any },  // eslint-disable-line @typescript-eslint/no-explicit-any
+  options?: { batchSize?: number; changedOirIds?: string[] },
+): Promise<{ embedded: number; failed: number }> {
+  const batchSize = options?.batchSize ?? 50;
+  let embedded = 0;
+  let failed = 0;
+
+  // Fetch nodes that need embeddings:
+  // - If changedOirIds provided, only those (content changed)
+  // - Otherwise, all nodes with null embeddings
+  let query = db
+    .from('code_nodes')
+    .select('id, oir_id, type, name, file_path, signature, doc_comment, code_body, content_hash')
+    .eq('project_id', projectId);
+
+  if (options?.changedOirIds && options.changedOirIds.length > 0) {
+    query = query.in('oir_id', options.changedOirIds);
+  } else {
+    query = query.is('embedding', null);
+  }
+
+  const { data: nodes, error } = await query.limit(2000);
+  if (error || !nodes || nodes.length === 0) {
+    return { embedded: 0, failed: 0 };
+  }
+
+  logger.info({ projectId, nodeCount: nodes.length }, 'Backfilling node embeddings');
+
+  // Fetch all edges for the project to build neighbor maps
+  const nodeIds = nodes.map((n: Record<string, unknown>) => String(n.id));
+  const { data: outEdges } = await db
+    .from('code_edges')
+    .select('source_node_id, target_node_id, type')
+    .eq('project_id', projectId)
+    .in('source_node_id', nodeIds);
+
+  const { data: inEdges } = await db
+    .from('code_edges')
+    .select('source_node_id, target_node_id, type')
+    .eq('project_id', projectId)
+    .in('target_node_id', nodeIds);
+
+  // Build a neighbor lookup keyed by node ID
+  const allNeighborNodeIds = new Set<string>();
+  for (const e of [...(outEdges ?? []), ...(inEdges ?? [])] as Array<Record<string, unknown>>) {
+    allNeighborNodeIds.add(String(e.source_node_id));
+    allNeighborNodeIds.add(String(e.target_node_id));
+  }
+
+  const { data: neighborNodes } = await db
+    .from('code_nodes')
+    .select('id, name, type')
+    .eq('project_id', projectId)
+    .in('id', [...allNeighborNodeIds].slice(0, 1000));
+
+  const neighborLookup = new Map<string, { name: string; type: string }>();
+  for (const n of (neighborNodes ?? []) as Array<Record<string, unknown>>) {
+    neighborLookup.set(String(n.id), { name: String(n.name), type: String(n.type) });
+  }
+
+  // Build neighbor arrays per node
+  const nodeNeighbors = new Map<string, EmbeddingNeighbor[]>();
+  for (const e of (outEdges ?? []) as Array<Record<string, unknown>>) {
+    const srcId = String(e.source_node_id);
+    const tgtInfo = neighborLookup.get(String(e.target_node_id));
+    if (tgtInfo) {
+      const arr = nodeNeighbors.get(srcId) ?? [];
+      arr.push({ ...tgtInfo, edge_type: String(e.type), direction: 'out' });
+      nodeNeighbors.set(srcId, arr);
+    }
+  }
+  for (const e of (inEdges ?? []) as Array<Record<string, unknown>>) {
+    const tgtId = String(e.target_node_id);
+    const srcInfo = neighborLookup.get(String(e.source_node_id));
+    if (srcInfo) {
+      const arr = nodeNeighbors.get(tgtId) ?? [];
+      arr.push({ ...srcInfo, edge_type: String(e.type), direction: 'in' });
+      nodeNeighbors.set(tgtId, arr);
+    }
+  }
+
+  // Process in batches
+  for (let i = 0; i < nodes.length; i += batchSize) {
+    const batch = (nodes as Array<Record<string, unknown>>).slice(i, i + batchSize);
+
+    for (const raw of batch) {
+      const node: EmbeddableNode = {
+        id: String(raw.id),
+        oir_id: String(raw.oir_id),
+        type: String(raw.type),
+        name: String(raw.name),
+        file_path: String(raw.file_path),
+        signature: raw.signature as string | null,
+        doc_comment: raw.doc_comment as string | null,
+        code_body: raw.code_body as string | null,
+      };
+
+      const text = buildNodeEmbeddingText(node, nodeNeighbors.get(node.id) ?? []);
+
+      try {
+        const embedding = await generateEmbedding(text);
+        const { error: updateError } = await db
+          .from('code_nodes')
+          .update({ embedding: JSON.stringify(embedding) })
+          .eq('id', node.id);
+
+        if (updateError) {
+          logger.warn({ nodeId: node.id, error: updateError.message }, 'Failed to save embedding');
+          failed++;
+        } else {
+          embedded++;
+        }
+      } catch (err) {
+        logger.warn(
+          { nodeId: node.id, error: err instanceof Error ? err.message : String(err) },
+          'Failed to generate embedding',
+        );
+        failed++;
+      }
+    }
+  }
+
+  logger.info({ projectId, embedded, failed }, 'Node embedding backfill complete');
+  return { embedded, failed };
+}
 
 /**
  * Generate embeddings using Ollama's OpenAI-compatible endpoint.
@@ -486,6 +874,95 @@ export async function generateEmbedding(
   }
 
   return embedding;
+}
+
+// ─── HyDE (Hypothetical Document Embeddings) ─────────────────
+
+const HYDE_PROMPT = `You are a code-generation assistant. Given a developer's question about a codebase, write a short hypothetical code snippet (30-80 lines) that would be the ideal answer. Include realistic function names, type signatures, imports, and brief inline comments. Output ONLY the code — no explanation, no markdown fences.`;
+
+/**
+ * Generate a hypothetical code document (HyDE) and embed it.
+ * The embedding of "ideal code for this question" is closer in vector space
+ * to the actual relevant code than the raw question embedding.
+ * Returns the HyDE embedding, or falls back to the direct query embedding on failure.
+ */
+export async function generateHyDE(
+  query: string,
+  resolvedKey: ResolvedKey,
+  model: string,
+): Promise<{ embedding: number[]; hypothetical: string | null }> {
+  try {
+    const result = await callLLM(
+      [
+        { role: 'system', content: HYDE_PROMPT },
+        { role: 'user', content: query },
+      ],
+      resolvedKey,
+      { model, maxTokens: 512, temperature: 0.4 },
+    );
+    const hypothetical = result.content.trim();
+    // Embed the hypothetical document instead of the raw query
+    const embedding = await generateEmbedding(hypothetical);
+    return { embedding, hypothetical };
+  } catch (err) {
+    logger.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      'HyDE generation failed, falling back to direct query embedding',
+    );
+    const embedding = await generateEmbedding(query);
+    return { embedding, hypothetical: null };
+  }
+}
+
+// ─── Agentic Retrieval Evaluation ────────────────────────────
+
+const EVALUATE_CONTEXT_PROMPT = `You are a retrieval quality evaluator. Given a developer's question and the code context retrieved so far, evaluate whether the context is sufficient to answer the question.
+
+Respond with ONLY a JSON object (no markdown fences):
+{"sufficient": true/false, "reason": "brief explanation", "refinement": "refined search query if not sufficient, or null"}
+
+Rules:
+- sufficient=true if the context contains the key code components needed to answer
+- sufficient=false if critical pieces are missing (e.g., question about auth but no auth code found)
+- refinement should be a focused search query targeting the missing pieces
+- Be strict: partial context for complex questions should be marked insufficient`;
+
+/**
+ * Ask the LLM to evaluate whether retrieved context is sufficient for the query.
+ * Returns a refinement query if more context is needed, or null if sufficient.
+ * Used in the agentic retrieval loop.
+ */
+export async function evaluateRetrievalSufficiency(
+  query: string,
+  contextSummary: string,
+  resolvedKey: ResolvedKey,
+  model: string,
+): Promise<{ sufficient: boolean; reason: string; refinement: string | null }> {
+  try {
+    const result = await callLLM(
+      [
+        { role: 'system', content: EVALUATE_CONTEXT_PROMPT },
+        {
+          role: 'user',
+          content: `Question: "${query}"\n\nRetrieved context (${contextSummary.length} chars):\n${contextSummary.slice(0, 3000)}`,
+        },
+      ],
+      resolvedKey,
+      { model, maxTokens: 256, temperature: 0.1 },
+    );
+    const raw = result.content.trim();
+    // Parse JSON from response (handle markdown fences)
+    const jsonStr = raw.replace(/```(?:json)?\s*/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(jsonStr);
+    return {
+      sufficient: Boolean(parsed.sufficient),
+      reason: String(parsed.reason ?? ''),
+      refinement: parsed.sufficient ? null : String(parsed.refinement ?? ''),
+    };
+  } catch {
+    // On any failure, assume context is sufficient (don't block the pipeline)
+    return { sufficient: true, reason: 'evaluation skipped', refinement: null };
+  }
 }
 
 // ─── Prompt Templates ────────────────────────────────────────
@@ -552,7 +1029,29 @@ Rules:
 
 Output format:
 [{"label":"Group Name","color":"#hex","nodeIds":["id1","id2"]}]`,
+
+  /** For standalone AI chat assistant */
+  chatAssistant: `You are an expert software engineering assistant for the Omnious platform.
+Answer questions about code, architecture, debugging, and best practices.
+Use markdown for code examples, lists, and structure. Be concise and precise.
+When referencing code, use file paths and function names where available.`,
 } as const;
+
+// ─── JSON Extraction ─────────────────────────────────────────
+
+/**
+ * Strip markdown code fences and leading prose from an LLM response before JSON.parse.
+ * Local models (Ollama/llama3) often wrap JSON in ```json ... ``` blocks.
+ */
+function _extractJsonFromLLM(raw: string): string {
+  // Try to strip a markdown code fence (```json ... ``` or ``` ... ```)
+  const fenceMatch = /```(?:json|typescript|ts|js|javascript)?\s*([\s\S]*?)```/.exec(raw);
+  if (fenceMatch?.[1]) return fenceMatch[1].trim();
+  // Fall back: find first JSON array or object, discarding any leading prose
+  const jsonStart = raw.search(/[\[{]/);
+  if (jsonStart !== -1) return raw.slice(jsonStart).trim();
+  return raw.trim();
+}
 
 // ─── Module Grouping ─────────────────────────────────────────
 
@@ -609,7 +1108,7 @@ export async function generateModuleGroups(
   }
 
   try {
-    const parsed = JSON.parse(result.content) as ModuleGroup[];
+    const parsed = JSON.parse(_extractJsonFromLLM(result.content)) as ModuleGroup[];
     if (!Array.isArray(parsed)) return [];
     // Validate structure
     return parsed.filter(

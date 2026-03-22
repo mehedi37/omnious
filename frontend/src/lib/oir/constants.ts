@@ -1,4 +1,71 @@
+import {
+  Antenna,
+  Box,
+  Braces,
+  Component,
+  Cuboid,
+  Database,
+  FileCode,
+  FileInput,
+  FolderTree,
+  Globe,
+  Layers,
+  List,
+  Package,
+  Puzzle,
+  Radio,
+  Route,
+  Shield,
+  Type,
+  Variable,
+} from 'lucide-react';
 import type { OIREdgeType, OIRNodeType } from './types';
+
+/** Lucide icon component for each OIR node type */
+export const NODE_TYPE_ICONS: Record<OIRNodeType, React.ComponentType<{ className?: string }>> = {
+  function: Braces,
+  component: Component,
+  route: Route,
+  database_query: Database,
+  module: FileCode,
+  class: Box,
+  middleware: Layers,
+  event_emitter: Radio,
+  event_listener: Antenna,
+  external_api: Globe,
+  variable: Variable,
+  type_def: Type,
+  struct: Cuboid,
+  enum: List,
+  interface: FileInput,
+  namespace: FolderTree,
+  trait: Puzzle,
+  protocol: Shield,
+  package: Package,
+};
+
+/** Tailwind text color class for each node type */
+export const NODE_TYPE_COLORS: Record<OIRNodeType, string> = {
+  function: 'text-green-500',
+  component: 'text-blue-500',
+  route: 'text-orange-500',
+  database_query: 'text-purple-500',
+  module: 'text-slate-400',
+  class: 'text-indigo-500',
+  middleware: 'text-amber-500',
+  event_emitter: 'text-cyan-500',
+  event_listener: 'text-teal-500',
+  external_api: 'text-pink-500',
+  variable: 'text-slate-400',
+  type_def: 'text-violet-500',
+  struct: 'text-emerald-500',
+  enum: 'text-lime-500',
+  interface: 'text-teal-500',
+  namespace: 'text-gray-400',
+  trait: 'text-rose-500',
+  protocol: 'text-sky-500',
+  package: 'text-indigo-400',
+};
 
 /** OKLCH color for each OIR node type */
 export const NODE_COLORS: Record<OIRNodeType, string> = {
@@ -91,29 +158,6 @@ export const NODE_ACCENT_BORDER: Record<OIRNodeType, string> = {
   trait: 'border-l-rose-500',
   protocol: 'border-l-sky-500',
   package: 'border-l-indigo-400',
-};
-
-/** Lucide icon name for each node type */
-export const NODE_ICONS: Record<OIRNodeType, string> = {
-  function: 'Braces',
-  component: 'Component',
-  route: 'Route',
-  database_query: 'Database',
-  module: 'FileCode',
-  class: 'Box',
-  middleware: 'Layers',
-  event_emitter: 'Radio',
-  event_listener: 'Antenna',
-  external_api: 'Globe',
-  variable: 'Variable',
-  type_def: 'Type',
-  struct: 'Cuboid',
-  enum: 'List',
-  interface: 'FileInput',
-  namespace: 'FolderTree',
-  trait: 'Puzzle',
-  protocol: 'Shield',
-  package: 'Package',
 };
 
 /** Edge color by type */

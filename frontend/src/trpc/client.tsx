@@ -2,7 +2,6 @@
 
 import type { QueryClient } from '@tanstack/react-query';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { httpBatchLink } from '@trpc/client';
 import { createTRPCReact } from '@trpc/react-query';
 import { useState } from 'react';
@@ -10,7 +9,6 @@ import superjson from 'superjson';
 import { createClient as createBrowserClient } from '@/lib/supabase/client';
 import type { AppRouter } from './init';
 import { makeQueryClient } from './query-client';
-import { createIdbPersister, PERSIST_MAX_AGE, PERSIST_BUSTER } from './query-persister';
 
 export const trpc = createTRPCReact<AppRouter>();
 
@@ -31,7 +29,6 @@ function getApiUrl() {
 
 export function TRPCProvider(props: Readonly<{ children: React.ReactNode }>) {
   const queryClient = getQueryClient();
-  const [persister] = useState(() => createIdbPersister());
   const [trpcClient] = useState(() =>
     trpc.createClient({
       links: [
@@ -52,12 +49,9 @@ export function TRPCProvider(props: Readonly<{ children: React.ReactNode }>) {
 
   return (
     <trpc.Provider client={trpcClient} queryClient={queryClient}>
-      <PersistQueryClientProvider
-        client={queryClient}
-        persistOptions={{ persister, maxAge: PERSIST_MAX_AGE, buster: PERSIST_BUSTER }}
-      >
+      <QueryClientProvider client={queryClient}>
         {props.children}
-      </PersistQueryClientProvider>
+      </QueryClientProvider>
     </trpc.Provider>
   );
 }

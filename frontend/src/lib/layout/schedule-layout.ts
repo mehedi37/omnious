@@ -5,7 +5,7 @@ let pendingLayoutTimer: ReturnType<typeof setTimeout> | null = null;
 /**
  * Coalesces frequent layout requests into one request to avoid worker storms.
  */
-export function scheduleGraphLayout(delayMs = 80) {
+export function scheduleGraphLayout(delayMs = 16) {
   if (pendingLayoutTimer) {
     clearTimeout(pendingLayoutTimer);
   }

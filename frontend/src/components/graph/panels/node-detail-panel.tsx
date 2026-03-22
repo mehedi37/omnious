@@ -1,8 +1,14 @@
 'use client';
 
 import {
-  ArrowDownToLine, ArrowUpFromLine, Braces, Component, Route, Database, FileCode, Box,
-  Layers, Radio, Antenna, Globe, Variable, Type, Crosshair, X, AlertTriangle, Bot,
+  AlertTriangle,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Bot,
+  Braces,
+  Crosshair,
+  FileCode,
+  X,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
@@ -11,27 +17,12 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { NODE_BG_CLASSES } from '@/lib/oir/constants';
-import { useGraphStore, type OmniousNodeData } from '@/lib/stores/graph-store';
+import { useAIStore } from '@/lib/stores/ai-store';
+import { type OmniousNodeData, useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
-import { trpc } from '@/trpc/client';
-import { cn } from '@/lib/utils';
-import type { OIRNodeType } from '@/lib/oir/types';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
-
-const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
-  function: Braces,
-  component: Component,
-  route: Route,
-  database_query: Database,
-  module: FileCode,
-  class: Box,
-  middleware: Layers,
-  event_emitter: Radio,
-  event_listener: Antenna,
-  external_api: Globe,
-  variable: Variable,
-  type_def: Type,
-};
+import { cn } from '@/lib/utils';
+import { trpc } from '@/trpc/client';
 
 /**
  * Gets the selected node's data from the React Flow store.
@@ -121,7 +112,6 @@ export function NodeDetailPanel() {
 
   const handleClose = () => {
     useGraphStore.getState().deselectAll();
-    useUIStore.getState().setDetailPanelOpen(false);
   };
 
   const handleFocus = () => {
@@ -133,7 +123,6 @@ export function NodeDetailPanel() {
     }
   };
 
-  const Icon = ICON_MAP[attrs.oirType] ?? FileCode;
   const bgClass = NODE_BG_CLASSES[attrs.oirType as keyof typeof NODE_BG_CLASSES] ?? '';
 
   return (
@@ -174,7 +163,9 @@ export function NodeDetailPanel() {
         {/* File location */}
         {attrs.filePath && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">File</p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              File
+            </p>
             <div className="flex items-center gap-2 text-sm">
               <FileCode className="h-4 w-4 text-muted-foreground shrink-0" />
               <span className="font-mono text-xs truncate">{attrs.filePath}</span>
@@ -190,7 +181,9 @@ export function NodeDetailPanel() {
         {/* Signature */}
         {attrs.signature && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Signature</p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              Signature
+            </p>
             <div className="flex items-start gap-2">
               <Braces className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
               <pre className="text-xs font-mono bg-muted rounded-md p-2 overflow-x-auto whitespace-pre-wrap flex-1">
@@ -203,7 +196,9 @@ export function NodeDetailPanel() {
         {/* Doc comment */}
         {attrs.docComment && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Documentation</p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              Documentation
+            </p>
             <p className="text-sm text-muted-foreground leading-relaxed">{attrs.docComment}</p>
           </div>
         )}
@@ -214,7 +209,9 @@ export function NodeDetailPanel() {
         {/* Relevance (for AI query results) */}
         {attrs.relevance != null && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Relevance</p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              Relevance
+            </p>
             <div className="flex items-center gap-2">
               <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
                 <div
@@ -235,7 +232,9 @@ export function NodeDetailPanel() {
         {/* Metadata */}
         {Object.keys(attrs.metadata ?? {}).length > 0 && (
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Metadata</p>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              Metadata
+            </p>
             <div className="rounded-md bg-muted p-2 space-y-1">
               {Object.entries(attrs.metadata).map(([key, value]) => (
                 <div key={key} className="flex justify-between text-xs">
@@ -339,7 +338,8 @@ function NodeErrorList({ nodeId, nodeLabel }: { nodeId: string; nodeLabel: strin
   if (!projectId || (!isLoading && errors.length === 0)) return null;
 
   const handleAskAI = (message: string) => {
-    window.dispatchEvent(new CustomEvent('omnious:prefill-ai', { detail: { text: message } }));
+    useAIStore.getState().setPrefillMessage(message);
+    useUIStore.getState().setActiveDetailTab('ai');
   };
 
   return (
@@ -382,7 +382,9 @@ function NodeErrorList({ nodeId, nodeLabel }: { nodeId: string; nodeLabel: strin
                     size="icon"
                     className="h-4 w-4"
                     onClick={() =>
-                      handleAskAI(`Explain this error on ${nodeLabel}: ${err.error_type}: ${err.error_message}`)
+                      handleAskAI(
+                        `Explain this error on ${nodeLabel}: ${err.error_type}: ${err.error_message}`,
+                      )
                     }
                   >
                     <Bot className="h-3 w-3" />

@@ -1,9 +1,9 @@
+import type { Edge, Node } from '@xyflow/react';
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import type { Node, Edge } from '@xyflow/react';
-import type { OIRNodeType, OIREdgeType } from '../oir/types';
 import type { FlowStep, RuntimeEdge } from '../oir/trace-flow';
+import type { OIREdgeType, OIRNodeType } from '../oir/types';
 
 // ─── React Flow node/edge data types ─────────────────────────────────────────
 
@@ -31,6 +31,8 @@ export interface OmniousNodeData {
 export interface OmniousEdgeData {
   edgeType: OIREdgeType | 'runtime_call';
   isRuntime?: boolean;
+  /** When true, shows animated dot along the edge path */
+  flowReplay?: boolean;
   [key: string]: unknown;
 }
 
@@ -93,6 +95,8 @@ interface GraphState {
   queryActive: boolean;
   queryExplanation: string | null;
   querySteps: string[];
+  latestSliceId: string | null;
+  shareNextSlice: boolean;
 
   // Module grouping
   moduleGroups: Array<{ label: string; color: string; nodeIds: string[] }>;
@@ -118,7 +122,12 @@ interface GraphState {
   // Heatmap
   toggleHeatmap: () => void;
   applyHeatmapData: (
-    entries: Array<{ code_node_id: string; error_count: number; severity: string; heat_level: string }>,
+    entries: Array<{
+      code_node_id: string;
+      error_count: number;
+      severity: string;
+      heat_level: string;
+    }>,
   ) => void;
   clearHeatmapData: () => void;
 
@@ -149,6 +158,8 @@ interface GraphState {
   // AI query state
   setQueryActive: (active: boolean) => void;
   setQueryResult: (explanation: string, steps: string[]) => void;
+  setLatestSliceId: (sliceId: string | null) => void;
+  setShareNextSlice: (shared: boolean) => void;
   clearQueryResult: () => void;
 
   // Module grouping
@@ -195,6 +206,8 @@ export const useGraphStore = create<GraphState>()(
       queryActive: false,
       queryExplanation: null,
       querySteps: [],
+      latestSliceId: null,
+      shareNextSlice: false,
 
       moduleGroups: [],
 
@@ -232,6 +245,7 @@ export const useGraphStore = create<GraphState>()(
           state.highlightedNodeId = null;
           state.queryExplanation = null;
           state.querySteps = [];
+          state.latestSliceId = null;
         }),
 
       // ── Selection ──────────────────────────────────────────────────────
@@ -287,7 +301,10 @@ export const useGraphStore = create<GraphState>()(
         }),
       applyHeatmapData: (entries) =>
         set((state) => {
-          const newMap = new Map<string, { errorCount: number; errorSeverity: string; heatLevel: string }>();
+          const newMap = new Map<
+            string,
+            { errorCount: number; errorSeverity: string; heatLevel: string }
+          >();
           for (const e of entries) {
             newMap.set(e.code_node_id, {
               errorCount: Number(e.error_count),
@@ -378,7 +395,7 @@ export const useGraphStore = create<GraphState>()(
                 source: re.sourceNodeId,
                 target: re.targetNodeId,
                 type: 'animated-flow',
-                data: { edgeType: 'runtime_call', isRuntime: true },
+                data: { edgeType: 'runtime_call', isRuntime: true, flowReplay: true },
               });
             }
           }
@@ -442,8 +459,14 @@ export const useGraphStore = create<GraphState>()(
           const hop1 = new Set<string>();
 
           for (const edge of state.edges) {
-            if (edge.source === nodeId) { connected.add(edge.target); hop1.add(edge.target); }
-            if (edge.target === nodeId) { connected.add(edge.source); hop1.add(edge.source); }
+            if (edge.source === nodeId) {
+              connected.add(edge.target);
+              hop1.add(edge.target);
+            }
+            if (edge.target === nodeId) {
+              connected.add(edge.source);
+              hop1.add(edge.source);
+            }
           }
 
           // 2nd hop
@@ -495,10 +518,21 @@ export const useGraphStore = create<GraphState>()(
           state.queryActive = false;
         }),
 
+      setLatestSliceId: (sliceId) =>
+        set((state) => {
+          state.latestSliceId = sliceId;
+        }),
+
+      setShareNextSlice: (shared) =>
+        set((state) => {
+          state.shareNextSlice = shared;
+        }),
+
       clearQueryResult: () =>
         set((state) => {
           state.queryExplanation = null;
           state.querySteps = [];
+          state.latestSliceId = null;
         }),
 
       setModuleGroups: (groups) =>

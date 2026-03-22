@@ -1,14 +1,31 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
-  Crosshair, Lock, Expand, AlertTriangle, BotMessageSquare,
-  Copy, EyeOff, Maximize, RotateCcw, Flame, Map, Clipboard,
+  AlertTriangle,
+  BotMessageSquare,
+  Copy,
+  Crosshair,
+  Expand,
+  EyeOff,
+  Flame,
+  Info,
+  Lock,
+  Map,
+  Maximize,
+  RotateCcw,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import {
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+import { toast } from 'sonner';
+import { useAIStore } from '@/lib/stores/ai-store';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
-import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -174,26 +191,33 @@ export function useGraphContextMenu() {
   const handleExpandDeps = useCallback(() => {
     if (!menu?.nodeId) return;
     window.dispatchEvent(
-      new CustomEvent('omnious:expand-deps', { detail: { nodeId: menu.nodeId } }),
+      new CustomEvent('omnious:expand-deps', {
+        detail: { nodeId: menu.nodeId, nodeName: menu.nodeName },
+      }),
     );
     close();
-  }, [menu?.nodeId, close]);
+  }, [menu?.nodeId, menu?.nodeName, close]);
 
   const handleShowErrors = useCallback(() => {
     if (!menu?.nodeId) return;
     useGraphStore.getState().selectNode(menu.nodeId);
-    useUIStore.getState().setActiveDetailTab('errors');
+    useUIStore.getState().setActiveDetailTab('details');
+    close();
+  }, [menu?.nodeId, close]);
+
+  const handleViewDetails = useCallback(() => {
+    if (!menu?.nodeId) return;
+    useGraphStore.getState().selectNode(menu.nodeId);
+    useGraphStore.getState().highlightConnectedEdges(menu.nodeId);
+    useUIStore.getState().setActiveDetailTab('details');
     close();
   }, [menu?.nodeId, close]);
 
   const handleAskAI = useCallback(() => {
     // Pre-fill AI chat with "Explain #NodeName"
     if (menu?.nodeName) {
-      window.dispatchEvent(
-        new CustomEvent('omnious:prefill-ai', {
-          detail: { text: `Explain #${menu.nodeName}` },
-        }),
-      );
+      useAIStore.getState().setPrefillMessage(`Explain #${menu.nodeName}`);
+      useUIStore.getState().setActiveDetailTab('ai');
     }
     close();
   }, [menu?.nodeName, close]);
@@ -255,16 +279,13 @@ export function useGraphContextMenu() {
     [],
   );
 
-  const onPaneContextMenu = useCallback(
-    (event: ReactMouseEvent | globalThis.MouseEvent) => {
-      event.preventDefault();
-      setMenu({
-        type: 'pane',
-        position: { x: event.clientX, y: event.clientY },
-      });
-    },
-    [],
-  );
+  const onPaneContextMenu = useCallback((event: ReactMouseEvent | globalThis.MouseEvent) => {
+    event.preventDefault();
+    setMenu({
+      type: 'pane',
+      position: { x: event.clientX, y: event.clientY },
+    });
+  }, []);
 
   const setContainerRef = useCallback((el: HTMLDivElement | null) => {
     containerRef.current = el;
@@ -303,15 +324,26 @@ export function useGraphContextMenu() {
               {menu.nodeName}
             </div>
             <MenuSeparator />
-            <MenuItem icon={Crosshair} label={isNodeFocused ? 'Exit Focus' : 'Focus (2-hop)'} shortcut="N" onClick={handleFocus} />
+            <MenuItem
+              icon={Crosshair}
+              label={isNodeFocused ? 'Exit Focus' : 'Focus (2-hop)'}
+              shortcut="N"
+              onClick={handleFocus}
+            />
             <MenuItem
               icon={Lock}
               label={isNodePinned ? 'Unlock Position' : 'Lock Position'}
               shortcut="L"
               onClick={handlePin}
             />
-            <MenuItem icon={Expand} label="Expand Dependencies" shortcut="E" onClick={handleExpandDeps} />
+            <MenuItem
+              icon={Expand}
+              label="Expand Dependencies"
+              shortcut="E"
+              onClick={handleExpandDeps}
+            />
             <MenuSeparator />
+            <MenuItem icon={Info} label="View Details" onClick={handleViewDetails} />
             <MenuItem icon={AlertTriangle} label="Show Errors" onClick={handleShowErrors} />
             <MenuItem icon={BotMessageSquare} label="Ask AI About This" onClick={handleAskAI} />
             <MenuItem icon={Copy} label="Copy Name" shortcut="Ctrl+C" onClick={handleCopyName} />
@@ -321,9 +353,19 @@ export function useGraphContextMenu() {
         ) : (
           <>
             <MenuItem icon={Maximize} label="Fit View" shortcut="F" onClick={handleFitView} />
-            <MenuItem icon={RotateCcw} label="Reset to Overview" shortcut="0" onClick={handleResetView} />
+            <MenuItem
+              icon={RotateCcw}
+              label="Reset to Overview"
+              shortcut="0"
+              onClick={handleResetView}
+            />
             <MenuSeparator />
-            <MenuItem icon={Flame} label="Toggle Error Heatmap" shortcut="Shift+H" onClick={handleToggleHeatmap} />
+            <MenuItem
+              icon={Flame}
+              label="Toggle Error Heatmap"
+              shortcut="Shift+H"
+              onClick={handleToggleHeatmap}
+            />
             <MenuItem
               icon={Map}
               label={minimapVisible ? 'Hide Minimap' : 'Show Minimap'}

@@ -32,6 +32,7 @@ export const oirNodeSchema = z.object({
   doc_comment: z.string().nullable().optional(),
   metadata: z.record(z.unknown()).optional(),
   content_hash: z.string(),
+  code_body: z.string().nullable().optional(),
 });
 
 /** Zod schema for a single OIR edge (used in upsert endpoints) */

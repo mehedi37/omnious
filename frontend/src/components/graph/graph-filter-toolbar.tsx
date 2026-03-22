@@ -1,9 +1,19 @@
 'use client';
 
+import {
+  AlertCircle,
+  AlertTriangle,
+  Crosshair,
+  Flame,
+  Info,
+  PanelLeft,
+  PanelRight,
+  X,
+} from 'lucide-react';
 import { useCallback } from 'react';
-import { AlertCircle, AlertTriangle, Info, Flame, Crosshair, X } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import { useGraphStore } from '@/lib/stores/graph-store';
+import { cn } from '@/lib/utils';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -16,6 +26,13 @@ interface FilterChipProps {
   active: boolean;
   colorClass: string;
   onToggle: () => void;
+}
+
+interface GraphFilterToolbarProps {
+  leftPanelOpen?: boolean;
+  rightPanelOpen?: boolean;
+  onToggleLeft?: () => void;
+  onToggleRight?: () => void;
 }
 
 // ─── Filter chip ─────────────────────────────────────────────────────────────
@@ -43,9 +60,14 @@ function FilterChip({ icon: Icon, label, active, colorClass, onToggle }: FilterC
 
 /**
  * Horizontal filter bar for error severity + heatmap toggle.
- * Renders above the graph canvas.
+ * Renders above the graph canvas. On desktop, also shows panel toggle buttons.
  */
-export function GraphFilterToolbar() {
+export function GraphFilterToolbar({
+  leftPanelOpen,
+  rightPanelOpen,
+  onToggleLeft,
+  onToggleRight,
+}: GraphFilterToolbarProps) {
   const severityFilters = useGraphStore((s) => s.severityFilters);
   const heatmapActive = useGraphStore((s) => s.heatmapActive);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
@@ -131,6 +153,36 @@ export function GraphFilterToolbar() {
             <X className="h-3 w-3 opacity-60" />
           </button>
         </>
+      )}
+
+      {/* Panel toggle buttons — only rendered on desktop (when handlers are provided) */}
+      {(onToggleLeft || onToggleRight) && (
+        <div className="ml-auto flex items-center gap-0.5 pl-1">
+          {onToggleLeft && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className={cn('h-6 w-6', leftPanelOpen && 'bg-accent text-accent-foreground')}
+              onClick={onToggleLeft}
+              title={leftPanelOpen ? 'Hide file tree' : 'Show file tree'}
+              aria-label={leftPanelOpen ? 'Hide file tree' : 'Show file tree'}
+            >
+              <PanelLeft className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {onToggleRight && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className={cn('h-6 w-6', rightPanelOpen && 'bg-accent text-accent-foreground')}
+              onClick={onToggleRight}
+              title={rightPanelOpen ? 'Hide inspector' : 'Show inspector'}
+              aria-label={rightPanelOpen ? 'Hide inspector' : 'Show inspector'}
+            >
+              <PanelRight className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
       )}
     </div>
   );

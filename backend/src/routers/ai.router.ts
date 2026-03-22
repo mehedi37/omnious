@@ -11,6 +11,27 @@ import {
   getDependencySubgraph,
 } from '../services/graph-query.service.js';
 
+const aiMessageAttachmentSchema = z.object({
+  kind: z.enum(['node', 'module', 'function', 'file', 'error']),
+  id: z.string().min(1),
+  label: z.string().min(1),
+  subtype: z.string().optional(),
+});
+
+const aiSessionMessageSchema = z.object({
+  role: z.enum(['user', 'assistant', 'system']),
+  content: z.string(),
+  timestamp: z.string().datetime().optional(),
+  attachments: z.array(aiMessageAttachmentSchema).optional(),
+});
+
+const aiSliceFiltersSchema = z.object({
+  edgeIds: z.array(z.string().uuid()).optional(),
+  query: z.string().optional(),
+  explanation: z.string().optional(),
+  source: z.literal('ai_gen').optional(),
+});
+
 export const aiRouter = router({
   /** Create a new AI debugging session */
   createSession: projectProcedure
@@ -24,6 +45,7 @@ export const aiRouter = router({
           'general',
           'security_scan',
           'translate',
+          'graph_query',
         ]),
         contextNodeIds: z.array(z.string().uuid()).optional(),
         contextTraceId: z.string().uuid().optional(),
@@ -81,12 +103,7 @@ export const aiRouter = router({
     .input(
       z.object({
         sessionId: z.string().uuid(),
-        messages: z.array(
-          z.object({
-            role: z.enum(['user', 'assistant', 'system']),
-            content: z.string(),
-          }),
-        ),
+        messages: z.array(aiSessionMessageSchema),
         tokenUsage: z
           .object({
             promptTokens: z.number().int().min(0),
@@ -352,30 +369,65 @@ export const aiRouter = router({
         });
       }
 
-      // 6. Persist as an ai_session with type 'why_broke'
+      // 6. Reuse existing debug session for this node, or create a new one
       const contextNodeIds = node?.id ? [String(node.id)] : [];
-      const { data: session, error: sessionError } = await ctx.db
-        .from('ai_sessions')
-        .insert({
-          user_id: ctx.user.id,
-          project_id: input.projectId,
-          type: 'why_broke' as const,
-          context_node_ids: contextNodeIds,
-          messages: [
-            { role: 'user', content: userPrompt },
-            { role: 'assistant', content: summary },
-          ],
-          status: 'active',
-        })
-        .select('id')
-        .single();
+      let sessionId: string | null = null;
 
-      if (sessionError || !session) {
-        logger.warn({ sessionError }, 'Failed to persist ai_session for explainError');
-        return { sessionId: null, summary };
+      if (contextNodeIds.length > 0) {
+        const { data: existingSession } = await ctx.db
+          .from('ai_sessions')
+          .select('id, messages')
+          .eq('project_id', input.projectId)
+          .eq('user_id', ctx.user.id)
+          .contains('context_node_ids', contextNodeIds)
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (existingSession) {
+          sessionId = existingSession.id;
+          const existingMsgs = Array.isArray(existingSession.messages) ? existingSession.messages : [];
+          await ctx.db
+            .from('ai_sessions')
+            .update({
+              messages: [
+                ...existingMsgs,
+                { role: 'user', content: userPrompt },
+                { role: 'assistant', content: summary },
+              ],
+            })
+            .eq('id', sessionId)
+            .eq('user_id', ctx.user.id);
+        }
       }
 
-      return { sessionId: session.id, summary };
+      if (!sessionId) {
+        const nodeName = node ? String((node as { name?: unknown }).name ?? 'Unknown') : 'Error';
+        const { data: session, error: sessionError } = await ctx.db
+          .from('ai_sessions')
+          .insert({
+            user_id: ctx.user.id,
+            project_id: input.projectId,
+            type: 'why_broke' as const,
+            context_node_ids: contextNodeIds,
+            messages: [
+              { role: 'user', content: userPrompt },
+              { role: 'assistant', content: summary },
+            ],
+            status: 'active',
+            metadata: { name: `${nodeName} debug` },
+          })
+          .select('id')
+          .single();
+
+        if (sessionError || !session) {
+          logger.warn({ sessionError }, 'Failed to persist ai_session for explainError');
+          return { sessionId: null, summary };
+        }
+        sessionId = session.id;
+      }
+
+      return { sessionId, summary };
     }),
 
   /** Manage BYOK API keys */
@@ -490,6 +542,7 @@ export const aiRouter = router({
         query: z.string().min(3).max(2000),
         apiKeyId: z.string().uuid().optional(),
         contextNodeIds: z.array(z.string().uuid()).max(10).optional(),
+        attachments: z.array(aiMessageAttachmentSchema).max(20).optional(),
         modelPreference: z.enum(['auto', 'fast', 'powerful']).optional(),
       }),
     )
@@ -503,6 +556,7 @@ export const aiRouter = router({
           ctx.adminDb,
           input.apiKeyId,
           input.contextNodeIds,
+          input.attachments,
           input.modelPreference,
         );
       } catch (err) {
@@ -610,5 +664,200 @@ export const aiRouter = router({
           message: 'Failed to load dependency subgraph',
         });
       }
+    }),
+
+  /**
+   * Persist an AI-generated graph slice and return an ID for ai_gen URLs.
+   */
+  saveGraphSlice: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        name: z.string().min(1).max(120).optional(),
+        description: z.string().max(500).optional(),
+        nodeIds: z.array(z.string().uuid()).min(1).max(300),
+        edgeIds: z.array(z.string().uuid()).max(1000).optional(),
+        query: z.string().max(2000).optional(),
+        explanation: z.string().max(20000).optional(),
+        isShared: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const filters = {
+        source: 'ai_gen' as const,
+        edgeIds: input.edgeIds ?? [],
+        query: input.query,
+        explanation: input.explanation,
+      };
+
+      const { data, error } = await ctx.db
+        .from('saved_views')
+        .insert({
+          project_id: input.projectId,
+          user_id: ctx.user.id,
+          name: input.name ?? 'AI graph slice',
+          description: input.description ?? null,
+          visible_nodes: input.nodeIds,
+          filters,
+          is_shared: input.isShared ?? false,
+        })
+        .select('id, created_at')
+        .single();
+
+      if (error || !data) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error?.message ?? 'Failed to save graph slice',
+        });
+      }
+
+      return { viewId: data.id, createdAt: data.created_at };
+    }),
+
+  /**
+   * Load a persisted AI graph slice by ID.
+   */
+  getGraphSlice: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        viewId: z.string().uuid(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { data: view, error: viewError } = await ctx.db
+        .from('saved_views')
+        .select('id, name, description, visible_nodes, filters, user_id, is_shared')
+        .eq('id', input.viewId)
+        .eq('project_id', input.projectId)
+        .single();
+
+      if (viewError || !view) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Saved graph slice not found',
+        });
+      }
+
+      if (view.user_id !== ctx.user.id && !view.is_shared) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You do not have access to this graph slice',
+        });
+      }
+
+      const nodeIds = view.visible_nodes ?? [];
+      if (nodeIds.length === 0) {
+        return {
+          nodes: [],
+          edges: [],
+          explanation: null,
+          query: null,
+          viewId: view.id,
+        };
+      }
+
+      const filtersParsed = aiSliceFiltersSchema.safeParse(view.filters ?? {});
+      const filterData = filtersParsed.success ? filtersParsed.data : {};
+
+      const { data: nodes, error: nodesError } = await ctx.adminDb
+        .from('code_nodes')
+        .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+        .eq('project_id', input.projectId)
+        .in('id', nodeIds);
+
+      if (nodesError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to load slice nodes',
+        });
+      }
+
+      const edgeIds = filterData.edgeIds ?? [];
+      const edgeQuery = ctx.adminDb
+        .from('code_edges')
+        .select('id, source_node_id, target_node_id, type, metadata')
+        .eq('project_id', input.projectId);
+
+      const { data: edges, error: edgesError } = edgeIds.length > 0
+        ? await edgeQuery.in('id', edgeIds)
+        : await edgeQuery.in('source_node_id', nodeIds).in('target_node_id', nodeIds);
+
+      if (edgesError) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to load slice edges',
+        });
+      }
+
+      return {
+        viewId: view.id,
+        name: view.name,
+        description: view.description,
+        query: filterData.query ?? null,
+        explanation: filterData.explanation ?? null,
+        nodes: (nodes ?? []).map((n: Record<string, unknown>) => ({
+          id: String(n.id),
+          oir_id: String(n.oir_id),
+          type: String(n.type),
+          name: String(n.name),
+          file_path: String(n.file_path),
+          line_start: (n.line_start as number | null) ?? null,
+          line_end: (n.line_end as number | null) ?? null,
+          signature: (n.signature as string | null) ?? null,
+          doc_comment: (n.doc_comment as string | null) ?? null,
+          metadata: (n.metadata as Record<string, unknown> | null) ?? null,
+          source: 'seed' as const,
+        })),
+        edges: (edges ?? []).map((e: Record<string, unknown>) => ({
+          id: String(e.id),
+          source_node_id: String(e.source_node_id),
+          target_node_id: String(e.target_node_id),
+          type: String(e.type),
+          metadata: (e.metadata as Record<string, unknown> | null) ?? null,
+        })),
+      };
+    }),
+
+  /**
+   * List recent AI-generated graph slices for this project.
+   */
+  listGraphSlices: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        limit: z.number().int().min(1).max(30).default(8),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      // Filter source='ai_gen' at DB level using JSONB containment — avoids fetching 3× and filtering in JS
+      const { data, error } = await ctx.db
+        .from('saved_views')
+        .select('id, name, description, is_shared, created_at, updated_at, filters, user_id')
+        .eq('project_id', input.projectId)
+        .or(`user_id.eq.${ctx.user.id},is_shared.eq.true`)
+        .contains('filters', { source: 'ai_gen' })
+        .order('updated_at', { ascending: false })
+        .limit(input.limit);
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      const slices = (data ?? [])
+        .map((row: Record<string, unknown>) => ({
+          viewId: String(row.id),
+          name: String(row.name ?? 'AI graph slice'),
+          description: (row.description as string | null) ?? null,
+          isShared: Boolean(row.is_shared),
+          createdAt: String(row.created_at),
+          updatedAt: String(row.updated_at),
+          isOwnedByCurrentUser: String(row.user_id) === ctx.user.id,
+        }));
+
+      return { slices };
     }),
 });

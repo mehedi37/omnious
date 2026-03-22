@@ -1,7 +1,7 @@
-import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import Link from 'next/link';
 import { ErrorDetail } from '@/components/error/error-detail';
+import { Button } from '@/components/ui/button';
 import { HydrateClient } from '@/trpc/server';
 
 interface Props {

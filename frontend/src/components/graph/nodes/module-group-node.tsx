@@ -1,7 +1,7 @@
 'use client';
 
-import { memo } from 'react';
 import { type NodeProps, NodeResizer } from '@xyflow/react';
+import { memo } from 'react';
 
 interface ModuleGroupData {
   label: string;
@@ -26,16 +26,11 @@ function ModuleGroupNodeInner({ data }: NodeProps) {
         style={{ borderColor: color, backgroundColor: `${color}10` }}
       >
         <div className="flex items-center gap-1.5">
-          <div
-            className="h-2.5 w-2.5 rounded-full"
-            style={{ backgroundColor: color }}
-          />
+          <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
           <span className="text-xs font-semibold" style={{ color }}>
             {label}
           </span>
-          <span className="text-[10px] text-muted-foreground ml-auto">
-            {nodeCount} nodes
-          </span>
+          <span className="text-[10px] text-muted-foreground ml-auto">{nodeCount} nodes</span>
         </div>
       </div>
     </>
