@@ -163,6 +163,7 @@ const VirtualTreeRow = memo(function VirtualTreeRow({
         'flex w-full items-center gap-1.5 rounded-sm py-1 pr-2 text-left text-xs transition-colors hover:bg-accent/50',
         isSelected && 'bg-accent text-accent-foreground',
         !isSelected && isInSubgraph && 'text-foreground font-medium',
+        node.inSubgraph === false && 'opacity-40',
       )}
       style={{ paddingLeft, height: ROW_HEIGHT }}
     >
@@ -218,11 +219,26 @@ const VirtualTreeRow = memo(function VirtualTreeRow({
         </button>
       )}
 
-      <Icon className={cn('h-3.5 w-3.5 shrink-0', colorClass)} />
+      {node.communityColor ? (
+        <span
+          className="shrink-0 h-3 w-3 rounded-full border border-border/50"
+          style={{ backgroundColor: node.communityColor }}
+          aria-hidden
+        />
+      ) : (
+        <Icon className={cn('h-3.5 w-3.5 shrink-0', colorClass)} />
+      )}
 
       <span className={cn('truncate flex-1', !isSymbol && 'text-muted-foreground')}>
         {node.label}
       </span>
+
+      {/* Community group: show member count badge */}
+      {node.communityNodeCount != null && (
+        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70 tabular-nums">
+          {node.communityNodeCount}
+        </span>
+      )}
 
       {/* Subgraph indicator dot for symbols currently in AI subgraph */}
       {isInSubgraph && !isSelected && (
@@ -252,6 +268,25 @@ const VirtualTreeRow = memo(function VirtualTreeRow({
     );
   }
 
+  if (isSymbol) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{buttonEl}</TooltipTrigger>
+        <TooltipContent side="right" className="max-w-xs text-xs space-y-0.5">
+          <div className="font-medium">{node.label}</div>
+          <div className="text-muted-foreground capitalize">{node.kind}</div>
+          {node.path && <div className="text-muted-foreground truncate">{node.path}</div>}
+          {node.lineStart != null && (
+            <div className="text-muted-foreground">Line {node.lineStart}</div>
+          )}
+          {node.inSubgraph === false && (
+            <div className="text-amber-500/80 mt-0.5">Not in current graph view</div>
+          )}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
   return buttonEl;
 });
 
@@ -270,27 +305,30 @@ function hasMatchingChild(node: FileTreeNode, query: string): boolean {
 
 type GroupingMode = 'files' | 'communities';
 
-/** Build a community-based tree from community data + graph nodes */
+/** Build a community-based tree from community data + ALL project nodes */
 function buildCommunityTree(
   communities: Array<{ label: string; color: string; nodeIds: string[]; nodeCount: number }>,
-  nodes: ReturnType<typeof useGraphStore.getState>['nodes'],
+  allNodesMap: Map<
+    string,
+    { id: string; type: string; name: string; file_path: string | null; line_start: number | null }
+  >,
+  subgraphNodeIds: Set<string>,
 ): FileTreeNode[] {
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-
   return communities.map((c, idx) => {
     const children: FileTreeNode[] = [];
     for (const nid of c.nodeIds) {
-      const n = nodeMap.get(nid);
+      const n = allNodesMap.get(nid);
       if (!n) continue;
       children.push({
         id: `sym:${n.id}`,
-        label: n.data.label,
-        path: n.data.filePath ?? '',
-        kind: n.data.oirType as FileTreeNode['kind'],
+        label: n.name,
+        path: n.file_path ?? '',
+        kind: n.type as FileTreeNode['kind'],
         nodeId: n.id,
-        lineStart: n.data.lineStart,
-        errorCount: n.data.errorCount,
+        lineStart: n.line_start,
         children: [],
+        // Store whether this community node is in the current canvas subgraph
+        inSubgraph: subgraphNodeIds.has(n.id),
       });
     }
     children.sort((a, b) => a.label.localeCompare(b.label));
@@ -300,6 +338,8 @@ function buildCommunityTree(
       label: c.label,
       path: c.label,
       kind: 'dir' as const,
+      communityColor: c.color,
+      communityNodeCount: c.nodeCount,
       children,
     };
   });
@@ -538,12 +578,18 @@ export function AstTreeSidebar() {
     [projectTreeNodes, subgraphNodes],
   );
 
+  // Map from nodeId → node metadata — used by community tree to resolve all members
+  const projectAllNodesMap = useMemo(
+    () => new Map(projectTreeNodes.map((n) => [n.id, n])),
+    [projectTreeNodes],
+  );
+
   const communityTree = useMemo(
     () =>
       grouping === 'communities' && communitiesQuery.data
-        ? buildCommunityTree(communitiesQuery.data.communities, subgraphNodes)
+        ? buildCommunityTree(communitiesQuery.data.communities, projectAllNodesMap, subgraphNodeIds)
         : [],
-    [grouping, communitiesQuery.data, subgraphNodes],
+    [grouping, communitiesQuery.data, projectAllNodesMap, subgraphNodeIds],
   );
 
   const tree = grouping === 'files' ? fullFileTree : communityTree;
@@ -597,7 +643,10 @@ export function AstTreeSidebar() {
     });
   }, [subgraphNodes]);
 
-  const nodeCount = projectTreeNodes.length || subgraphNodes.length;
+  const nodeCount =
+    grouping === 'communities'
+      ? (communitiesQuery.data?.communities.reduce((sum, c) => sum + c.nodeCount, 0) ?? 0)
+      : projectTreeNodes.length || subgraphNodes.length;
 
   const onSelectNode = useCallback(
     (nodeId: string) => {
@@ -605,9 +654,9 @@ export function AstTreeSidebar() {
       useGraphStore.getState().highlightConnectedEdges(nodeId);
       useUIStore.getState().setDetailPanelOpen(true);
 
-      // Dispatch focus-fit to center on the node (if it's in the current subgraph)
+      // Zoom to the node if it's in the current subgraph
       if (subgraphNodeIds.has(nodeId)) {
-        window.dispatchEvent(new CustomEvent('omnious:focus-fit'));
+        window.dispatchEvent(new CustomEvent('omnious:focus-node', { detail: { nodeId } }));
       }
     },
     [subgraphNodeIds],

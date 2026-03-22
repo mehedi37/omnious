@@ -122,6 +122,10 @@ function GraphPageInner() {
         useGraphStore.getState().setFocusMode(focusNodeId);
         useGraphStore.getState().highlightConnectedEdges(focusNodeId);
         useUIStore.getState().setActiveDetailTab('details');
+        // Zoom to the focused node after layout settles
+        window.dispatchEvent(
+          new CustomEvent('omnious:focus-node', { detail: { nodeId: focusNodeId } }),
+        );
       }, 500);
       return () => clearTimeout(timer);
     }

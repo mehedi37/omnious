@@ -19,6 +19,12 @@ export interface FileTreeNode {
   errorCount?: number;
   /** Children (subdirectories + symbols) */
   children: FileTreeNode[];
+  /** Community mode: whether this symbol is in the current canvas subgraph */
+  inSubgraph?: boolean;
+  /** Community group: color swatch */
+  communityColor?: string;
+  /** Community group: total node count from API */
+  communityNodeCount?: number;
 }
 
 /**

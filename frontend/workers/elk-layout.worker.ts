@@ -73,7 +73,10 @@ function getOptions(layoutMode: string, nodeCount: number): Record<string, strin
   const base = LAYOUT_OPTIONS[layoutMode] ?? LAYOUT_OPTIONS['layered-tb'];
 
   // For large graphs with layered algorithm, use faster overrides
-  if (nodeCount > LARGE_GRAPH_THRESHOLD && (layoutMode === 'layered-tb' || layoutMode === 'layered-lr')) {
+  if (
+    nodeCount > LARGE_GRAPH_THRESHOLD &&
+    (layoutMode === 'layered-tb' || layoutMode === 'layered-lr')
+  ) {
     return { ...base, ...LARGE_GRAPH_LAYERED_OVERRIDES };
   }
 
@@ -85,9 +88,10 @@ self.onmessage = async (event: MessageEvent<LayoutRequest>) => {
   const options = getOptions(layoutMode, nodes.length);
 
   try {
-    // Check if any nodes have group info for compound layout
-    const hasGroups = nodes.some((n) => n.group);
+    // For small graphs, skip compound grouping — flat layout is faster
+    const hasGroups = nodes.length >= 10 && nodes.some((n) => n.group);
 
+    console.time(`[elk] layout requestId=${requestId} nodes=${nodes.length}`);
     let elkGraph: ElkNode;
     if (hasGroups) {
       // Build compound layout: group nodes by directory into compound parent nodes
@@ -162,11 +166,7 @@ self.onmessage = async (event: MessageEvent<LayoutRequest>) => {
     // Extract positions — handle both flat and compound layouts
     const positions: Array<{ id: string; x: number; y: number }> = [];
 
-    function extractPositions(
-      children: typeof elkGraph.children,
-      offsetX = 0,
-      offsetY = 0,
-    ) {
+    function extractPositions(children: typeof elkGraph.children, offsetX = 0, offsetY = 0) {
       for (const child of children ?? []) {
         const cx = (child.x ?? 0) + offsetX;
         const cy = (child.y ?? 0) + offsetY;
@@ -184,22 +184,24 @@ self.onmessage = async (event: MessageEvent<LayoutRequest>) => {
     // Extract ELK-computed edge routes (bend points) for node-avoiding paths
     const edgeRoutes: Array<{ id: string; points: Array<{ x: number; y: number }> }> = [];
 
-    function extractEdgeRoutes(
-      edges: typeof elkGraph.edges,
-      offsetX = 0,
-      offsetY = 0,
-    ) {
+    function extractEdgeRoutes(edges: typeof elkGraph.edges, offsetX = 0, offsetY = 0) {
       for (const edge of edges ?? []) {
         for (const section of (edge as any).sections ?? []) {
           const points: Array<{ x: number; y: number }> = [];
           if (section.startPoint) {
-            points.push({ x: (section.startPoint.x ?? 0) + offsetX, y: (section.startPoint.y ?? 0) + offsetY });
+            points.push({
+              x: (section.startPoint.x ?? 0) + offsetX,
+              y: (section.startPoint.y ?? 0) + offsetY,
+            });
           }
           for (const bp of section.bendPoints ?? []) {
             points.push({ x: bp.x + offsetX, y: bp.y + offsetY });
           }
           if (section.endPoint) {
-            points.push({ x: (section.endPoint.x ?? 0) + offsetX, y: (section.endPoint.y ?? 0) + offsetY });
+            points.push({
+              x: (section.endPoint.x ?? 0) + offsetX,
+              y: (section.endPoint.y ?? 0) + offsetY,
+            });
           }
           if (points.length >= 2) {
             edgeRoutes.push({ id: edge.id, points });
@@ -218,8 +220,10 @@ self.onmessage = async (event: MessageEvent<LayoutRequest>) => {
       }
     }
 
+    console.timeEnd(`[elk] layout requestId=${requestId} nodes=${nodes.length}`);
     self.postMessage({ requestId, positions, edgeRoutes });
   } catch (error) {
+    console.timeEnd(`[elk] layout requestId=${requestId} nodes=${nodes.length}`);
     self.postMessage({ requestId, positions: [], edgeRoutes: [], error: String(error) });
   }
 };

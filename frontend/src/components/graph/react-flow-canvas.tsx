@@ -58,7 +58,7 @@ export function ReactFlowCanvas() {
   const [nodes, setNodes, onNodesChange] = useNodesState<OmniousNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<OmniousEdge>([]);
 
-  const { fitView } = useReactFlow();
+  const { fitView, getNodes } = useReactFlow();
 
   // Context menu hook
   const { onNodeContextMenu, onPaneContextMenu, setContainerRef, menuElement } =
@@ -174,7 +174,7 @@ export function ReactFlowCanvas() {
     );
   }, [pinnedNodeIds, setNodes]);
 
-  // ── Single fitView: triggered after layout completes ──────────────────
+  // ── fitView: triggered after layout completes ────────────────────────
   useEffect(() => {
     function handleFit() {
       fitView({ padding: 0.15, duration: 0 });
@@ -183,10 +183,25 @@ export function ReactFlowCanvas() {
     return () => window.removeEventListener('omnious:focus-fit', handleFit);
   }, [fitView]);
 
-  // Node click → select + open detail panel
+  // ── focus-node: zoom to a specific node ───────────────────────────────
+  useEffect(() => {
+    function handleFocusNode(e: Event) {
+      const { nodeId } = (e as CustomEvent<{ nodeId: string }>).detail;
+      if (!nodeId) return;
+      const target = getNodes().find((n) => n.id === nodeId);
+      if (target) {
+        fitView({ nodes: [target], padding: 0.5, duration: 300, maxZoom: 1.5 });
+      }
+    }
+    window.addEventListener('omnious:focus-node', handleFocusNode);
+    return () => window.removeEventListener('omnious:focus-node', handleFocusNode);
+  }, [fitView, getNodes]);
+
+  // Node click → select + open detail panel + zoom to node
   const onNodeClick: NodeMouseHandler<OmniousNodeType> = useCallback((_event, node) => {
     useGraphStore.getState().selectNode(node.id);
     useUIStore.getState().setDetailPanelOpen(true);
+    window.dispatchEvent(new CustomEvent('omnious:focus-node', { detail: { nodeId: node.id } }));
   }, []);
 
   // Double-click → focus mode (2-hop subgraph)
@@ -243,6 +258,9 @@ export function ReactFlowCanvas() {
     return colorMap[type ?? ''] ?? '#64748b';
   }, []);
 
+  // Disable edge animation for large graphs (> 300 nodes) to improve render perf
+  const edgeAnimated = storeNodes.length <= 300;
+
   return (
     <div className="h-full w-full relative" ref={setContainerRef}>
       <ReactFlow
@@ -261,11 +279,12 @@ export function ReactFlowCanvas() {
         edgeTypes={edgeTypes}
         minZoom={0.1}
         maxZoom={3}
+        elevateNodesOnSelect={false}
         proOptions={{ hideAttribution: true }}
         className="bg-background"
         defaultEdgeOptions={{
           type: 'animated-flow',
-          animated: true,
+          animated: edgeAnimated,
         }}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} className="bg-background!" />

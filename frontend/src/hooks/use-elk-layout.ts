@@ -29,9 +29,7 @@ export function useElkLayout() {
     if (typeof Worker === 'undefined') return;
 
     // Create the worker
-    const worker = new Worker(
-      new URL('../../workers/elk-layout.worker.ts', import.meta.url),
-    );
+    const worker = new Worker(new URL('../../workers/elk-layout.worker.ts', import.meta.url));
     workerRef.current = worker;
 
     function clearTimeoutForRequest(requestId: number) {
@@ -126,13 +124,31 @@ export function useElkLayout() {
         const { nodes, edges, layoutMode } = useGraphStore.getState();
         if (nodes.length === 0) return;
 
+        // For trivial graphs (0-1 node), skip the worker entirely
+        if (nodes.length <= 1) {
+          const trivialPositions = nodes.map((n) => ({ id: n.id, x: 0, y: 0 }));
+          const store = useGraphStore.getState();
+          const updated = store.nodes.map((node) => {
+            const pos = trivialPositions.find((p) => p.id === node.id);
+            if (!pos) return node;
+            return { ...node, position: { x: pos.x, y: pos.y } };
+          });
+          store.setNodes(updated);
+          requestAnimationFrame(() => {
+            window.dispatchEvent(new CustomEvent('omnious:focus-fit'));
+          });
+          return;
+        }
+
         const requestId = latestRequestIdRef.current + 1;
         latestRequestIdRef.current = requestId;
         pendingRequestIdsRef.current.add(requestId);
         useGraphStore.getState().setIsLayouting(true);
 
         const timeout = setTimeout(() => {
-          console.warn(`[elk-layout] Layout request ${requestId} timed out after ${LAYOUT_TIMEOUT_MS}ms`);
+          console.warn(
+            `[elk-layout] Layout request ${requestId} timed out after ${LAYOUT_TIMEOUT_MS}ms`,
+          );
           settleRequest(requestId);
         }, LAYOUT_TIMEOUT_MS);
         timeoutMapRef.current.set(requestId, timeout);

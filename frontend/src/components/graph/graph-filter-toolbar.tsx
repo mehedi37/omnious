@@ -4,6 +4,7 @@ import {
   AlertCircle,
   AlertTriangle,
   Crosshair,
+  Filter,
   Flame,
   Info,
   PanelLeft,
@@ -12,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useCallback } from 'react';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { cn } from '@/lib/utils';
 
@@ -87,9 +89,7 @@ export function GraphFilterToolbar({
 
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b bg-background/95 backdrop-blur-sm overflow-x-auto">
-      <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground mr-1">
-        Filter
-      </span>
+      <Filter className="h-3.5 w-3.5 text-muted-foreground mr-1 shrink-0" />
 
       <FilterChip
         severity="error"
@@ -159,28 +159,40 @@ export function GraphFilterToolbar({
       {(onToggleLeft || onToggleRight) && (
         <div className="ml-auto flex items-center gap-0.5 pl-1">
           {onToggleLeft && (
-            <Button
-              size="icon"
-              variant="ghost"
-              className={cn('h-6 w-6', leftPanelOpen && 'bg-accent text-accent-foreground')}
-              onClick={onToggleLeft}
-              title={leftPanelOpen ? 'Hide file tree' : 'Show file tree'}
-              aria-label={leftPanelOpen ? 'Hide file tree' : 'Show file tree'}
-            >
-              <PanelLeft className="h-3.5 w-3.5" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className={cn('h-6 w-6', leftPanelOpen && 'bg-accent text-accent-foreground')}
+                  onClick={onToggleLeft}
+                  aria-label={leftPanelOpen ? 'Hide file tree' : 'Show file tree'}
+                >
+                  <PanelLeft className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {leftPanelOpen ? 'Hide file tree' : 'Show file tree'}
+              </TooltipContent>
+            </Tooltip>
           )}
           {onToggleRight && (
-            <Button
-              size="icon"
-              variant="ghost"
-              className={cn('h-6 w-6', rightPanelOpen && 'bg-accent text-accent-foreground')}
-              onClick={onToggleRight}
-              title={rightPanelOpen ? 'Hide inspector' : 'Show inspector'}
-              aria-label={rightPanelOpen ? 'Hide inspector' : 'Show inspector'}
-            >
-              <PanelRight className="h-3.5 w-3.5" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className={cn('h-6 w-6', rightPanelOpen && 'bg-accent text-accent-foreground')}
+                  onClick={onToggleRight}
+                  aria-label={rightPanelOpen ? 'Hide inspector' : 'Show inspector'}
+                >
+                  <PanelRight className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {rightPanelOpen ? 'Hide inspector' : 'Show inspector'}
+              </TooltipContent>
+            </Tooltip>
           )}
         </div>
       )}
