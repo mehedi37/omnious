@@ -7,6 +7,7 @@ import { OmniousApiClient } from '../api/client.js';
 import { getGitContext } from '../utils/git.js';
 import { logger } from '../utils/logger.js';
 import { runRules } from '../rules/index.js';
+import type { Diagnostic } from '../rules/index.js';
 import type { OIRIndex } from '../oir/types.js';
 
 const CACHE_DIR = '.omnious';
@@ -347,7 +348,7 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
 
   // ── Phase 3: Static analysis ──
   spinner.start('Running static analysis rules…');
-  const diagnostics = runRules(index, undefined, config.rules);
+  const diagnostics: Diagnostic[] = runRules(index, undefined, config.rules);
   if (diagnostics.length > 0) {
     spinner.succeed(
       `Found ${diagnostics.length} diagnostic(s)`,
@@ -377,6 +378,37 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
     }
   } else {
     spinner.succeed('No issues found');
+  }
+
+  // ── Phase 4: Index project documentation ──
+  spinner.start('Scanning for project documentation…');
+  const docs = collectProjectDocs(cwd);
+  if (docs.length > 0) {
+    spinner.succeed(`Found ${docs.length} document(s)`);
+    spinner.start('Indexing documentation for AI…');
+    try {
+      const docResult = await client.pushDocuments(docs);
+      const parts: string[] = [];
+      if (docResult.indexed > 0) parts.push(`${docResult.indexed} indexed`);
+      if (docResult.skipped > 0) parts.push(`${docResult.skipped} unchanged`);
+      if (docResult.deleted > 0) parts.push(`${docResult.deleted} removed`);
+      spinner.succeed(`Docs: ${parts.join(', ')}`);
+    } catch (err) {
+      spinner.warn('Failed to index docs (non-fatal)');
+      if (opts.verbose) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.dim(`  ${msg}`);
+      }
+    }
+  } else {
+    spinner.info('No documentation files found');
+  }
+
+  // ── Phase 5: Push insights ──
+  const insights = generatePushInsights(index, diagnostics);
+  if (insights.length > 0) {
+    console.log('');
+    logger.infoBox(insights, '💡 Insights');
   }
 }
 
@@ -419,4 +451,166 @@ function chunk<T>(arr: T[], size: number): T[][] {
     chunks.push(arr.slice(i, i + size));
   }
   return chunks;
+}
+
+/** Max content size per document to send (4KB — larger docs get truncated for embedding quality) */
+const MAX_DOC_CONTENT = 8_000;
+
+/** Document file patterns to look for (relative to project root) */
+const DOC_PATTERNS = [
+  'README.md', 'README.rst', 'README.txt', 'README',
+  'CONTRIBUTING.md', 'ARCHITECTURE.md', 'CHANGELOG.md',
+  'docs/**/*.md', 'doc/**/*.md',
+] as const;
+
+/**
+ * Collect project documentation files for RAG indexing.
+ * Returns paths and content for README, docs/, and other common doc locations.
+ */
+function collectProjectDocs(cwd: string): Array<{ path: string; content: string; doc_type: string }> {
+  const docs: Array<{ path: string; content: string; doc_type: string }> = [];
+  const seen = new Set<string>();
+
+  // Check fixed-path files
+  for (const pattern of DOC_PATTERNS) {
+    if (pattern.includes('*')) continue; // Handle glob patterns separately
+    const fullPath = path.join(cwd, pattern);
+    if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+      const relPath = pattern;
+      if (seen.has(relPath)) continue;
+      seen.add(relPath);
+      const content = fs.readFileSync(fullPath, 'utf-8').slice(0, MAX_DOC_CONTENT);
+      if (content.length >= 20) {
+        docs.push({ path: relPath, content, doc_type: 'markdown' });
+      }
+    }
+  }
+
+  // Scan docs/ and doc/ directories for .md files
+  for (const docDir of ['docs', 'doc']) {
+    const dirPath = path.join(cwd, docDir);
+    if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) continue;
+    scanDocsDir(dirPath, cwd, docs, seen, 0);
+  }
+
+  return docs;
+}
+
+function scanDocsDir(
+  dirPath: string,
+  rootDir: string,
+  docs: Array<{ path: string; content: string; doc_type: string }>,
+  seen: Set<string>,
+  depth: number,
+): void {
+  if (depth > 3) return; // Don't recurse too deep
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory() && !entry.name.startsWith('.')) {
+        scanDocsDir(fullPath, rootDir, docs, seen, depth + 1);
+      } else if (entry.isFile() && /\.(md|mdx|rst|txt)$/i.test(entry.name)) {
+        const relPath = path.relative(rootDir, fullPath);
+        if (seen.has(relPath) || docs.length >= 50) continue;
+        seen.add(relPath);
+        const content = fs.readFileSync(fullPath, 'utf-8').slice(0, MAX_DOC_CONTENT);
+        if (content.length >= 20) {
+          docs.push({ path: relPath, content, doc_type: 'markdown' });
+        }
+      }
+    }
+  } catch {
+    // Skip unreadable directories
+  }
+}
+
+/**
+ * Analyze the OIR index and diagnostics to generate actionable insights for the user.
+ * Detects: circular dependencies, hub nodes (high fan-in/fan-out), large files, and complexity hotspots.
+ */
+function generatePushInsights(index: OIRIndex, diagnostics: Diagnostic[]): string[] {
+  const insights: string[] = [];
+
+  // 1. Circular dependency count
+  const cycleDiags = diagnostics.filter((d) => d.rule_id === 'circular-deps');
+  if (cycleDiags.length > 0) {
+    insights.push(
+      `⚠ ${cycleDiags.length} circular dependency chain(s) detected — these can cause import ordering issues and make refactoring harder.`,
+    );
+  }
+
+  // 2. Hub nodes — nodes with high connection counts (fan-in + fan-out)
+  const connectionMap = new Map<string, number>();
+  for (const edge of index.edges) {
+    connectionMap.set(edge.source_oir_id, (connectionMap.get(edge.source_oir_id) ?? 0) + 1);
+    connectionMap.set(edge.target_oir_id, (connectionMap.get(edge.target_oir_id) ?? 0) + 1);
+  }
+  const hubThreshold = Math.max(15, Math.ceil(index.edges.length / index.nodes.length * 3));
+  const hubs: Array<{ name: string; filePath: string; connections: number }> = [];
+  for (const node of index.nodes) {
+    const count = connectionMap.get(node.oir_id) ?? 0;
+    if (count >= hubThreshold) {
+      hubs.push({ name: node.name, filePath: node.file_path, connections: count });
+    }
+  }
+  if (hubs.length > 0) {
+    hubs.sort((a, b) => b.connections - a.connections);
+    const top = hubs.slice(0, 3);
+    const hubList = top.map((h) => `${h.name} (${h.connections} connections)`).join(', ');
+    insights.push(
+      `🔗 ${hubs.length} hub node(s) with high connectivity: ${hubList}. Consider splitting to reduce coupling.`,
+    );
+  }
+
+  // 3. Large files — files with many nodes
+  const nodesPerFile = new Map<string, number>();
+  for (const node of index.nodes) {
+    nodesPerFile.set(node.file_path, (nodesPerFile.get(node.file_path) ?? 0) + 1);
+  }
+  const largeFiles: Array<{ path: string; count: number }> = [];
+  for (const [fp, count] of nodesPerFile) {
+    if (count >= 20) {
+      largeFiles.push({ path: fp, count });
+    }
+  }
+  if (largeFiles.length > 0) {
+    largeFiles.sort((a, b) => b.count - a.count);
+    const top = largeFiles.slice(0, 3);
+    const fileList = top.map((f) => `${f.path.split('/').pop()} (${f.count} symbols)`).join(', ');
+    insights.push(
+      `📦 ${largeFiles.length} file(s) with high symbol density: ${fileList}. Large files are harder to navigate and test.`,
+    );
+  }
+
+  // 4. Large function warnings from diagnostics
+  const largeFnDiags = diagnostics.filter((d) => d.rule_id === 'large-functions');
+  if (largeFnDiags.length > 0) {
+    insights.push(
+      `📏 ${largeFnDiags.length} function(s) exceed recommended size — consider extracting helpers.`,
+    );
+  }
+
+  // 5. High unused export count
+  const unusedDiags = diagnostics.filter((d) => d.rule_id === 'unused-exports');
+  if (unusedDiags.length >= 10) {
+    insights.push(
+      `🧹 ${unusedDiags.length} potentially unused export(s) — dead code removal could reduce bundle size.`,
+    );
+  }
+
+  // 6. Project size summary
+  const nodeTypes = index.summary.nodes_by_type;
+  const topTypes = Object.entries(nodeTypes)
+    .sort(([, a], [, b]) => (b ?? 0) - (a ?? 0))
+    .slice(0, 3)
+    .map(([type, count]) => `${count} ${type}s`)
+    .join(', ');
+  if (topTypes) {
+    insights.push(
+      `📊 Graph: ${index.nodes.length} nodes, ${index.edges.length} edges across ${Object.keys(index.files).length} files (${topTypes}).`,
+    );
+  }
+
+  return insights;
 }

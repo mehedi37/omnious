@@ -8,10 +8,270 @@ import {
   callLLMStream,
   resolveApiKey,
   selectModel,
+  fetchRelevantInsights,
   SYSTEM_PROMPTS,
   type LLMMessage,
   type ResolvedKey,
 } from './ai.service.js';
+
+// ─── Semantic Cache Helpers ──────────────────────────────────
+
+interface CacheHit {
+  id: string;
+  query_text: string;
+  response_text: string;
+  response_model: string;
+  context_hash: string;
+  similarity: number;
+}
+
+/**
+ * Check the semantic knowledge cache for a similar query.
+ * Uses pgvector cosine similarity with a high threshold (>= 0.92)
+ * so only semantically near-identical queries trigger a cache hit.
+ */
+async function _checkSemanticCache(
+  projectId: string,
+  queryEmbedding: number[],
+  adminDb: DbClient,
+): Promise<CacheHit | null> {
+  try {
+    const { data, error } = await adminDb.rpc('match_knowledge_cache', {
+      p_project_id: projectId,
+      query_embedding: JSON.stringify(queryEmbedding),
+      similarity_threshold: 0.92,
+    });
+    if (error || !data || (data as unknown[]).length === 0) return null;
+    const hit = (data as CacheHit[])[0]!;
+
+    // Bump hit count
+    await adminDb
+      .from('knowledge_cache')
+      .update({ hit_count: hit.id, last_hit_at: new Date().toISOString() })
+      .eq('id', hit.id)
+      .then(() => { /* fire-and-forget */ });
+
+    return hit;
+  } catch {
+    return null; // cache miss on any error
+  }
+}
+
+/**
+ * Store a query + response in the semantic cache for future reuse.
+ */
+async function _writeSemanticCache(
+  projectId: string,
+  queryText: string,
+  queryEmbedding: number[],
+  responseText: string,
+  responseModel: string,
+  contextNodeOirIds: string[],
+  adminDb: DbClient,
+): Promise<void> {
+  try {
+    // Create a simple hash from sorted oir_ids for invalidation
+    const sortedIds = [...contextNodeOirIds].sort();
+    const contextHash = sortedIds.join(',').slice(0, 500);
+
+    await adminDb.from('knowledge_cache').insert({
+      project_id: projectId,
+      query_text: queryText,
+      query_embedding: JSON.stringify(queryEmbedding),
+      response_text: responseText,
+      response_model: responseModel,
+      context_hash: contextHash,
+    });
+  } catch (err) {
+    logger.debug({ err }, 'Failed to write semantic cache — non-critical');
+  }
+}
+
+/**
+ * Fetch relevant global knowledge entries (library docs, patterns, best practices)
+ * that match the query. Used to enrich the LLM context with "global intelligence".
+ */
+async function _fetchGlobalKnowledge(
+  queryEmbedding: number[],
+  adminDb: DbClient,
+): Promise<string> {
+  try {
+    const { data, error } = await adminDb.rpc('match_global_knowledge', {
+      query_embedding: JSON.stringify(queryEmbedding),
+      match_threshold: 0.7,
+      match_count: 3,
+    });
+    if (error || !data || (data as unknown[]).length === 0) return '';
+
+    const entries = data as Array<{
+      title: string;
+      category: string;
+      content: string;
+      similarity: number;
+    }>;
+
+    const lines = entries.map(
+      (e) => `### ${e.title} (${e.category})\n${e.content}`,
+    );
+    return `\n\n## Reference Knowledge\n${lines.join('\n\n')}`;
+  } catch {
+    return ''; // degrade gracefully
+  }
+}
+
+// ─── Project Context ─────────────────────────────────────────
+
+/**
+ * Build a per-project context block containing project metadata, personality,
+ * code summaries, and documentation. Injected into every LLM prompt so the
+ * AI understands what project it's working with.
+ *
+ * Tiered assembly with token budgets:
+ *   Tier 1: Project identity + personality (~500 tokens)
+ *   Tier 2: Architecture overview — directory summaries (~800 tokens)
+ *   Tier 3: Documentation fragments from project_documents (~700 tokens)
+ *   Tier 4: Key file summaries (remaining budget)
+ *
+ * Total budget: ~2500 tokens (~7500 chars).
+ */
+export async function buildProjectContext(
+  projectId: string,
+  db: DbClient,
+  adminDb: DbClient,
+  queryEmbedding?: number[],
+): Promise<string> {
+  const MAX_CHARS = 7_500;
+
+  // ── Tier 1: Project identity + personality ──
+  const { data: project } = await db
+    .from('projects')
+    .select('name, description, primary_language, framework, detected_stack, git_url, git_branch, settings')
+    .eq('id', projectId)
+    .single();
+
+  if (!project) return '';
+
+  const p = project as Record<string, unknown>;
+  const parts: string[] = [];
+
+  parts.push(`## Project: ${p.name ?? 'Unknown'}`);
+
+  // Inject project personality if available (stored in settings.project_personality)
+  const settings = (p.settings ?? {}) as Record<string, unknown>;
+  if (settings.project_personality && typeof settings.project_personality === 'string') {
+    parts.push(String(settings.project_personality));
+  } else if (p.description) {
+    parts.push(String(p.description));
+  }
+
+  // Tech stack line
+  const stackItems: string[] = [];
+  if (p.primary_language) stackItems.push(String(p.primary_language));
+  if (p.framework) stackItems.push(String(p.framework));
+  if (p.detected_stack && typeof p.detected_stack === 'object') {
+    const stack = p.detected_stack as Record<string, unknown>;
+    for (const [key, val] of Object.entries(stack)) {
+      if (val && typeof val === 'string') stackItems.push(`${key}: ${val}`);
+      else if (Array.isArray(val)) stackItems.push(`${key}: ${(val as string[]).join(', ')}`);
+    }
+  }
+  if (stackItems.length > 0) {
+    parts.push(`**Tech stack:** ${stackItems.join(' · ')}`);
+  }
+
+  if (p.git_url) {
+    parts.push(`**Repository:** ${p.git_url} (branch: ${p.git_branch ?? 'main'})`);
+  }
+
+  // ── Tier 2: Architecture overview (directory summaries) ──
+  const { data: summaries } = await adminDb
+    .from('code_summaries')
+    .select('scope, path, summary, node_count')
+    .eq('project_id', projectId)
+    .order('scope', { ascending: true })  // 'directory' < 'file'
+    .order('node_count', { ascending: false })
+    .limit(60);
+
+  if (summaries && (summaries as unknown[]).length > 0) {
+    const rows = summaries as Array<{
+      scope: string;
+      path: string;
+      summary: string;
+      node_count: number;
+    }>;
+
+    const dirSummaries = rows.filter((r) => r.scope === 'directory');
+    const fileSummaries = rows.filter((r) => r.scope === 'file');
+
+    if (dirSummaries.length > 0) {
+      parts.push('\n### Architecture Overview');
+      for (const s of dirSummaries.slice(0, 25)) {
+        parts.push(`- \`${s.path}\` — ${s.summary}`);
+      }
+    }
+
+    // ── Tier 3: Documentation fragments from project_documents ──
+    let docChars = 0;
+    const DOC_BUDGET = 2_100; // ~700 tokens
+    try {
+      let docData: unknown[] | null = null;
+
+      if (queryEmbedding) {
+        // Semantic search: find docs relevant to the current query
+        const { data } = await adminDb.rpc('match_project_documents', {
+          p_project_id: projectId,
+          query_embedding: JSON.stringify(queryEmbedding),
+          similarity_threshold: 0.6,
+          match_count: 3,
+        });
+        docData = data as unknown[] | null;
+      }
+
+      if (!docData || docData.length === 0) {
+        // Fallback: fetch top docs by recency
+        const { data } = await adminDb
+          .from('project_documents')
+          .select('doc_path, content, doc_type')
+          .eq('project_id', projectId)
+          .order('updated_at', { ascending: false })
+          .limit(3);
+        docData = data as unknown[] | null;
+      }
+
+      if (docData && docData.length > 0) {
+        const docs = docData as Array<{ doc_path: string; content: string; doc_type?: string; similarity?: number }>;
+        parts.push('\n### Project Documentation');
+        for (const doc of docs) {
+          const snippet = doc.content.slice(0, DOC_BUDGET - docChars);
+          if (snippet.length < 50) break; // skip tiny fragments
+          parts.push(`**${doc.doc_path}:**\n${snippet}`);
+          docChars += snippet.length;
+          if (docChars >= DOC_BUDGET) break;
+        }
+      }
+    } catch {
+      // project_documents table may not exist yet — degrade gracefully
+    }
+
+    // ── Tier 4: Key file summaries (remaining budget) ──
+    const usedChars = parts.join('\n').length;
+    const remaining = MAX_CHARS - usedChars;
+
+    if (fileSummaries.length > 0 && remaining > 400) {
+      parts.push('\n### Key Files');
+      let fileChars = 0;
+      for (const s of fileSummaries.slice(0, 20)) {
+        const line = `- \`${s.path}\` — ${s.summary}`;
+        if (fileChars + line.length > remaining - 200) break;
+        parts.push(line);
+        fileChars += line.length;
+      }
+    }
+  }
+
+  const result = parts.join('\n');
+  return result.slice(0, MAX_CHARS);
+}
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -87,6 +347,8 @@ interface SubgraphPayload {
   llmMessages: LLMMessage[];
   model: string;
   steps: string[];
+  /** Query embedding for semantic cache writes */
+  queryEmbedding: number[];
 }
 
 // DB client type — matches Supabase client interface
@@ -396,6 +658,7 @@ async function _buildSubgraphPayload(
       ],
       model,
       steps,
+      queryEmbedding: embedding,
     };
   }
 
@@ -426,6 +689,27 @@ async function _buildSubgraphPayload(
     }
   }
   steps.push(`Expanded to ${allNodeIds.size} nodes via ${traversalDepth}-hop traversal`);
+
+  // SQL edge fallback: if traverse_graph returned no neighbors (e.g. RPC returned empty,
+  // project has no edges indexed yet, or RPC is project-unaware), directly query code_edges.
+  if (traversalNodes.length === 0 && topSeeds.length > 0) {
+    const seedIds = topSeeds.map((s) => s.id);
+    const [{ data: outEdges }, { data: inEdges }] = await Promise.all([
+      adminDb.from('code_edges').select('target_node_id').eq('project_id', projectId).in('source_node_id', seedIds).limit(60),
+      adminDb.from('code_edges').select('source_node_id').eq('project_id', projectId).in('target_node_id', seedIds).limit(60),
+    ]);
+    const prevSize = allNodeIds.size;
+    for (const e of outEdges ?? []) {
+      const nid = String((e as Record<string, unknown>).target_node_id ?? '');
+      if (nid && !allNodeIds.has(nid)) allNodeIds.add(nid);
+    }
+    for (const e of inEdges ?? []) {
+      const nid = String((e as Record<string, unknown>).source_node_id ?? '');
+      if (nid && !allNodeIds.has(nid)) allNodeIds.add(nid);
+    }
+    const added = allNodeIds.size - prevSize;
+    if (added > 0) steps.push(`SQL edge fallback added ${added} direct neighbor(s)`);
+  }
 
   // 6. Cap total nodes — fit within the model's context window using token estimation.
   //    (step log added after nodeIds slice)
@@ -578,11 +862,29 @@ async function _buildSubgraphPayload(
     }
   }
 
+  // 12. Enrich context with global knowledge (library docs, patterns)
+  const globalKnowledge = await _fetchGlobalKnowledge(embedding, adminDb);
+  if (globalKnowledge) {
+    steps.push('Added global reference knowledge to context');
+  }
+
+  // 13. Fetch per-project context (metadata + code summaries + docs)
+  const projectContext = await buildProjectContext(projectId, db, adminDb, embedding);
+  if (projectContext) {
+    steps.push('Added project metadata and architecture context');
+  }
+
+  // 14. Fetch relevant past insights from conversation memory
+  const insightsContext = await fetchRelevantInsights(projectId, userId, embedding, adminDb);
+  if (insightsContext) {
+    steps.push('Added conversation memory insights');
+  }
+
   const llmMessages: LLMMessage[] = [
     { role: 'system', content: SYSTEM_PROMPTS.graphQuery },
     {
       role: 'user',
-      content: `User question: "${query}"\n\n${contextText}${mentionContext}`,
+      content: `User question: "${query}"\n\n${projectContext ? `${projectContext}\n\n` : ''}${contextText}${mentionContext}${globalKnowledge}${insightsContext}`,
     },
   ];
 
@@ -593,13 +895,14 @@ async function _buildSubgraphPayload(
     llmMessages,
     model,
     steps,
+    queryEmbedding: embedding,
   };
 }
 
 /**
  * AI-driven graph query. The primary entry point for "ask anything about your codebase".
  *
- * Pipeline: embed query → vector search → traverse neighbors → merge → LLM explain
+ * Pipeline: cache check → embed query → vector search → traverse neighbors → merge → LLM explain → cache write
  */
 export async function querySubgraph(
   projectId: string,
@@ -615,11 +918,33 @@ export async function querySubgraph(
   const payload = await _buildSubgraphPayload(
     projectId, query, userId, db, adminDb, apiKeyId, contextNodeIds, attachments, modelPreference,
   );
+
+  // Semantic cache: check before calling the LLM
+  const cacheHit = await _checkSemanticCache(projectId, payload.queryEmbedding, adminDb);
+  if (cacheHit) {
+    payload.steps.push(`Semantic cache hit (similarity: ${cacheHit.similarity.toFixed(3)})`);
+    return {
+      nodes: payload.nodes,
+      edges: payload.edges,
+      explanation: cacheHit.response_text,
+      steps: payload.steps,
+      usage: { promptTokens: 0, completionTokens: 0, model: cacheHit.response_model },
+    };
+  }
+
   const llmResult = await callLLM(payload.llmMessages, payload.resolvedKey, {
     maxTokens: 2048,
     model: payload.model,
   });
   payload.steps.push('Generated AI explanation');
+
+  // Write to semantic cache (fire-and-forget)
+  const nodeOirIds = payload.nodes.map((n) => n.oir_id);
+  _writeSemanticCache(
+    projectId, query, payload.queryEmbedding,
+    llmResult.content, llmResult.model, nodeOirIds, adminDb,
+  ).catch(() => { /* non-critical */ });
+
   return {
     nodes: payload.nodes,
     edges: payload.edges,
@@ -636,6 +961,7 @@ export async function querySubgraph(
 /**
  * Streaming variant of querySubgraph.
  * Yields step progress events, then LLM delta events, then a final done event.
+ * Also checks the semantic cache before running the LLM.
  */
 export async function* querySubgraphStream(
   projectId: string,
@@ -657,13 +983,36 @@ export async function* querySubgraphStream(
     yield { type: 'step', text: step };
   }
 
-  // Stream the LLM response token-by-token
+  // Semantic cache: check before calling the LLM
+  const cacheHit = await _checkSemanticCache(projectId, payload.queryEmbedding, adminDb);
+  if (cacheHit) {
+    yield { type: 'step', text: `Semantic cache hit (similarity: ${cacheHit.similarity.toFixed(3)})` };
+    yield { type: 'delta', text: cacheHit.response_text };
+    yield {
+      type: 'done',
+      nodes: payload.nodes,
+      edges: payload.edges,
+      steps: [...payload.steps, `Semantic cache hit (similarity: ${cacheHit.similarity.toFixed(3)})`],
+    };
+    return;
+  }
+
+  // Stream the LLM response token-by-token, collecting for cache write
+  let fullResponse = '';
   for await (const delta of callLLMStream(payload.llmMessages, payload.resolvedKey, {
     maxTokens: 2048,
     model: payload.model,
   })) {
+    fullResponse += delta;
     yield { type: 'delta', text: delta };
   }
+
+  // Write to semantic cache (fire-and-forget)
+  const nodeOirIds = payload.nodes.map((n) => n.oir_id);
+  _writeSemanticCache(
+    projectId, query, payload.queryEmbedding,
+    fullResponse, payload.model, nodeOirIds, adminDb,
+  ).catch(() => { /* non-critical */ });
 
   yield {
     type: 'done',
@@ -673,54 +1022,120 @@ export async function* querySubgraphStream(
   };
 }
 
+// ─── Graph Slice Generation ──────────────────────────────────
+
+/** Data needed to save an AI graph slice using portable oir_id references */
+export interface GraphSliceData {
+  title: string;
+  explanationMd: string;
+  nodeOirIds: string[];
+  edgePairs: Array<{ source: string; target: string; type: string }>;
+  entryPointOirId: string | null;
+  queryText: string | null;
+  sliceType: 'ai_generated' | 'user_saved' | 'auto_explain';
+  tags: string[];
+}
+
+/**
+ * Extract a lightweight graph slice from query results.
+ * Uses oir_ids (not UUIDs) so slices survive re-indexes.
+ */
+export function buildGraphSlice(
+  nodes: SubgraphNode[],
+  edges: SubgraphEdge[],
+  explanation: string,
+  query: string,
+): GraphSliceData {
+  // Map UUID → oir_id for edge reference translation
+  const idToOirId = new Map<string, string>();
+  for (const n of nodes) idToOirId.set(n.id, n.oir_id);
+
+  const nodeOirIds = nodes.map((n) => n.oir_id);
+
+  const edgePairs = edges
+    .map((e) => ({
+      source: idToOirId.get(e.source_node_id) ?? '',
+      target: idToOirId.get(e.target_node_id) ?? '',
+      type: e.type,
+    }))
+    .filter((e) => e.source && e.target);
+
+  // Entry point: highest-relevance seed node
+  const seedNodes = nodes.filter((n) => n.source === 'seed');
+  const entryPoint = seedNodes.length > 0
+    ? seedNodes.reduce((a, b) => ((a.relevance ?? 0) >= (b.relevance ?? 0) ? a : b))
+    : null;
+
+  return {
+    title: query.length > 100 ? `${query.slice(0, 97)}...` : query,
+    explanationMd: explanation,
+    nodeOirIds,
+    edgePairs,
+    entryPointOirId: entryPoint?.oir_id ?? null,
+    queryText: query,
+    sliceType: 'ai_generated',
+    tags: [],
+  };
+}
+
 /**
  * Get overview nodes for the smart landing page.
- * Returns high-level structural nodes (modules, packages, namespaces, routes)
- * plus edges between them — typically 20-50 nodes.
+ * Returns ALL node types — structural nodes (modules, packages) plus
+ * leaf nodes (functions, variables, type_defs) with code_body.
+ * Capped at 200 nodes total to keep layout performant.
  */
 export async function getOverviewGraph(
   projectId: string,
   db: DbClient,
 ): Promise<OverviewResult> {
-  // Fetch structural/high-level nodes
-  const overviewTypes = ['module', 'package', 'namespace', 'route', 'component', 'class'];
+  const NODE_SELECT = 'id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body' as const;
+  const MAX_OVERVIEW = 200;
 
-  const { data: nodes, error: nodesError } = await db
+  // 1. Fetch structural/high-level nodes first (no cap — usually few)
+  const structuralTypes = ['module', 'package', 'namespace', 'route', 'component', 'class'];
+
+  const { data: structuralNodes, error: structuralError } = await db
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select(NODE_SELECT)
     .eq('project_id', projectId)
-    .in('type', overviewTypes)
+    .in('type', structuralTypes)
     .order('type')
     .order('name')
-    .limit(60);
+    .limit(MAX_OVERVIEW);
 
-  if (nodesError) {
+  if (structuralError) {
     throw new TRPCError({
       code: 'INTERNAL_SERVER_ERROR',
       message: 'Failed to fetch overview nodes',
     });
   }
 
-  if (!nodes || nodes.length === 0) {
-    // If no structural nodes, fall back to top-level functions/classes
-    const { data: fallback } = await db
+  const structCount = structuralNodes?.length ?? 0;
+  const remaining = MAX_OVERVIEW - structCount;
+
+  // 2. Fetch leaf nodes (functions, variables, type_defs) to fill remaining budget
+  let leafNodes: Record<string, unknown>[] = [];
+  if (remaining > 0) {
+    const leafTypes = ['function', 'variable', 'type_def'];
+    const { data: leaves } = await db
       .from('code_nodes')
-      .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+      .select(NODE_SELECT)
       .eq('project_id', projectId)
-      .in('type', ['function', 'class', 'component'])
+      .in('type', leafTypes)
       .order('name')
-      .limit(40);
-
-    const fallbackNodes = (fallback ?? []).map((n: Record<string, unknown>) =>
-      _toSubgraphNode(n, 'seed'),
-    );
-
-    return { nodes: fallbackNodes, edges: [], summary: null };
+      .limit(remaining);
+    leafNodes = (leaves ?? []) as Record<string, unknown>[];
   }
 
-  const nodeIds = nodes.map((n: Record<string, unknown>) => String(n.id));
+  const allNodes = [...(structuralNodes ?? []), ...leafNodes] as Record<string, unknown>[];
 
-  // Fetch edges between these overview nodes
+  if (allNodes.length === 0) {
+    return { nodes: [], edges: [], summary: null };
+  }
+
+  const nodeIds = allNodes.map((n) => String(n.id));
+
+  // 3. Fetch edges between all overview nodes
   const { data: edges } = await db
     .from('code_edges')
     .select('id, source_node_id, target_node_id, type, metadata')
@@ -728,7 +1143,7 @@ export async function getOverviewGraph(
     .in('source_node_id', nodeIds)
     .in('target_node_id', nodeIds);
 
-  const subgraphNodes = nodes.map((n: Record<string, unknown>) => _toSubgraphNode(n, 'seed'));
+  const subgraphNodes = allNodes.map((n) => _toSubgraphNode(n, 'seed'));
   const subgraphEdges = (edges ?? []).map((e: Record<string, unknown>) => _toSubgraphEdge(e));
 
   return {
@@ -765,7 +1180,7 @@ export async function getErrorSubgraph(
   // Fetch the error nodes
   const { data: _errorNodesFull } = await adminDb
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body')
     .eq('project_id', projectId)
     .in('id', errorNodeIds);
 
@@ -788,7 +1203,7 @@ export async function getErrorSubgraph(
   const allIds = [...allNodeIds].slice(0, 80);
   const { data: fullNodes } = await adminDb
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body')
     .eq('project_id', projectId)
     .in('id', allIds);
 
@@ -846,7 +1261,7 @@ export async function getTraceSubgraph(
   // Fetch the linked code nodes
   const { data: nodes } = await adminDb
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body')
     .eq('project_id', projectId)
     .in('id', codeNodeIds);
 
@@ -879,7 +1294,7 @@ export async function getDependencySubgraph(
   // Fetch the root node
   const { data: rootNodeData } = await adminDb
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body')
     .eq('id', nodeId)
     .eq('project_id', projectId)
     .single();
@@ -907,7 +1322,7 @@ export async function getDependencySubgraph(
   // Fetch all nodes
   const { data: nodes } = await adminDb
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body')
     .eq('project_id', projectId)
     .in('id', allIds);
 
@@ -943,6 +1358,7 @@ function _toSubgraphNode(n: Record<string, unknown>, source: 'seed' | 'traversal
     doc_comment: n.doc_comment as string | null,
     metadata: n.metadata as Record<string, unknown> | null,
     source,
+    code_body: n.code_body as string | null ?? null,
   };
 }
 

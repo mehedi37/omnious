@@ -32,7 +32,7 @@ export class TypeScriptExtractor implements Extractor {
 
     // Module node (always emitted per file)
     const lastLine = source.split('\n').length;
-    const moduleOirId = generateOirId(filePath, baseName, 'module', 1);
+    const moduleOirId = generateOirId(filePath, baseName, 'module', '');
     nodes.push({
       oir_id: moduleOirId,
       type: 'module',
@@ -128,7 +128,7 @@ export class TypeScriptExtractor implements Extractor {
         ? importPath.split('/').slice(0, 2).join('/')
         : importPath.split('/')[0] ?? importPath;
 
-      targetOirId = generateOirId(`external:${pkgName}`, pkgName, 'external_api', 0);
+      targetOirId = generateOirId(`external:${pkgName}`, pkgName, 'external_api', '');
 
       nodes.push({
         oir_id: targetOirId,
@@ -175,7 +175,7 @@ export class TypeScriptExtractor implements Extractor {
         const pkgName = importPath.startsWith('@')
           ? importPath.split('/').slice(0, 2).join('/')
           : importPath.split('/')[0] ?? importPath;
-        targetOirId = generateOirId(`external:${pkgName}`, pkgName, 'external_api', 0);
+        targetOirId = generateOirId(`external:${pkgName}`, pkgName, 'external_api', '');
       }
       edges.push({
         source_oir_id: moduleOirId,
@@ -201,7 +201,7 @@ export class TypeScriptExtractor implements Extractor {
         const name = 'default';
         const startLine = value.startPosition.row + 1;
         const endLine = value.endPosition.row + 1;
-        const oirId = generateOirId(filePath, name, 'function', startLine);
+        const oirId = generateOirId(filePath, name, 'function', 'export default function');
         nodes.push({
           oir_id: oirId,
           type: 'function',
@@ -275,12 +275,12 @@ export class TypeScriptExtractor implements Extractor {
     const isComponent = this.isReactComponent(name, node);
     const nodeType: OIRNodeType = isComponent ? 'component' : 'function';
 
-    const oirId = generateOirId(filePath, name, nodeType, startLine);
     const docComment = this.getDocComment(node);
     const params = this.extractParams(node);
     const isAsync = node.children.some((c) => c.type === 'async');
 
     const signature = `${isAsync ? 'async ' : ''}function ${name}(${params.join(', ')})`;
+    const oirId = generateOirId(filePath, name, nodeType, signature);
 
     nodes.push({
       oir_id: oirId,
@@ -347,11 +347,10 @@ export class TypeScriptExtractor implements Extractor {
       ) {
         const isComponent = this.isReactComponent(name, valueNode);
         const nodeType: OIRNodeType = isComponent ? 'component' : 'function';
-        const oirId = generateOirId(filePath, name, nodeType, startLine);
-
         const params = this.extractParams(valueNode);
         const isAsync = valueNode.children.some((c) => c.type === 'async');
         const signature = `const ${name} = ${isAsync ? 'async ' : ''}(${params.join(', ')}) => ...`;
+        const oirId = generateOirId(filePath, name, nodeType, signature);
 
         nodes.push({
           oir_id: oirId,
@@ -390,7 +389,7 @@ export class TypeScriptExtractor implements Extractor {
         }
       } else {
         // Non-function variable
-        const oirId = generateOirId(filePath, name, 'variable', startLine);
+        const oirId = generateOirId(filePath, name, 'variable', `const ${name}`);
         nodes.push({
           oir_id: oirId,
           type: 'variable',
@@ -434,7 +433,7 @@ export class TypeScriptExtractor implements Extractor {
     const name = nameNode.text;
     const startLine = node.startPosition.row + 1;
     const endLine = node.endPosition.row + 1;
-    const oirId = generateOirId(filePath, name, 'class', startLine);
+    const oirId = generateOirId(filePath, name, 'class', `class ${name}`);
 
     const body = node.childForFieldName('body');
     const memberCount = body?.namedChildren.length ?? 0;
@@ -532,7 +531,7 @@ export class TypeScriptExtractor implements Extractor {
         ? 'enum'
         : 'type';
 
-    const oirId = generateOirId(filePath, name, 'type_def', startLine);
+    const oirId = generateOirId(filePath, name, 'type_def', `${kind} ${name}`);
 
     nodes.push({
       oir_id: oirId,

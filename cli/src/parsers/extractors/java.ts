@@ -29,7 +29,7 @@ export class JavaExtractor implements Extractor {
     const lastLine = source.split('\n').length;
 
     // Module node
-    const moduleOirId = generateOirId(filePath, baseName, 'module', 1);
+    const moduleOirId = generateOirId(filePath, baseName, 'module', '');
     nodes.push({
       oir_id: moduleOirId,
       type: 'module',
@@ -110,7 +110,7 @@ export class JavaExtractor implements Extractor {
     const parts = importPath.split('.');
     const pkgName = parts.slice(0, Math.min(parts.length - 1, 2)).join('.');
 
-    const targetOirId = generateOirId(`external:${pkgName}`, pkgName, 'external_api', 0);
+    const targetOirId = generateOirId(`external:${pkgName}`, pkgName, 'external_api', '');
     nodes.push({
       oir_id: targetOirId,
       type: 'external_api',
@@ -152,7 +152,7 @@ export class JavaExtractor implements Extractor {
     const isPublic = this.hasModifier(node, 'public');
     const isRecord = node.type === 'record_declaration';
 
-    const oirId = generateOirId(filePath, name, 'class', startLine);
+    const oirId = generateOirId(filePath, name, 'class', `${isRecord ? 'record' : 'class'} ${name}`);
 
     nodes.push({
       oir_id: oirId,
@@ -232,7 +232,7 @@ export class JavaExtractor implements Extractor {
     const endLine = node.endPosition.row + 1;
     const isPublic = this.hasModifier(node, 'public');
 
-    const oirId = generateOirId(filePath, name, 'type_def', startLine);
+    const oirId = generateOirId(filePath, name, 'type_def', `interface ${name}`);
 
     nodes.push({
       oir_id: oirId,
@@ -289,7 +289,7 @@ export class JavaExtractor implements Extractor {
     const endLine = node.endPosition.row + 1;
     const isPublic = this.hasModifier(node, 'public');
 
-    const oirId = generateOirId(filePath, name, 'type_def', startLine);
+    const oirId = generateOirId(filePath, name, 'type_def', `enum ${name}`);
 
     nodes.push({
       oir_id: oirId,
@@ -338,8 +338,8 @@ export class JavaExtractor implements Extractor {
         const startLine = member.startPosition.row + 1;
         const endLine = member.endPosition.row + 1;
 
-        const oirId = generateOirId(filePath, `${classOirId.slice(0, 8)}.${name}`, 'function', startLine);
         const params = this.extractMethodParams(member);
+        const oirId = generateOirId(filePath, `${classOirId.slice(0, 8)}.${name}`, 'function', `${name}(${params.join(', ')})`);
 
         nodes.push({
           oir_id: oirId,

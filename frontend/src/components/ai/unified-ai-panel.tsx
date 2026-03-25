@@ -286,26 +286,38 @@ export function UnifiedAIPanel({
     // ── Standalone mode: create/reuse session, persist user msg, stream AI response ──
     if (!currentProjectId) return;
 
+    // When mentions are present, append a context note so the LLM knows what was tagged.
+    // The raw message already contains the #label text; this adds kind/subtype info.
+    let standaloneContent = trimmed;
+    if (attachments.length > 0) {
+      const ctx = attachments
+        .map((a) => `  - ${a.label}${a.subtype ? ` (${a.subtype})` : ''} [${a.kind}]`)
+        .join('\n');
+      standaloneContent = `${trimmed}\n\n[Tagged context:\n${ctx}]`;
+    }
+
     useAIStore.getState().addMessage({
       role: 'user',
-      content: trimmed,
+      content: trimmed,          // store readable content (no annotation) in UI
       timestamp: new Date().toISOString(),
       attachments: attachments.length > 0 ? attachments : undefined,
     });
 
     let sessionId = activeSessionId;
     if (!sessionId) {
-      sessionId = crypto.randomUUID();
-      useAIStore.getState().setActiveSession(sessionId, 'general');
       try {
-        await createSessionMutation.mutateAsync({
+        const session = await createSessionMutation.mutateAsync({
           projectId: currentProjectId,
           type: 'general',
           modelPreference: modelTier !== 'auto' ? modelTier : undefined,
         });
+        sessionId = session.id;
+        useAIStore.getState().setActiveSession(sessionId, 'general');
         onNewSession?.(sessionId);
       } catch {
-        // Session creation failed; streaming will still work but won't persist
+        // Session creation failed; use a temporary ID so streaming still works
+        sessionId = crypto.randomUUID();
+        useAIStore.getState().setActiveSession(sessionId, 'general');
       }
     }
 
@@ -315,11 +327,16 @@ export function UnifiedAIPanel({
       messages: [{ role: 'user', content: trimmed, timestamp: new Date().toISOString() }],
     });
 
-    // Stream AI response
+    // Stream AI response — replace the last user message content with the annotated version
+    // so the LLM sees the tagged context, while the UI shows the clean message.
     const allMessages = useAIStore
       .getState()
       .messages.filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+      .map((m, _i, arr) => ({
+        role: m.role as 'user' | 'assistant',
+        // Last user message gets the annotated content; all others pass through unchanged
+        content: m === arr[arr.length - 1] && m.role === 'user' ? standaloneContent : m.content,
+      }));
 
     try {
       await streamChat(allMessages, sessionId, currentProjectId, modelTier);

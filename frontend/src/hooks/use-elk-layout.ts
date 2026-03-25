@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { useGraphStore } from '@/lib/stores/graph-store';
+import { NODE_SIZE_DIMENSIONS, useGraphStore } from '@/lib/stores/graph-store';
 
 const LAYOUT_TIMEOUT_MS = 20_000;
 
@@ -157,14 +157,18 @@ export function useElkLayout() {
           // Post layout request to worker
           worker.postMessage({
             requestId,
-            nodes: nodes.map((n) => ({
-              id: n.id,
-              width: 200,
-              height: 60,
-              group: n.data.filePath
-                ? n.data.filePath.split('/').slice(0, -1).join('/')
-                : undefined,
-            })),
+            nodes: nodes.map((n) => {
+              const tier = n.data.sizeTier ?? 'medium';
+              const dims = NODE_SIZE_DIMENSIONS[tier];
+              return {
+                id: n.id,
+                width: dims.width,
+                height: dims.height,
+                group: n.data.filePath
+                  ? n.data.filePath.split('/').slice(0, -1).join('/')
+                  : undefined,
+              };
+            }),
             edges: edges.map((e) => ({
               id: e.id,
               source: e.source,

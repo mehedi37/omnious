@@ -121,6 +121,7 @@ export function MentionTextarea({
   const [popupOpen, setPopupOpen] = useState(false);
   const [debouncedToken, setDebouncedToken] = useState<MentionToken | null>(null);
   const [mentions, setMentions] = useState<MentionEntry[]>([]);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const popupRef = useRef<HTMLDivElement>(null);
 
@@ -207,6 +208,11 @@ export function MentionTextarea({
             }));
         })();
 
+  // Reset selection index when popup opens or suggestion list changes
+  useEffect(() => {
+    setSelectedSuggestionIndex(0);
+  }, [popupOpen, suggestions.length]);
+
   // Detect `#token` on every change
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -219,22 +225,6 @@ export function MentionTextarea({
       setPopupOpen(!!token);
     },
     [onChange],
-  );
-
-  // Keyboard nav inside the popup + pass-through to parent
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (popupOpen && (e.key === 'Escape')) {
-        e.preventDefault();
-        setPopupOpen(false);
-        setMentionToken(null);
-        return;
-      }
-      // ArrowUp/Down/Enter/Tab are handled by cmdk inside the Command component
-      // when it steals focus — here we just close on Escape and let parent handle Enter
-      onKeyDown?.(e);
-    },
-    [popupOpen, onKeyDown],
   );
 
   const selectSuggestion = useCallback(
@@ -255,6 +245,50 @@ export function MentionTextarea({
       setTimeout(() => el?.focus(), 0);
     },
     [value, onChange, mentions, onMentionsChange, ref, mentionToken],
+  );
+
+  // Keyboard nav inside the popup + pass-through to parent
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (!popupOpen || suggestions.length === 0) {
+        // Popup closed — let parent handle everything (e.g. Enter to send)
+        onKeyDown?.(e);
+        return;
+      }
+
+      // Popup is open — intercept navigation keys so they never reach the parent
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setPopupOpen(false);
+        setMentionToken(null);
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedSuggestionIndex((prev) => Math.min(prev + 1, suggestions.length - 1));
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedSuggestionIndex((prev) => Math.max(prev - 1, 0));
+        return;
+      }
+
+      // Enter/Tab: select the highlighted suggestion — do NOT send the message
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        e.stopPropagation();
+        const entry = suggestions[selectedSuggestionIndex] ?? suggestions[0];
+        if (entry) selectSuggestion(entry);
+        return;
+      }
+
+      // Any other key (e.g. typing) — pass through but keep popup alive
+      onKeyDown?.(e);
+    },
+    [popupOpen, suggestions, selectedSuggestionIndex, onKeyDown, selectSuggestion],
   );
 
   // Close popup when clicking outside (but not when clicking inside the popup itself)
@@ -290,12 +324,12 @@ export function MentionTextarea({
             <CommandList>
               <CommandEmpty>No matching results</CommandEmpty>
               <CommandGroup heading={`Matches for "#${mentionToken?.raw ?? ''}"`}>
-                {suggestions.map((entry) => (
+                {suggestions.map((entry, index) => (
                   <CommandItem
                     key={`${entry.kind}:${entry.id}`}
                     value={`${entry.label} ${entry.subtype ?? ''}`}
                     onSelect={() => selectSuggestion(entry)}
-                    className="gap-2 cursor-pointer flex-col items-start"
+                    className={`gap-2 cursor-pointer flex-col items-start ${index === selectedSuggestionIndex ? 'bg-accent text-accent-foreground' : ''}`}
                   >
                     <div className="flex w-full items-center gap-2">
                       {entry.kind === 'error' ? (

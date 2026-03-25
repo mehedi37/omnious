@@ -2,17 +2,19 @@ import crypto from 'node:crypto';
 
 /**
  * Generate a deterministic OIR ID for a code node.
- * Uses SHA-256 of (file_path + name + type + line_start), truncated to 32 hex chars.
+ * Uses SHA-256 of (file_path + name + type + normalized_signature), truncated to 32 hex chars.
+ * The signature is whitespace-normalized so formatting changes don't alter the ID.
  */
 export function generateOirId(
   filePath: string,
   name: string,
   type: string,
-  lineStart: number,
+  signature: string,
 ): string {
+  const normalizedSig = signature.replace(/\s+/g, ' ').trim();
   return crypto
     .createHash('sha256')
-    .update(`${filePath}::${name}::${type}::${lineStart}`)
+    .update(`${filePath}::${name}::${type}::${normalizedSig}`)
     .digest('hex')
     .slice(0, 32);
 }
@@ -39,14 +41,14 @@ export function hashNodeContent(
 }
 
 /**
- * Extract the code body for a node (first ~200 lines of the node's source).
+ * Extract the code body for a node (first ~500 lines of the node's source).
  * Used for LLM context in AI queries and graph-aware embeddings.
  */
 export function extractCodeBody(
   source: string,
   lineStart: number,
   lineEnd: number,
-  maxLines = 200,
+  maxLines = 500,
 ): string | null {
   const lines = source.split('\n').slice(lineStart - 1, Math.min(lineEnd, lineStart - 1 + maxLines));
   const body = lines.join('\n').trim();

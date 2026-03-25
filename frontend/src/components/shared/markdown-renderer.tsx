@@ -71,7 +71,7 @@ const COMPONENTS: Components = {
           </span>
         )}
         <CodeCopyButton code={textContent} />
-        <pre className={`overflow-x-auto rounded-md bg-[#0d1117] p-3 ${lang ? 'pt-7' : ''}`}>
+        <pre className={`overflow-x-auto max-w-full rounded-md bg-[#0d1117] p-3 ${lang ? 'pt-7' : ''}`}>
           {children}
         </pre>
       </div>

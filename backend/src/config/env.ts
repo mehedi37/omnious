@@ -53,8 +53,10 @@ const envSchema = z.object({
 
   // AI — Ollama local runtime (default)
   OLLAMA_BASE_URL: z.string().url().default('http://localhost:11434/v1'),
-  OLLAMA_MODEL: z.string().min(1).default('llama3:latest'),
-  OLLAMA_EMBEDDING_MODEL: z.string().min(1).default('nomic-embed-text'),
+  OLLAMA_MODEL: z.string().min(1).default('qwen3.5:4b'),
+  OLLAMA_MODEL_FAST: z.string().min(1).default('qwen3.5:4b'),
+  OLLAMA_MODEL_POWERFUL: z.string().min(1).default('qwen3.5:4b'),
+  OLLAMA_EMBEDDING_MODEL: z.string().min(1).default('nomic-embed-text-v2-moe:latest'),
   OLLAMA_EMBEDDING_DIMENSIONS: optionalPositiveIntFromEnv,
   OLLAMA_API_KEY: z.string().min(1).optional(),
 

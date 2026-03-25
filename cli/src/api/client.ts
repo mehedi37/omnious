@@ -133,6 +133,7 @@ export class OmniousApiClient {
         doc_comment: n.doc_comment,
         metadata: n.metadata,
         content_hash: n.content_hash,
+        code_body: n.code_body,
       })),
       edges: edges.map((e) => ({
         source_oir_id: e.source_oir_id,
@@ -170,6 +171,30 @@ export class OmniousApiClient {
         line_end: d.line_end,
         metadata: d.metadata,
       })),
+    });
+  }
+
+  /** Push project documentation for RAG indexing */
+  async pushDocuments(
+    documents: Array<{ path: string; content: string; doc_type: string }>,
+  ): Promise<{ indexed: number; skipped: number; deleted: number }> {
+    return this.mutate('graph.pushDocuments', {
+      projectApiKey: this.apiKey,
+      documents,
+    });
+  }
+
+  /** Report a runtime error with parsed stack frames */
+  async reportError(error: {
+    error_type: string;
+    error_message: string;
+    error_stack: string;
+    frames: Array<{ file_path: string; function_name: string | null; line: number | null; column: number | null }>;
+    severity: 'error' | 'warning' | 'info';
+  }): Promise<{ snapshot_id: string | null; matched_node_id: string | null; frames_matched: number }> {
+    return this.mutate('graph.reportErrorFromCLI', {
+      projectApiKey: this.apiKey,
+      ...error,
     });
   }
 

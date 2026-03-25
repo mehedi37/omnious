@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, projectProcedure, apiKeyProcedure } from '../trpc/index.js';
 import { oirNodeTypeSchema, oirNodeSchema, oirEdgeSchema, oirEdgeByOirIdSchema } from '@omnious/shared/oir-schemas';
-import { resolveApiKey, generateModuleGroups, backfillNodeEmbeddings, selectModel } from '../services/ai.service.js';
+import { resolveApiKey, generateModuleGroups, backfillNodeEmbeddings, selectModel, generateProjectPersonality, indexProjectDocuments } from '../services/ai.service.js';
 import { generateCodeSummaries, getCodeSummaries } from '../services/summary.service.js';
 import { logger } from '../lib/logger.js';
 
@@ -474,6 +474,14 @@ export const graphRouter = router({
         );
       });
 
+      // Generate project personality (non-blocking — fire and forget)
+      generateProjectPersonality(project.id, summaryKey, ctx.adminDb).catch((err) => {
+        logger.warn(
+          { projectId: project.id, error: err instanceof Error ? err.message : String(err) },
+          'Project personality generation failed (non-fatal)',
+        );
+      });
+
       return {
         project_id: project.id,
         project_name: project.name,
@@ -672,7 +680,7 @@ export const graphRouter = router({
         return { groups: [] };
       }
 
-      const groups = await generateModuleGroups(nodes, resolvedKey);
+      const groups = await generateModuleGroups(nodes, resolvedKey, ctx.adminDb);
       return { groups };
     }),
 
@@ -766,5 +774,154 @@ export const graphRouter = router({
         });
 
       return { communities };
+    }),
+
+  /** Report a runtime error from the CLI (parses stack frames and maps to code nodes) */
+  reportErrorFromCLI: apiKeyProcedure
+    .input(
+      z.object({
+        projectApiKey: z.string().min(1),
+        error_type: z.string().min(1).max(255),
+        error_message: z.string().min(1).max(2000),
+        error_stack: z.string().max(8000).default(''),
+        severity: z.enum(['error', 'warning', 'info']).default('error'),
+        frames: z.array(
+          z.object({
+            file_path: z.string(),
+            function_name: z.string().nullable(),
+            line: z.number().nullable(),
+            column: z.number().nullable(),
+          }),
+        ).max(50).default([]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const project = ctx.apiKeyProject;
+
+      // Try to resolve stack frames to code nodes
+      let matchedNodeId: string | null = null;
+      let framesMatched = 0;
+
+      if (input.frames.length > 0) {
+        // Get all code nodes for this project to match against
+        const framePaths = input.frames
+          .map((f) => f.file_path)
+          .filter(Boolean);
+
+        if (framePaths.length > 0) {
+          // Normalize: keep only relative portions of paths
+          const relPaths = framePaths.map((fp) => {
+            // Strip common prefixes like /home/user/project/ or /app/
+            const parts = fp.split('/');
+            // Find the portion after common root patterns
+            const srcIdx = parts.findIndex((p) => ['src', 'lib', 'app', 'pages', 'api', 'components'].includes(p));
+            return srcIdx >= 0 ? parts.slice(srcIdx).join('/') : parts.slice(-3).join('/');
+          });
+
+          // Try matching frames against code_nodes by file_path + function_name
+          for (let i = 0; i < input.frames.length && !matchedNodeId; i++) {
+            const frame = input.frames[i];
+            const relPath = relPaths[i];
+
+            // Try matching by file path suffix + function name
+            if (frame.function_name) {
+              const { data: matches } = await ctx.adminDb
+                .from('code_nodes')
+                .select('id')
+                .eq('project_id', project.id)
+                .ilike('file_path', `%${relPath}`)
+                .eq('name', frame.function_name)
+                .limit(1);
+
+              if (matches && matches.length > 0) {
+                matchedNodeId = matches[0].id;
+                framesMatched++;
+                continue;
+              }
+            }
+
+            // Fallback: match by file path + line range
+            if (frame.line) {
+              const { data: matches } = await ctx.adminDb
+                .from('code_nodes')
+                .select('id')
+                .eq('project_id', project.id)
+                .ilike('file_path', `%${relPath}`)
+                .lte('line_start', frame.line)
+                .gte('line_end', frame.line)
+                .limit(1);
+
+              if (matches && matches.length > 0) {
+                matchedNodeId = matches[0].id;
+                framesMatched++;
+              }
+            }
+          }
+        }
+      }
+
+      // Generate fingerprint for deduplication
+      const fingerprint = `runtime::${input.error_type}::${matchedNodeId ?? 'unknown'}::${input.error_message.slice(0, 100)}`;
+
+      // Upsert error snapshot
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data: snapshotId, error } = await (ctx.adminDb.rpc as any)('upsert_error_snapshot', {
+        p_project_id: project.id,
+        p_code_node_id: matchedNodeId,
+        p_trace_id: null as unknown as string,
+        p_span_id: null as unknown as string,
+        p_error_type: input.error_type,
+        p_error_message: input.error_message,
+        p_error_stack: input.error_stack,
+        p_fingerprint: fingerprint.slice(0, 255),
+        p_metadata: {
+          source: 'cli-report-error',
+          frames: input.frames.slice(0, 10),
+          frames_matched: framesMatched,
+        } as import('../lib/supabase/database.types.js').Json,
+        p_span_otel_id: null as unknown as string,
+        p_source: 'cli-report-error',
+        p_severity: input.severity,
+      });
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Error snapshot creation failed: ${error.message}`,
+        });
+      }
+
+      return {
+        snapshot_id: snapshotId as string | null,
+        matched_node_id: matchedNodeId,
+        frames_matched: framesMatched,
+      };
+    }),
+
+  /** Push project documents for RAG indexing (called from CLI after push) */
+  pushDocuments: apiKeyProcedure
+    .input(
+      z.object({
+        projectApiKey: z.string().min(1),
+        documents: z.array(
+          z.object({
+            path: z.string().min(1),
+            content: z.string().min(1),
+            doc_type: z.string().default('markdown'),
+          }),
+        ).max(50),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await indexProjectDocuments(
+        ctx.apiKeyProject.id,
+        input.documents.map((d) => ({
+          path: d.path,
+          content: d.content,
+          docType: d.doc_type,
+        })),
+        ctx.adminDb,
+      );
+      return result;
     }),
 });

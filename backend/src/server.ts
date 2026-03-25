@@ -13,12 +13,13 @@ import { loggerConfig, logger } from './lib/logger.js';
 import { createContext } from './trpc/context.js';
 import { appRouter, type AppRouter } from './routers/index.js';
 import { createUserClient, supabaseAdmin } from './lib/supabase/client.js';
-import { querySubgraphStream, type StreamEvent } from './services/graph-query.service.js';
+import { querySubgraphStream, buildProjectContext, type StreamEvent } from './services/graph-query.service.js';
 import {
   callLLMStream,
   resolveApiKey,
   selectModel,
   SYSTEM_PROMPTS,
+  compressSessionHistory,
   type LLMMessage,
 } from './services/ai.service.js';
 
@@ -125,6 +126,9 @@ async function buildServer() {
     const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')?.content ?? '';
     const model = selectModel('graphQuery', lastUserMsg, resolvedKey.provider, modelPreference ?? 'auto');
 
+    // Fetch per-project context (metadata + code summaries) so the AI knows what project it's working with
+    const projectContext = await buildProjectContext(projectId, db, supabaseAdmin);
+
     reply.raw.writeHead(200, {
       ...(reply.getHeaders() as import('node:http').OutgoingHttpHeaders),
       'Content-Type': 'text/event-stream',
@@ -137,12 +141,19 @@ async function buildServer() {
       reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
     };
 
-    const llmMessages: LLMMessage[] = [
+    const systemMessages: LLMMessage[] = [
       { role: 'system', content: SYSTEM_PROMPTS.chatAssistant },
+    ];
+    if (projectContext) {
+      systemMessages.push({ role: 'system', content: projectContext });
+    }
+
+    const llmMessages: LLMMessage[] = compressSessionHistory([
+      ...systemMessages,
       ...messages
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    ];
+    ]);
 
     let fullContent = '';
     try {
@@ -180,7 +191,12 @@ async function buildServer() {
         }
       }
     } catch (err) {
-      logger.error({ err, projectId, userId: user.id }, 'SSE stream-chat failed');
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      if (isAbort) {
+        logger.warn({ projectId, userId: user.id }, 'SSE stream-chat aborted (client disconnect or inactivity)');
+      } else {
+        logger.error({ err, projectId, userId: user.id }, 'SSE stream-chat failed');
+      }
       sendEvent({ type: 'error', message: err instanceof Error ? err.message : 'Stream failed' });
     } finally {
       reply.raw.end();
@@ -252,7 +268,12 @@ async function buildServer() {
         sendEvent(event);
       }
     } catch (err) {
-      logger.error({ err, projectId, userId: user.id }, 'SSE stream-graph-query failed');
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      if (isAbort) {
+        logger.warn({ projectId, userId: user.id }, 'SSE stream-graph-query aborted (client disconnect or inactivity)');
+      } else {
+        logger.error({ err, projectId, userId: user.id }, 'SSE stream-graph-query failed');
+      }
       sendEvent({ type: 'error', message: err instanceof Error ? err.message : 'Stream failed' });
     } finally {
       reply.raw.end();

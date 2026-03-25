@@ -105,6 +105,26 @@ export function useGraphQuery() {
     scheduleGraphLayout();
   }, [overviewQuery.data]);
 
+  // ── Auto-enable heatmap when unresolved errors exist ───────────────────
+
+  const unresolvedErrorsQuery = trpc.error.list.useQuery(
+    { projectId: projectId ?? '', limit: 1, offset: 0, resolved: false },
+    {
+      enabled: !!projectId && !!overviewQuery.data && !aiGenId,
+      staleTime: 5 * 60_000,
+    },
+  );
+
+  useEffect(() => {
+    if (!unresolvedErrorsQuery.data) return;
+    const hasErrors = unresolvedErrorsQuery.data.total > 0;
+    const store = useGraphStore.getState();
+    // Auto-enable heatmap only on first load (don't override user toggle)
+    if (hasErrors && !store.heatmapActive && store.heatmapData.size === 0) {
+      store.toggleHeatmap();
+    }
+  }, [unresolvedErrorsQuery.data]);
+
   // ── Module groups (background fetch after overview loads) ──────────────
 
   const moduleGroupsQuery = trpc.graph.getModuleGroups.useQuery(

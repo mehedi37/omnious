@@ -73,7 +73,7 @@ export const AIMessage = memo(function AIMessage({ message, showCursor = false }
       </Avatar>
       <div
         className={`
-          max-w-[80%] rounded-lg px-4 py-2.5 text-sm leading-relaxed
+          min-w-0 max-w-[80%] overflow-x-hidden rounded-lg px-4 py-2.5 text-sm leading-relaxed
           ${isUser ? 'bg-primary text-primary-foreground' : 'bg-muted'}
         `}
       >

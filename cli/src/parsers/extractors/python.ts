@@ -29,7 +29,7 @@ export class PythonExtractor implements Extractor {
     const lastLine = source.split('\n').length;
 
     // Module node
-    const moduleOirId = generateOirId(filePath, baseName, 'module', 1);
+    const moduleOirId = generateOirId(filePath, baseName, 'module', '');
     nodes.push({
       oir_id: moduleOirId,
       type: 'module',
@@ -125,7 +125,7 @@ export class PythonExtractor implements Extractor {
       const nameNode = node.childForFieldName('name') ?? node.namedChildren[0];
       if (nameNode) {
         const modName = nameNode.text.split('.')[0] ?? nameNode.text;
-        const targetOirId = generateOirId(`external:${modName}`, modName, 'external_api', 0);
+        const targetOirId = generateOirId(`external:${modName}`, modName, 'external_api', '');
         nodes.push({
           oir_id: targetOirId,
           type: 'external_api',
@@ -167,7 +167,7 @@ export class PythonExtractor implements Extractor {
           : base.replace(/\\/g, '/');
       } else {
         const modName = importPath.split('.')[0] ?? importPath;
-        targetOirId = generateOirId(`external:${modName}`, modName, 'external_api', 0);
+        targetOirId = generateOirId(`external:${modName}`, modName, 'external_api', '');
         nodes.push({
           oir_id: targetOirId,
           type: 'external_api',
@@ -216,10 +216,9 @@ export class PythonExtractor implements Extractor {
       node.previousSibling?.type === 'async';
     const decorators = this.getDecorators(decoratedNode);
 
-    const oirId = generateOirId(filePath, name, 'function', startLine);
-    const docComment = this.getDocstring(node);
-
     const signature = `${isAsync ? 'async ' : ''}def ${name}(${params.join(', ')})`;
+    const oirId = generateOirId(filePath, name, 'function', signature);
+    const docComment = this.getDocstring(node);
 
     nodes.push({
       oir_id: oirId,
@@ -260,7 +259,7 @@ export class PythonExtractor implements Extractor {
     const outer = decoratedNode ?? node;
     const startLine = outer.startPosition.row + 1;
     const endLine = outer.endPosition.row + 1;
-    const oirId = generateOirId(filePath, name, 'class', startLine);
+    const oirId = generateOirId(filePath, name, 'class', `class ${name}`);
 
     const body = node.childForFieldName('body');
     const memberCount = body?.namedChildren.length ?? 0;
@@ -335,7 +334,7 @@ export class PythonExtractor implements Extractor {
     const name = left.text;
     const startLine = node.startPosition.row + 1;
     const endLine = node.endPosition.row + 1;
-    const oirId = generateOirId(filePath, name, 'variable', startLine);
+    const oirId = generateOirId(filePath, name, 'variable', `${name} = ...`);
 
     nodes.push({
       oir_id: oirId,

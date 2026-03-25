@@ -1,7 +1,8 @@
 'use client';
 
-import { Bot, Info, PanelRightClose } from 'lucide-react';
+import { Bot, FileCode, Info, PanelRightClose } from 'lucide-react';
 import { UnifiedAIPanel } from '@/components/ai/unified-ai-panel';
+import { CodePreviewPanel } from '@/components/graph/panels/code-preview-panel';
 import { NodeDetailPanel } from '@/components/graph/panels/node-detail-panel';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -46,7 +47,7 @@ export function InspectorPanel({
     <div className="flex h-full flex-col border-l bg-background">
       <Tabs
         value={activeTab}
-        onValueChange={(val) => setActiveTab(val as 'details' | 'ai')}
+        onValueChange={(val) => setActiveTab(val as 'details' | 'code' | 'ai')}
         className="flex h-full flex-col"
       >
         <div className="flex items-center justify-between border-b px-2 py-1">
@@ -57,6 +58,13 @@ export function InspectorPanel({
             >
               <Info className="h-3 w-3 mr-1" />
               Details
+            </TabsTrigger>
+            <TabsTrigger
+              value="code"
+              className="h-6 px-2 text-xs data-[state=active]:bg-accent data-[state=active]:shadow-none"
+            >
+              <FileCode className="h-3 w-3 mr-1" />
+              Code
             </TabsTrigger>
             <TabsTrigger
               value="ai"
@@ -79,6 +87,10 @@ export function InspectorPanel({
 
         <TabsContent value="details" className="flex-1 m-0 overflow-hidden">
           <NodeDetailPanel />
+        </TabsContent>
+
+        <TabsContent value="code" className="flex-1 m-0 overflow-hidden">
+          <CodePreviewPanel />
         </TabsContent>
 
         <TabsContent value="ai" className="flex-1 m-0 overflow-hidden">
