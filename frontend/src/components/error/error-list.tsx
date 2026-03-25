@@ -5,6 +5,7 @@ import {
   BrainCircuit,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock,
   Crosshair,
@@ -21,6 +22,13 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -37,6 +45,8 @@ import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { formatNumber, formatRelativeTime } from '@/lib/utils/format';
 import { trpc } from '@/trpc/client';
 
+const PAGE_SIZE = 25;
+
 export function ErrorList() {
   const currentProjectId = useWorkspaceStore((s) => s.currentProjectId);
   const workspaceSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -44,6 +54,9 @@ export function ErrorList() {
   const router = useRouter();
   const pathname = usePathname();
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(0);
+  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'resolved'>('all');
+  const [severityFilter, setSeverityFilter] = useState<'all' | 'error' | 'warning' | 'info'>('all');
   /** errorId → AI result (null while loading) */
   const [aiSummaries, setAiSummaries] = useState<
     Record<string, { summary: string; sessionId: string | null } | null>
@@ -52,7 +65,13 @@ export function ErrorList() {
   const [aiOpen, setAiOpen] = useState<Set<string>>(new Set());
 
   const errorsQuery = trpc.error.list.useQuery(
-    { projectId: currentProjectId ?? '', limit: 50, offset: 0 },
+    {
+      projectId: currentProjectId ?? '',
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+      ...(statusFilter === 'open' ? { resolved: false } : statusFilter === 'resolved' ? { resolved: true } : {}),
+      ...(severityFilter !== 'all' ? { severity: severityFilter } : {}),
+    },
     { enabled: !!currentProjectId, staleTime: 10_000 },
   );
 
@@ -130,6 +149,8 @@ export function ErrorList() {
   }
 
   const errors = errorsQuery.data?.errors ?? [];
+  const total = errorsQuery.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const filtered = search
     ? errors.filter(
         (e) =>
@@ -153,13 +174,43 @@ export function ErrorList() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="px-3 md:px-6 py-3 border-b">
+      <div className="px-3 md:px-6 py-3 border-b flex flex-wrap items-center gap-3">
         <Input
           placeholder="Search errors by message, type, or fingerprint…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="max-w-sm"
         />
+        <Select
+          value={statusFilter}
+          onValueChange={(v) => { setStatusFilter(v as typeof statusFilter); setPage(0); }}
+        >
+          <SelectTrigger className="w-[130px]">
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            <SelectItem value="open">Open</SelectItem>
+            <SelectItem value="resolved">Resolved</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          value={severityFilter}
+          onValueChange={(v) => { setSeverityFilter(v as typeof severityFilter); setPage(0); }}
+        >
+          <SelectTrigger className="w-[130px]">
+            <SelectValue placeholder="Severity" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All severities</SelectItem>
+            <SelectItem value="error">Error</SelectItem>
+            <SelectItem value="warning">Warning</SelectItem>
+            <SelectItem value="info">Info</SelectItem>
+          </SelectContent>
+        </Select>
+        <span className="text-xs text-muted-foreground ml-auto">
+          {total} error{total !== 1 ? 's' : ''}
+        </span>
       </div>
       <ScrollArea className="flex-1">
         <div className="overflow-x-auto min-w-0">
@@ -167,6 +218,7 @@ export function ErrorList() {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-[60px]">Status</TableHead>
+                <TableHead className="w-[80px] hidden sm:table-cell">Severity</TableHead>
                 <TableHead className="w-[140px] hidden sm:table-cell">Type</TableHead>
                 <TableHead>Message</TableHead>
                 <TableHead className="w-[60px] text-right">Count</TableHead>
@@ -180,7 +232,7 @@ export function ErrorList() {
             <TableBody>
               {filtered.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-32 text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="h-32 text-center text-muted-foreground">
                     {search ? 'No errors match your search.' : 'No errors recorded yet.'}
                   </TableCell>
                 </TableRow>
@@ -210,6 +262,20 @@ export function ErrorList() {
                             <AlertCircle className="h-3 w-3" />
                           </Badge>
                         )}
+                      </TableCell>
+                      <TableCell className="hidden sm:table-cell">
+                        <Badge
+                          variant="outline"
+                          className={
+                            error.severity === 'warning'
+                              ? 'bg-yellow-500/20 text-yellow-700 dark:text-yellow-400'
+                              : error.severity === 'info'
+                                ? 'bg-blue-500/20 text-blue-700 dark:text-blue-400'
+                                : 'bg-red-500/20 text-red-700 dark:text-red-400'
+                          }
+                        >
+                          {error.severity ?? 'error'}
+                        </Badge>
                       </TableCell>
                       <TableCell className="hidden sm:table-cell">
                         <Badge variant="secondary" className="font-mono text-[10px]">
@@ -319,7 +385,7 @@ export function ErrorList() {
                     {/* AI summary expansion row */}
                     {isAiOpen && (
                       <TableRow className="bg-muted/30 hover:bg-muted/30">
-                        <TableCell colSpan={7} className="py-3 px-6">
+                        <TableCell colSpan={8} className="py-3 px-6">
                           {isAiLoading ? (
                             <div className="flex items-center gap-2 text-sm text-muted-foreground">
                               <Loader2 className="h-4 w-4 animate-spin" />
@@ -359,6 +425,37 @@ export function ErrorList() {
           </Table>
         </div>
       </ScrollArea>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between border-t px-3 md:px-6 py-2">
+          <span className="text-xs text-muted-foreground">
+            Page {page + 1} of {totalPages}
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7"
+              disabled={page === 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+            >
+              <ChevronLeft className="h-3 w-3 mr-1" />
+              Previous
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7"
+              disabled={page >= totalPages - 1}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Next
+              <ChevronRight className="h-3 w-3 ml-1" />
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -6,6 +6,8 @@ import { pushCommand } from '../src/commands/push.js';
 import { syncCommand } from '../src/commands/sync.js';
 import { statusCommand } from '../src/commands/status.js';
 import { configCommand } from '../src/commands/config.js';
+import { summarizeCommand } from '../src/commands/summarize.js';
+import { reportErrorCommand } from '../src/commands/report-error.js';
 
 const program = new Command();
 
@@ -119,6 +121,40 @@ program
       config: opts.config,
       apiKey: opts.apiKey,
       remote: opts.remote,
+    });
+  });
+
+// ── omnious summarize ──
+program
+  .command('summarize')
+  .description('Scan project and generate context metadata for smarter AI')
+  .option('-c, --config <path>', 'Path to .omnious.yml')
+  .option('-v, --verbose', 'Show full context JSON')
+  .action(async (opts) => {
+    await summarizeCommand({
+      config: opts.config,
+      verbose: opts.verbose,
+    });
+  });
+
+// ── omnious report-error ──
+program
+  .command('report-error')
+  .description('Report a runtime error (from file or stdin) and map to code graph')
+  .option('-f, --file <path>', 'Read error from a file')
+  .option('-t, --type <type>', 'Override error type (e.g. TypeError)')
+  .option('-s, --severity <severity>', 'Error severity: error, warning, info', 'error')
+  .option('-k, --api-key <key>', 'Project API key')
+  .option('-c, --config <path>', 'Path to .omnious.yml')
+  .option('-v, --verbose', 'Show parsed stack frames')
+  .action(async (opts) => {
+    await reportErrorCommand({
+      file: opts.file,
+      type: opts.type,
+      severity: opts.severity,
+      apiKey: opts.apiKey,
+      config: opts.config,
+      verbose: opts.verbose,
     });
   });
 

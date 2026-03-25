@@ -198,3 +198,18 @@
 .omnious-heatmap-low {
   box-shadow: 0 0 4px 1px rgba(234, 179, 8, 0.3);
 }
+
+/* Subtle pulse for selected/active graph nodes — pauses when heatmap is active */
+@keyframes omnious-node-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 oklch(0.7 0.15 250 / 0.4);
+  }
+  50% {
+    box-shadow: 0 0 8px 2px oklch(0.7 0.15 250 / 0.3);
+  }
+}
+
+.omnious-node-pulse {
+  animation: omnious-node-pulse 2.5s ease-in-out infinite;
+  will-change: box-shadow;
+}

@@ -305,17 +305,19 @@ export function UnifiedAIPanel({
 
     let sessionId = activeSessionId;
     if (!sessionId) {
-      sessionId = crypto.randomUUID();
-      useAIStore.getState().setActiveSession(sessionId, 'general');
       try {
-        await createSessionMutation.mutateAsync({
+        const session = await createSessionMutation.mutateAsync({
           projectId: currentProjectId,
           type: 'general',
           modelPreference: modelTier !== 'auto' ? modelTier : undefined,
         });
+        sessionId = session.id;
+        useAIStore.getState().setActiveSession(sessionId, 'general');
         onNewSession?.(sessionId);
       } catch {
-        // Session creation failed; streaming will still work but won't persist
+        // Session creation failed; use a temporary ID so streaming still works
+        sessionId = crypto.randomUUID();
+        useAIStore.getState().setActiveSession(sessionId, 'general');
       }
     }
 

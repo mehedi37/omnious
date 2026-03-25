@@ -33,6 +33,9 @@ interface AIState {
   setTokenUsage: (usage: { prompt: number; completion: number; total: number }) => void;
   prefillMessage: string | null;
   setPrefillMessage: (text: string | null) => void;
+  /** Set by one-click error explain: triggers AI panel to auto-explain this error */
+  pendingErrorExplain: { errorId: string; nodeId: string; nodeName: string } | null;
+  setPendingErrorExplain: (info: { errorId: string; nodeId: string; nodeName: string } | null) => void;
 }
 
 export const useAIStore = create<AIState>()(
@@ -44,6 +47,7 @@ export const useAIStore = create<AIState>()(
     isStreaming: false,
     tokenUsage: { prompt: 0, completion: 0, total: 0 },
     prefillMessage: null,
+    pendingErrorExplain: null,
 
     setProjectId: (id) =>
       set((state) => {
@@ -101,6 +105,11 @@ export const useAIStore = create<AIState>()(
     setPrefillMessage: (text) =>
       set((state) => {
         state.prefillMessage = text;
+      }),
+
+    setPendingErrorExplain: (info) =>
+      set((state) => {
+        state.pendingErrorExplain = info;
       }),
   })),
 );

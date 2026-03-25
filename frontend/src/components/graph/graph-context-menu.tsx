@@ -12,6 +12,7 @@ import {
   Lock,
   Map,
   Maximize,
+  Route,
   RotateCcw,
 } from 'lucide-react';
 import {
@@ -240,6 +241,17 @@ export function useGraphContextMenu() {
     close();
   }, [menu?.nodeId, close]);
 
+  const handleTraceErrorPath = useCallback(() => {
+    if (!menu?.nodeId) return;
+    const gs = useGraphStore.getState();
+    if (gs.errorFlowNodeIds.size > 0) {
+      gs.clearErrorPath();
+    } else {
+      gs.traceErrorPath(menu.nodeId);
+    }
+    close();
+  }, [menu?.nodeId, close]);
+
   // ── Pane context menu actions ──────────────────────────────────────────────
 
   const handleFitView = useCallback(() => {
@@ -295,6 +307,7 @@ export function useGraphContextMenu() {
 
   const pinnedNodeIds = useGraphStore((s) => s.pinnedNodeIds);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
+  const errorFlowActive = useGraphStore((s) => s.errorFlowNodeIds.size > 0);
   const isNodePinned = menu?.nodeId ? pinnedNodeIds.has(menu.nodeId) : false;
   const isNodeFocused = menu?.nodeId ? focusedNodeId === menu.nodeId : false;
   const minimapVisible = useUIStore((s) => s.minimapVisible);
@@ -345,6 +358,7 @@ export function useGraphContextMenu() {
             <MenuSeparator />
             <MenuItem icon={Info} label="View Details" onClick={handleViewDetails} />
             <MenuItem icon={AlertTriangle} label="Show Errors" onClick={handleShowErrors} />
+            <MenuItem icon={Route} label={errorFlowActive ? 'Clear Error Path' : 'Trace Error Path'} onClick={handleTraceErrorPath} />
             <MenuItem icon={BotMessageSquare} label="Ask AI About This" onClick={handleAskAI} />
             <MenuItem icon={Copy} label="Copy Name" shortcut="Ctrl+C" onClick={handleCopyName} />
             <MenuSeparator />

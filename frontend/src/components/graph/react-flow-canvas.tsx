@@ -16,7 +16,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 
-import { Loader2, Lock, Unlock } from 'lucide-react';
+import { Keyboard, Loader2, Lock, Unlock } from 'lucide-react';
 import { toast } from 'sonner';
 import type { OmniousEdge, OmniousNode as OmniousNodeType } from '@/lib/stores/graph-store';
 import { useGraphStore } from '@/lib/stores/graph-store';
@@ -294,6 +294,12 @@ export function ReactFlowCanvas() {
             title={allPinned ? 'Unlock all nodes' : 'Lock all nodes'}
           >
             {allPinned ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
+          </ControlButton>
+          <ControlButton
+            onClick={() => useUIStore.getState().setKeyboardShortcutsOpen(true)}
+            title="Keyboard shortcuts (?)"
+          >
+            <Keyboard className="h-4 w-4" />
           </ControlButton>
         </Controls>
         {minimapVisible && (

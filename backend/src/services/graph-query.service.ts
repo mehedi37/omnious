@@ -8,6 +8,7 @@ import {
   callLLMStream,
   resolveApiKey,
   selectModel,
+  fetchRelevantInsights,
   SYSTEM_PROMPTS,
   type LLMMessage,
   type ResolvedKey,
@@ -116,6 +117,160 @@ async function _fetchGlobalKnowledge(
   } catch {
     return ''; // degrade gracefully
   }
+}
+
+// ─── Project Context ─────────────────────────────────────────
+
+/**
+ * Build a per-project context block containing project metadata, personality,
+ * code summaries, and documentation. Injected into every LLM prompt so the
+ * AI understands what project it's working with.
+ *
+ * Tiered assembly with token budgets:
+ *   Tier 1: Project identity + personality (~500 tokens)
+ *   Tier 2: Architecture overview — directory summaries (~800 tokens)
+ *   Tier 3: Documentation fragments from project_documents (~700 tokens)
+ *   Tier 4: Key file summaries (remaining budget)
+ *
+ * Total budget: ~2500 tokens (~7500 chars).
+ */
+export async function buildProjectContext(
+  projectId: string,
+  db: DbClient,
+  adminDb: DbClient,
+  queryEmbedding?: number[],
+): Promise<string> {
+  const MAX_CHARS = 7_500;
+
+  // ── Tier 1: Project identity + personality ──
+  const { data: project } = await db
+    .from('projects')
+    .select('name, description, primary_language, framework, detected_stack, git_url, git_branch, settings')
+    .eq('id', projectId)
+    .single();
+
+  if (!project) return '';
+
+  const p = project as Record<string, unknown>;
+  const parts: string[] = [];
+
+  parts.push(`## Project: ${p.name ?? 'Unknown'}`);
+
+  // Inject project personality if available (stored in settings.project_personality)
+  const settings = (p.settings ?? {}) as Record<string, unknown>;
+  if (settings.project_personality && typeof settings.project_personality === 'string') {
+    parts.push(String(settings.project_personality));
+  } else if (p.description) {
+    parts.push(String(p.description));
+  }
+
+  // Tech stack line
+  const stackItems: string[] = [];
+  if (p.primary_language) stackItems.push(String(p.primary_language));
+  if (p.framework) stackItems.push(String(p.framework));
+  if (p.detected_stack && typeof p.detected_stack === 'object') {
+    const stack = p.detected_stack as Record<string, unknown>;
+    for (const [key, val] of Object.entries(stack)) {
+      if (val && typeof val === 'string') stackItems.push(`${key}: ${val}`);
+      else if (Array.isArray(val)) stackItems.push(`${key}: ${(val as string[]).join(', ')}`);
+    }
+  }
+  if (stackItems.length > 0) {
+    parts.push(`**Tech stack:** ${stackItems.join(' · ')}`);
+  }
+
+  if (p.git_url) {
+    parts.push(`**Repository:** ${p.git_url} (branch: ${p.git_branch ?? 'main'})`);
+  }
+
+  // ── Tier 2: Architecture overview (directory summaries) ──
+  const { data: summaries } = await adminDb
+    .from('code_summaries')
+    .select('scope, path, summary, node_count')
+    .eq('project_id', projectId)
+    .order('scope', { ascending: true })  // 'directory' < 'file'
+    .order('node_count', { ascending: false })
+    .limit(60);
+
+  if (summaries && (summaries as unknown[]).length > 0) {
+    const rows = summaries as Array<{
+      scope: string;
+      path: string;
+      summary: string;
+      node_count: number;
+    }>;
+
+    const dirSummaries = rows.filter((r) => r.scope === 'directory');
+    const fileSummaries = rows.filter((r) => r.scope === 'file');
+
+    if (dirSummaries.length > 0) {
+      parts.push('\n### Architecture Overview');
+      for (const s of dirSummaries.slice(0, 25)) {
+        parts.push(`- \`${s.path}\` — ${s.summary}`);
+      }
+    }
+
+    // ── Tier 3: Documentation fragments from project_documents ──
+    let docChars = 0;
+    const DOC_BUDGET = 2_100; // ~700 tokens
+    try {
+      let docData: unknown[] | null = null;
+
+      if (queryEmbedding) {
+        // Semantic search: find docs relevant to the current query
+        const { data } = await adminDb.rpc('match_project_documents', {
+          p_project_id: projectId,
+          query_embedding: JSON.stringify(queryEmbedding),
+          similarity_threshold: 0.6,
+          match_count: 3,
+        });
+        docData = data as unknown[] | null;
+      }
+
+      if (!docData || docData.length === 0) {
+        // Fallback: fetch top docs by recency
+        const { data } = await adminDb
+          .from('project_documents')
+          .select('doc_path, content, doc_type')
+          .eq('project_id', projectId)
+          .order('updated_at', { ascending: false })
+          .limit(3);
+        docData = data as unknown[] | null;
+      }
+
+      if (docData && docData.length > 0) {
+        const docs = docData as Array<{ doc_path: string; content: string; doc_type?: string; similarity?: number }>;
+        parts.push('\n### Project Documentation');
+        for (const doc of docs) {
+          const snippet = doc.content.slice(0, DOC_BUDGET - docChars);
+          if (snippet.length < 50) break; // skip tiny fragments
+          parts.push(`**${doc.doc_path}:**\n${snippet}`);
+          docChars += snippet.length;
+          if (docChars >= DOC_BUDGET) break;
+        }
+      }
+    } catch {
+      // project_documents table may not exist yet — degrade gracefully
+    }
+
+    // ── Tier 4: Key file summaries (remaining budget) ──
+    const usedChars = parts.join('\n').length;
+    const remaining = MAX_CHARS - usedChars;
+
+    if (fileSummaries.length > 0 && remaining > 400) {
+      parts.push('\n### Key Files');
+      let fileChars = 0;
+      for (const s of fileSummaries.slice(0, 20)) {
+        const line = `- \`${s.path}\` — ${s.summary}`;
+        if (fileChars + line.length > remaining - 200) break;
+        parts.push(line);
+        fileChars += line.length;
+      }
+    }
+  }
+
+  const result = parts.join('\n');
+  return result.slice(0, MAX_CHARS);
 }
 
 // ─── Types ───────────────────────────────────────────────────
@@ -713,11 +868,23 @@ async function _buildSubgraphPayload(
     steps.push('Added global reference knowledge to context');
   }
 
+  // 13. Fetch per-project context (metadata + code summaries + docs)
+  const projectContext = await buildProjectContext(projectId, db, adminDb, embedding);
+  if (projectContext) {
+    steps.push('Added project metadata and architecture context');
+  }
+
+  // 14. Fetch relevant past insights from conversation memory
+  const insightsContext = await fetchRelevantInsights(projectId, userId, embedding, adminDb);
+  if (insightsContext) {
+    steps.push('Added conversation memory insights');
+  }
+
   const llmMessages: LLMMessage[] = [
     { role: 'system', content: SYSTEM_PROMPTS.graphQuery },
     {
       role: 'user',
-      content: `User question: "${query}"\n\n${contextText}${mentionContext}${globalKnowledge}`,
+      content: `User question: "${query}"\n\n${projectContext ? `${projectContext}\n\n` : ''}${contextText}${mentionContext}${globalKnowledge}${insightsContext}`,
     },
   ];
 
@@ -913,52 +1080,62 @@ export function buildGraphSlice(
 
 /**
  * Get overview nodes for the smart landing page.
- * Returns high-level structural nodes (modules, packages, namespaces, routes)
- * plus edges between them — typically 20-50 nodes.
+ * Returns ALL node types — structural nodes (modules, packages) plus
+ * leaf nodes (functions, variables, type_defs) with code_body.
+ * Capped at 200 nodes total to keep layout performant.
  */
 export async function getOverviewGraph(
   projectId: string,
   db: DbClient,
 ): Promise<OverviewResult> {
-  // Fetch structural/high-level nodes
-  const overviewTypes = ['module', 'package', 'namespace', 'route', 'component', 'class'];
+  const NODE_SELECT = 'id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body' as const;
+  const MAX_OVERVIEW = 200;
 
-  const { data: nodes, error: nodesError } = await db
+  // 1. Fetch structural/high-level nodes first (no cap — usually few)
+  const structuralTypes = ['module', 'package', 'namespace', 'route', 'component', 'class'];
+
+  const { data: structuralNodes, error: structuralError } = await db
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select(NODE_SELECT)
     .eq('project_id', projectId)
-    .in('type', overviewTypes)
+    .in('type', structuralTypes)
     .order('type')
     .order('name')
-    .limit(60);
+    .limit(MAX_OVERVIEW);
 
-  if (nodesError) {
+  if (structuralError) {
     throw new TRPCError({
       code: 'INTERNAL_SERVER_ERROR',
       message: 'Failed to fetch overview nodes',
     });
   }
 
-  if (!nodes || nodes.length === 0) {
-    // If no structural nodes, fall back to top-level functions/classes
-    const { data: fallback } = await db
+  const structCount = structuralNodes?.length ?? 0;
+  const remaining = MAX_OVERVIEW - structCount;
+
+  // 2. Fetch leaf nodes (functions, variables, type_defs) to fill remaining budget
+  let leafNodes: Record<string, unknown>[] = [];
+  if (remaining > 0) {
+    const leafTypes = ['function', 'variable', 'type_def'];
+    const { data: leaves } = await db
       .from('code_nodes')
-      .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+      .select(NODE_SELECT)
       .eq('project_id', projectId)
-      .in('type', ['function', 'class', 'component'])
+      .in('type', leafTypes)
       .order('name')
-      .limit(40);
-
-    const fallbackNodes = (fallback ?? []).map((n: Record<string, unknown>) =>
-      _toSubgraphNode(n, 'seed'),
-    );
-
-    return { nodes: fallbackNodes, edges: [], summary: null };
+      .limit(remaining);
+    leafNodes = (leaves ?? []) as Record<string, unknown>[];
   }
 
-  const nodeIds = nodes.map((n: Record<string, unknown>) => String(n.id));
+  const allNodes = [...(structuralNodes ?? []), ...leafNodes] as Record<string, unknown>[];
 
-  // Fetch edges between these overview nodes
+  if (allNodes.length === 0) {
+    return { nodes: [], edges: [], summary: null };
+  }
+
+  const nodeIds = allNodes.map((n) => String(n.id));
+
+  // 3. Fetch edges between all overview nodes
   const { data: edges } = await db
     .from('code_edges')
     .select('id, source_node_id, target_node_id, type, metadata')
@@ -966,7 +1143,7 @@ export async function getOverviewGraph(
     .in('source_node_id', nodeIds)
     .in('target_node_id', nodeIds);
 
-  const subgraphNodes = nodes.map((n: Record<string, unknown>) => _toSubgraphNode(n, 'seed'));
+  const subgraphNodes = allNodes.map((n) => _toSubgraphNode(n, 'seed'));
   const subgraphEdges = (edges ?? []).map((e: Record<string, unknown>) => _toSubgraphEdge(e));
 
   return {
@@ -1003,7 +1180,7 @@ export async function getErrorSubgraph(
   // Fetch the error nodes
   const { data: _errorNodesFull } = await adminDb
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body')
     .eq('project_id', projectId)
     .in('id', errorNodeIds);
 
@@ -1026,7 +1203,7 @@ export async function getErrorSubgraph(
   const allIds = [...allNodeIds].slice(0, 80);
   const { data: fullNodes } = await adminDb
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body')
     .eq('project_id', projectId)
     .in('id', allIds);
 
@@ -1084,7 +1261,7 @@ export async function getTraceSubgraph(
   // Fetch the linked code nodes
   const { data: nodes } = await adminDb
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body')
     .eq('project_id', projectId)
     .in('id', codeNodeIds);
 
@@ -1117,7 +1294,7 @@ export async function getDependencySubgraph(
   // Fetch the root node
   const { data: rootNodeData } = await adminDb
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body')
     .eq('id', nodeId)
     .eq('project_id', projectId)
     .single();
@@ -1145,7 +1322,7 @@ export async function getDependencySubgraph(
   // Fetch all nodes
   const { data: nodes } = await adminDb
     .from('code_nodes')
-    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata')
+    .select('id, oir_id, type, name, file_path, line_start, line_end, signature, doc_comment, metadata, code_body')
     .eq('project_id', projectId)
     .in('id', allIds);
 
@@ -1181,6 +1358,7 @@ function _toSubgraphNode(n: Record<string, unknown>, source: 'seed' | 'traversal
     doc_comment: n.doc_comment as string | null,
     metadata: n.metadata as Record<string, unknown> | null,
     source,
+    code_body: n.code_body as string | null ?? null,
   };
 }
 

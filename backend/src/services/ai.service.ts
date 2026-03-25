@@ -1,4 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { generateText, streamText, embed, generateObject, jsonSchema } from 'ai';
+import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
 import { logger } from '../lib/logger.js';
 import { env } from '../config/env.js';
 
@@ -27,17 +30,6 @@ export interface ResolvedKey {
 }
 
 // ─── Constants ───────────────────────────────────────────────
-
-function _normalizeOpenAIBase(url: string): string {
-  return url.endsWith('/') ? url.slice(0, -1) : url;
-}
-
-const OLLAMA_OPENAI_BASE = _normalizeOpenAIBase(env.OLLAMA_BASE_URL);
-const OLLAMA_CHAT_URL = `${OLLAMA_OPENAI_BASE}/chat/completions`;
-const OLLAMA_EMBED_URL = `${OLLAMA_OPENAI_BASE}/embeddings`;
-
-const OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions';
-const ANTHROPIC_CHAT_URL = 'https://api.anthropic.com/v1/messages';
 
 const DEFAULT_OLLAMA_MODEL = env.OLLAMA_MODEL_FAST;
 const POWERFUL_OLLAMA_MODEL = env.OLLAMA_MODEL_POWERFUL;
@@ -129,6 +121,47 @@ export function selectModel(
     }
     default:
       return fast;
+  }
+}
+
+// ─── Model Performance Tracking ──────────────────────────────
+
+/**
+ * Record a model success or failure for a given task type.
+ * Uses UPSERT to increment counters in `model_performance` table.
+ * Fire-and-forget — errors are silently logged.
+ */
+export async function recordModelPerformance(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: any,
+  taskType: string,
+  modelName: string,
+  provider: string,
+  success: boolean,
+  latencyMs: number,
+): Promise<void> {
+  try {
+    const db = adminDb;
+    // Use raw upsert with on_conflict to atomically increment
+    const { error } = await db
+      .from('model_performance')
+      .upsert(
+        {
+          task_type: taskType,
+          model_name: modelName,
+          provider,
+          success_count: success ? 1 : 0,
+          failure_count: success ? 0 : 1,
+          avg_latency_ms: latencyMs,
+          last_used: new Date().toISOString(),
+        },
+        { onConflict: 'task_type,model_name,provider' },
+      );
+    if (error) {
+      logger.debug({ error }, 'Failed to record model performance');
+    }
+  } catch {
+    // Non-critical — silently ignore
   }
 }
 
@@ -282,156 +315,104 @@ function _detectProvider(storedProvider: string | null, encryptedKey: string): L
 
 // ─── LLM Chat ────────────────────────────────────────────────
 
+export interface CallLLMOptions {
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  /** JSON Schema to enforce structured output. Ollama uses `format`, OpenAI uses `response_format`. */
+  responseSchema?: Record<string, unknown>;
+}
+
 /**
  * Call an LLM for chat completion.
  * Default runtime is local Ollama. Paid providers are only used when BYOK is enabled.
  */
+// ─── Provider factories ──────────────────────────────────────
+
+/** Create the appropriate Vercel AI SDK model instance for the given resolved key. */
+function _makeModel(resolvedKey: ResolvedKey, modelId: string) {
+  if (resolvedKey.provider === 'anthropic') {
+    return createAnthropic({ apiKey: resolvedKey.apiKey })(modelId);
+  }
+  if (resolvedKey.provider === 'ollama') {
+    return createOpenAI({
+      baseURL: env.OLLAMA_BASE_URL,
+      apiKey: resolvedKey.apiKey,
+    })(modelId);
+  }
+  return createOpenAI({ apiKey: resolvedKey.apiKey })(modelId);
+}
+
+// ─── Non-streaming LLM chat ──────────────────────────────────
+
 export async function callLLM(
   messages: LLMMessage[],
   resolvedKey: ResolvedKey,
-  options?: { model?: string; maxTokens?: number; temperature?: number },
+  options?: CallLLMOptions,
 ): Promise<LLMResponse> {
   const maxTokens = options?.maxTokens ?? 2048;
   const temperature = options?.temperature ?? 0.3;
+  const modelId =
+    resolvedKey.provider === 'ollama'
+      ? (options?.model ?? DEFAULT_OLLAMA_MODEL)
+      : resolvedKey.provider === 'anthropic'
+        ? (options?.model ?? DEFAULT_ANTHROPIC_MODEL)
+        : (options?.model ?? DEFAULT_OPENAI_MODEL);
 
-  if (resolvedKey.provider === 'ollama') {
-    return _callOpenAICompatible(OLLAMA_CHAT_URL, 'Ollama', messages, resolvedKey.apiKey, {
-      model: options?.model ?? DEFAULT_OLLAMA_MODEL,
-      maxTokens,
-      temperature,
-    });
-  }
+  const model = _makeModel(resolvedKey, modelId);
+  const sdkMessages = messages.map((m) => ({
+    role: m.role as 'system' | 'user' | 'assistant',
+    content: m.content,
+  }));
 
-  if (resolvedKey.provider === 'anthropic') {
-    return _callAnthropic(messages, resolvedKey.apiKey, {
-      model: options?.model ?? DEFAULT_ANTHROPIC_MODEL,
-      maxTokens,
-      temperature,
-    });
-  }
-
-  return _callOpenAI(messages, resolvedKey.apiKey, {
-    model: options?.model ?? DEFAULT_OPENAI_MODEL,
-    maxTokens,
-    temperature,
-  });
-}
-
-async function _callOpenAI(
-  messages: LLMMessage[],
-  apiKey: string,
-  opts: { model: string; maxTokens: number; temperature: number },
-): Promise<LLMResponse> {
-  return _callOpenAICompatible(OPENAI_CHAT_URL, 'OpenAI', messages, apiKey, opts);
-}
-
-/** Shared handler for OpenAI-compatible APIs (Ollama, OpenAI, etc.) */
-async function _callOpenAICompatible(
-  baseUrl: string,
-  providerLabel: string,
-  messages: LLMMessage[],
-  apiKey: string,
-  opts: { model: string; maxTokens: number; temperature: number },
-): Promise<LLMResponse> {
-  let resp: Response;
   try {
-    resp = await fetch(baseUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: opts.model,
-        max_tokens: opts.maxTokens,
-        temperature: opts.temperature,
-        messages,
-      }),
+    if (options?.responseSchema) {
+      const result = await generateObject({
+        model,
+        schema: jsonSchema(options.responseSchema),
+        output: 'object',
+        messages: sdkMessages,
+        maxOutputTokens: maxTokens,
+        temperature,
+      });
+      return {
+        content: JSON.stringify(result.object),
+        model: result.response.modelId ?? modelId,
+        usage: {
+          promptTokens: result.usage.inputTokens ?? 0,
+          completionTokens: result.usage.outputTokens ?? 0,
+        },
+      };
+    }
+
+    const result = await generateText({
+      model,
+      messages: sdkMessages,
+      maxOutputTokens: maxTokens,
+      temperature,
     });
+    // Strip qwen3-style <think>...</think> reasoning blocks from output
+    const content = result.text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
+    return {
+      content,
+      model: result.response.modelId ?? modelId,
+      usage: {
+        promptTokens: result.usage.inputTokens ?? 0,
+        completionTokens: result.usage.outputTokens ?? 0,
+      },
+    };
   } catch (error) {
-    if (providerLabel === 'Ollama') {
-      logger.error({ err: error, endpoint: baseUrl }, 'Ollama request failed');
-      throw _formatOllamaConnectivityError(error, baseUrl);
+    if (resolvedKey.provider === 'ollama') {
+      throw _formatOllamaConnectivityError(error, env.OLLAMA_BASE_URL);
     }
     throw error;
   }
-
-  if (!resp.ok) {
-    const errText = await resp.text();
-    logger.warn({ status: resp.status, body: errText.slice(0, 300) }, `${providerLabel} API error`);
-    throw new Error(`${providerLabel} API error ${resp.status}: ${errText.slice(0, 200)}`);
-  }
-
-  const body = (await resp.json()) as {
-    choices: Array<{ message: { content: string } }>;
-    usage?: { prompt_tokens: number; completion_tokens: number };
-    model: string;
-  };
-
-  return {
-    content: body.choices?.[0]?.message?.content ?? '',
-    model: body.model ?? opts.model,
-    usage: {
-      promptTokens: body.usage?.prompt_tokens ?? 0,
-      completionTokens: body.usage?.completion_tokens ?? 0,
-    },
-  };
-}
-
-async function _callAnthropic(
-  messages: LLMMessage[],
-  apiKey: string,
-  opts: { model: string; maxTokens: number; temperature: number },
-): Promise<LLMResponse> {
-  // Extract system message for Anthropic's separate system parameter
-  const systemMsg = messages.find((m) => m.role === 'system')?.content;
-  const chatMessages = messages
-    .filter((m) => m.role !== 'system')
-    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
-
-  const resp = await fetch(ANTHROPIC_CHAT_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: opts.model,
-      max_tokens: opts.maxTokens,
-      temperature: opts.temperature,
-      ...(systemMsg ? { system: systemMsg } : {}),
-      messages: chatMessages,
-    }),
-  });
-
-  if (!resp.ok) {
-    const errText = await resp.text();
-    logger.warn({ status: resp.status, body: errText.slice(0, 300) }, 'Anthropic API error');
-    throw new Error(`Anthropic API error ${resp.status}: ${errText.slice(0, 200)}`);
-  }
-
-  const body = (await resp.json()) as {
-    content: Array<{ text: string }>;
-    usage?: { input_tokens: number; output_tokens: number };
-    model: string;
-  };
-
-  return {
-    content: body.content?.[0]?.text ?? '',
-    model: body.model ?? opts.model,
-    usage: {
-      promptTokens: body.usage?.input_tokens ?? 0,
-      completionTokens: body.usage?.output_tokens ?? 0,
-    },
-  };
 }
 
 // ─── Streaming LLM Chat ──────────────────────────────────────
 
 /**
  * Streaming variant of `callLLM`. Yields string deltas as the model generates them.
- * Delegates to provider-specific stream helpers below.
  */
 export async function* callLLMStream(
   messages: LLMMessage[],
@@ -440,183 +421,32 @@ export async function* callLLMStream(
 ): AsyncGenerator<string> {
   const maxTokens = options?.maxTokens ?? 2048;
   const temperature = options?.temperature ?? 0.3;
+  const modelId =
+    resolvedKey.provider === 'ollama'
+      ? (options?.model ?? DEFAULT_OLLAMA_MODEL)
+      : resolvedKey.provider === 'anthropic'
+        ? (options?.model ?? DEFAULT_ANTHROPIC_MODEL)
+        : (options?.model ?? DEFAULT_OPENAI_MODEL);
 
-  if (resolvedKey.provider === 'ollama') {
-    yield* _callOpenAICompatibleStream(OLLAMA_CHAT_URL, 'Ollama', messages, resolvedKey.apiKey, {
-      model: options?.model ?? DEFAULT_OLLAMA_MODEL,
-      maxTokens,
-      temperature,
-    });
-    return;
-  }
-
-  if (resolvedKey.provider === 'anthropic') {
-    yield* _callAnthropicStream(messages, resolvedKey.apiKey, {
-      model: options?.model ?? DEFAULT_ANTHROPIC_MODEL,
-      maxTokens,
-      temperature,
-    });
-    return;
-  }
-
-  yield* _callOpenAICompatibleStream(OPENAI_CHAT_URL, 'OpenAI', messages, resolvedKey.apiKey, {
-    model: options?.model ?? DEFAULT_OPENAI_MODEL,
-    maxTokens,
+  const result = streamText({
+    model: _makeModel(resolvedKey, modelId),
+    messages: messages.map((m) => ({
+      role: m.role as 'system' | 'user' | 'assistant',
+      content: m.content,
+    })),
+    maxOutputTokens: maxTokens,
     temperature,
   });
-}
 
-/** Streaming handler for OpenAI-compatible APIs (Ollama, OpenAI, etc.) */
-async function* _callOpenAICompatibleStream(
-  baseUrl: string,
-  providerLabel: string,
-  messages: LLMMessage[],
-  apiKey: string,
-  opts: { model: string; maxTokens: number; temperature: number },
-): AsyncGenerator<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60_000);
-
-  let resp: Response;
   try {
-    resp = await fetch(baseUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: opts.model,
-        max_tokens: opts.maxTokens,
-        temperature: opts.temperature,
-        messages,
-        stream: true,
-      }),
-      signal: controller.signal,
-    });
+    for await (const delta of result.textStream) {
+      yield delta;
+    }
   } catch (error) {
-    clearTimeout(timeout);
-    if (providerLabel === 'Ollama') {
-      throw _formatOllamaConnectivityError(error, baseUrl);
+    if (resolvedKey.provider === 'ollama') {
+      throw _formatOllamaConnectivityError(error, env.OLLAMA_BASE_URL);
     }
     throw error;
-  }
-
-  if (!resp.ok) {
-    clearTimeout(timeout);
-    const errText = await resp.text();
-    logger.warn({ status: resp.status, body: errText.slice(0, 300) }, `${providerLabel} stream API error`);
-    throw new Error(`${providerLabel} API error ${resp.status}: ${errText.slice(0, 200)}`);
-  }
-
-  const reader = resp.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') return;
-        try {
-          const chunk = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
-          const content = chunk.choices?.[0]?.delta?.content;
-          if (content) yield content;
-        } catch {
-          // Ignore malformed SSE JSON lines
-        }
-      }
-    }
-  } finally {
-    clearTimeout(timeout);
-    reader.releaseLock();
-  }
-}
-
-/** Streaming handler for Anthropic's Messages API. */
-async function* _callAnthropicStream(
-  messages: LLMMessage[],
-  apiKey: string,
-  opts: { model: string; maxTokens: number; temperature: number },
-): AsyncGenerator<string> {
-  const systemMsg = messages.find((m) => m.role === 'system')?.content;
-  const chatMessages = messages
-    .filter((m) => m.role !== 'system')
-    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60_000);
-
-  let resp: Response;
-  try {
-    resp = await fetch(ANTHROPIC_CHAT_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: opts.model,
-        max_tokens: opts.maxTokens,
-        temperature: opts.temperature,
-        ...(systemMsg ? { system: systemMsg } : {}),
-        messages: chatMessages,
-        stream: true,
-      }),
-      signal: controller.signal,
-    });
-  } catch (error) {
-    clearTimeout(timeout);
-    throw error;
-  }
-
-  if (!resp.ok) {
-    clearTimeout(timeout);
-    const errText = await resp.text();
-    logger.warn({ status: resp.status, body: errText.slice(0, 300) }, 'Anthropic stream API error');
-    throw new Error(`Anthropic API error ${resp.status}: ${errText.slice(0, 200)}`);
-  }
-
-  const reader = resp.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    let eventType = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          eventType = line.slice(7).trim();
-        } else if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim();
-          if (eventType === 'content_block_delta') {
-            try {
-              const chunk = JSON.parse(data) as { delta?: { type?: string; text?: string } };
-              if (chunk.delta?.type === 'text_delta' && chunk.delta.text) {
-                yield chunk.delta.text;
-              }
-            } catch {
-              // Ignore malformed SSE JSON lines
-            }
-          }
-        }
-      }
-    }
-  } finally {
-    clearTimeout(timeout);
-    reader.releaseLock();
   }
 }
 
@@ -817,6 +647,276 @@ export async function backfillNodeEmbeddings(
   return { embedded, failed };
 }
 
+// ─── Project Document Indexing ───────────────────────────────
+
+/**
+ * Index project documentation (README, docs/, etc.) into the `project_documents`
+ * table with embeddings for RAG retrieval.
+ *
+ * Content is hashed to avoid re-embedding unchanged docs. New or changed docs
+ * get a fresh embedding; deleted docs are pruned.
+ */
+export async function indexProjectDocuments(
+  projectId: string,
+  docs: Array<{ path: string; content: string; docType?: string }>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: any,
+): Promise<{ indexed: number; skipped: number; deleted: number }> {
+  let indexed = 0;
+  let skipped = 0;
+
+  // Build content hashes for incoming docs
+  const { createHash } = await import('node:crypto');
+  const incomingPaths = new Set<string>();
+  const docHashes = new Map<string, string>();
+  for (const doc of docs) {
+    incomingPaths.add(doc.path);
+    docHashes.set(doc.path, createHash('sha256').update(doc.content).digest('hex'));
+  }
+
+  // Fetch existing docs to detect changes
+  const { data: existing } = await adminDb
+    .from('project_documents')
+    .select('id, doc_path, content_hash')
+    .eq('project_id', projectId);
+
+  const existingMap = new Map<string, { id: string; content_hash: string }>();
+  for (const row of (existing ?? []) as Array<{ id: string; doc_path: string; content_hash: string }>) {
+    existingMap.set(row.doc_path, { id: row.id, content_hash: row.content_hash });
+  }
+
+  // Delete docs no longer present
+  const toDelete = [...existingMap.entries()]
+    .filter(([path]) => !incomingPaths.has(path))
+    .map(([, row]) => row.id);
+
+  if (toDelete.length > 0) {
+    await adminDb.from('project_documents').delete().in('id', toDelete);
+  }
+
+  // Upsert new or changed docs
+  for (const doc of docs) {
+    const hash = docHashes.get(doc.path)!;
+    const existing = existingMap.get(doc.path);
+
+    if (existing && existing.content_hash === hash) {
+      skipped++;
+      continue;
+    }
+
+    // Chunk large docs (max ~4000 chars per chunk for good embedding quality)
+    const MAX_CHUNK = 4000;
+    const content = doc.content.slice(0, MAX_CHUNK);
+
+    try {
+      const embedding = await generateEmbedding(content);
+
+      const { error } = await adminDb
+        .from('project_documents')
+        .upsert(
+          {
+            project_id: projectId,
+            doc_path: doc.path,
+            doc_type: doc.docType ?? 'markdown',
+            content,
+            content_hash: hash,
+            embedding: JSON.stringify(embedding),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'project_id,doc_path' },
+        );
+
+      if (error) {
+        logger.warn({ docPath: doc.path, error: error.message }, 'Failed to index document');
+      } else {
+        indexed++;
+      }
+    } catch (err) {
+      logger.warn(
+        { docPath: doc.path, error: err instanceof Error ? err.message : String(err) },
+        'Failed to embed document',
+      );
+    }
+  }
+
+  logger.info({ projectId, indexed, skipped, deleted: toDelete.length }, 'Document indexing complete');
+  return { indexed, skipped, deleted: toDelete.length };
+}
+
+// ─── Conversation Memory ─────────────────────────────────────
+
+const SESSION_INSIGHT_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    insights: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          insight: { type: 'string' as const },
+          category: {
+            type: 'string' as const,
+            enum: ['bug_pattern', 'architecture', 'convention', 'dependency', 'performance', 'general'],
+          },
+        },
+        required: ['insight', 'category'],
+      },
+      minItems: 1,
+      maxItems: 3,
+    },
+  },
+  required: ['insights'],
+};
+
+/**
+ * Extract key insights from an AI session conversation and store them
+ * with embeddings for future retrieval (\u201cconversation memory\u201d).
+ *
+ * Called fire-and-forget after assistant messages are appended.
+ * Only triggers when the session has \u22654 messages (2 user + 2 assistant turns).
+ */
+export async function extractSessionInsights(
+  sessionId: string,
+  projectId: string,
+  userId: string,
+  messages: Array<{ role: string; content: string }>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: any,
+): Promise<{ extracted: number }> {
+  // Only extract when we have enough conversation (at least 2 full turns)
+  const turnMessages = messages.filter((m) => m.role !== 'system');
+  if (turnMessages.length < 4) return { extracted: 0 };
+
+  // Check if we already extracted insights for this session recently
+  const { data: existing } = await adminDb
+    .from('ai_session_insights')
+    .select('id')
+    .eq('session_id', sessionId)
+    .limit(1);
+
+  if (existing && existing.length > 0) {
+    // Already extracted — skip to avoid duplicates per session
+    return { extracted: 0 };
+  }
+
+  // Build a condensed conversation for the extraction prompt
+  const condensed = turnMessages
+    .slice(-8) // Last 4 turns max
+    .map((m) => `${m.role === 'user' ? 'User' : 'AI'}: ${m.content.slice(0, 500)}`)
+    .join('\n\n');
+
+  const extractionPrompt: LLMMessage[] = [
+    {
+      role: 'system',
+      content:
+        'You are an insight extractor. Given a debugging/analysis conversation about a codebase, extract 1-3 key reusable insights. ' +
+        'Focus on: bug patterns discovered, architectural decisions explained, coding conventions revealed, dependency relationships clarified, or performance findings. ' +
+        'Each insight should be a concise, self-contained statement (1-2 sentences) useful for future conversations about this project. ' +
+        'Skip trivial or overly specific insights that won\'t generalize.',
+    },
+    {
+      role: 'user',
+      content: `Extract key insights from this conversation:\n\n${condensed}`,
+    },
+  ];
+
+  try {
+    // Use the fast local model — this is a lightweight extraction task
+    const resolvedKey: ResolvedKey = {
+      apiKey: 'ollama',
+      provider: 'ollama',
+      source: 'platform',
+    };
+
+    const result = await callLLM(extractionPrompt, resolvedKey, {
+      maxTokens: 512,
+      model: DEFAULT_OLLAMA_MODEL,
+      responseSchema: SESSION_INSIGHT_SCHEMA,
+    });
+
+    let parsed: { insights: Array<{ insight: string; category: string }> };
+    try {
+      parsed = JSON.parse(result.content);
+    } catch {
+      logger.debug({ sessionId }, 'Failed to parse insight extraction response');
+      return { extracted: 0 };
+    }
+
+    if (!parsed.insights || !Array.isArray(parsed.insights)) return { extracted: 0 };
+
+    let extracted = 0;
+    for (const item of parsed.insights.slice(0, 3)) {
+      if (!item.insight || item.insight.length < 10) continue;
+
+      try {
+        const embedding = await generateEmbedding(item.insight);
+
+        const { error } = await adminDb.from('ai_session_insights').insert({
+          project_id: projectId,
+          session_id: sessionId,
+          user_id: userId,
+          insight: item.insight,
+          category: item.category || 'general',
+          embedding: JSON.stringify(embedding),
+        });
+
+        if (error) {
+          logger.debug({ error: error.message }, 'Failed to store session insight');
+        } else {
+          extracted++;
+        }
+      } catch (err) {
+        logger.debug(
+          { error: err instanceof Error ? err.message : String(err) },
+          'Failed to embed session insight',
+        );
+      }
+    }
+
+    logger.info({ sessionId, extracted }, 'Extracted session insights');
+    return { extracted };
+  } catch (err) {
+    logger.debug(
+      { sessionId, error: err instanceof Error ? err.message : String(err) },
+      'Session insight extraction failed',
+    );
+    return { extracted: 0 };
+  }
+}
+
+/**
+ * Fetch relevant past insights for a project + user based on query similarity.
+ * Returns a formatted string to inject into the LLM context, or empty string.
+ */
+export async function fetchRelevantInsights(
+  projectId: string,
+  userId: string,
+  queryEmbedding: number[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: any,
+): Promise<string> {
+  try {
+    const { data } = await adminDb.rpc('match_session_insights', {
+      p_project_id: projectId,
+      p_user_id: userId,
+      query_embedding: JSON.stringify(queryEmbedding),
+      similarity_threshold: 0.65,
+      match_count: 5,
+    });
+
+    if (!data || data.length === 0) return '';
+
+    const insights = data as Array<{ insight: string; category: string; similarity: number }>;
+    const lines = insights.map(
+      (i) => `- [${i.category}] ${i.insight}`,
+    );
+    return `\n### Previous Insights\nRelevant knowledge from past conversations:\n${lines.join('\n')}\n`;
+  } catch {
+    // Table may not exist yet — degrade gracefully
+    return '';
+  }
+}
+
 /**
  * Generate embeddings using Ollama's OpenAI-compatible endpoint.
  */
@@ -829,41 +929,23 @@ export async function generateEmbedding(
   // Truncate to ~8k tokens (~32k chars) to stay within model limits
   const truncated = text.slice(0, 32_000);
 
-  let resp: Response;
+  const provider = createOpenAI({
+    baseURL: env.OLLAMA_BASE_URL,
+    apiKey: key,
+  });
+
+  let embedding: number[];
   try {
-    resp = await fetch(OLLAMA_EMBED_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model: EMBEDDING_MODEL,
-        input: truncated,
-        ...(env.OLLAMA_EMBEDDING_DIMENSIONS
-          ? { dimensions: env.OLLAMA_EMBEDDING_DIMENSIONS }
-          : {}),
-      }),
+    const result = await embed({
+      model: provider.embedding(EMBEDDING_MODEL),
+      value: truncated,
     });
+    embedding = result.embedding;
   } catch (error) {
-    logger.error({ err: error, endpoint: OLLAMA_EMBED_URL }, 'Embedding request failed');
-    throw _formatOllamaConnectivityError(error, OLLAMA_EMBED_URL);
+    logger.error({ err: error, endpoint: env.OLLAMA_BASE_URL }, 'Embedding request failed');
+    throw _formatOllamaConnectivityError(error, env.OLLAMA_BASE_URL);
   }
 
-  if (!resp.ok) {
-    const errText = await resp.text();
-    logger.warn({ status: resp.status, body: errText.slice(0, 300) }, 'Embedding API error');
-    throw new Error(`Embedding API error ${resp.status}: ${errText.slice(0, 200)}`);
-  }
-
-  const body = (await resp.json()) as {
-    data: Array<{ embedding: number[] }>;
-  };
-
-  const embedding = body.data?.[0]?.embedding;
-  if (!Array.isArray(embedding) || embedding.length === 0) {
-    throw new Error('Invalid embedding response from Ollama embeddings API');
-  }
   if (
     env.OLLAMA_EMBEDDING_DIMENSIONS &&
     embedding.length !== env.OLLAMA_EMBEDDING_DIMENSIONS
@@ -993,6 +1075,8 @@ export const SYSTEM_PROMPTS = {
   /** For the main graph query (explain feature, architecture, etc.) */
   graphQuery: `You are an expert software architect assistant for the Omnious code intelligence platform. You help developers understand their codebase by analyzing a code graph.
 
+You will receive project metadata (name, description, tech stack) and architecture summaries that describe the project you are working with. Use this context to ground your answers in the project's actual structure and technology choices.
+
 ${GRAPH_SCHEMA}
 
 ${SECURITY_CLAUSE}
@@ -1009,6 +1093,8 @@ Format your response with clear markdown sections. Reference specific file paths
 
   /** For error explanation */
   errorExplain: `You are an expert software debugging assistant for Omnious. You receive: the error, affected code node(s), their graph neighborhood (callers, callees, imports), historical error patterns on the same node, and (when available) the request trace timeline.
+
+You will receive project metadata (name, description, tech stack) and architecture summaries. Use this to understand the project's technology choices and common patterns when diagnosing errors.
 
 ${GRAPH_SCHEMA}
 
@@ -1029,6 +1115,8 @@ Do not repeat the error message verbatim. Reference file paths and function name
   /** For trace analysis */
   traceAnalysis: `You are a distributed systems performance expert for Omnious. You analyze request traces (spans) linked to code graph nodes.
 
+You will receive project metadata (name, description, tech stack) and architecture summaries. Use this to understand the project's service architecture when analyzing traces.
+
 ${GRAPH_SCHEMA}
 
 ${SECURITY_CLAUSE}
@@ -1046,6 +1134,8 @@ Reference specific services, operations, and durations.`,
   /** For dependency analysis */
   dependencyAnalysis: `You are a software architecture expert specializing in dependency analysis and code health for Omnious.
 
+You will receive project metadata (name, description, tech stack) and architecture summaries. Use this to evaluate dependency health within the context of the project's design.
+
 ${GRAPH_SCHEMA}
 
 ${SECURITY_CLAUSE}
@@ -1062,6 +1152,8 @@ Reference file paths and function names.`,
 
   /** For project overview */
   overview: `You are a codebase onboarding assistant for Omnious.
+
+You will receive project metadata (name, description, tech stack) and architecture summaries. Use this to provide an accurate, grounded overview of the project.
 
 ${GRAPH_SCHEMA}
 
@@ -1093,6 +1185,8 @@ Respond with ONLY this JSON array and nothing else:
 
   /** For standalone AI chat assistant */
   chatAssistant: `You are an expert software engineering assistant for the Omnious code intelligence platform. Developers interact with you alongside a visual code graph.
+
+You will receive project metadata (name, description, tech stack) and architecture summaries. Use this context to give project-specific answers rather than generic advice.
 
 ${GRAPH_SCHEMA}
 
@@ -1131,13 +1225,58 @@ export interface ModuleGroup {
   nodeIds: string[];
 }
 
+/** JSON Schema for structured output — array of module groups */
+const MODULE_GROUP_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['groups'],
+  additionalProperties: false,
+  properties: {
+    groups: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['label', 'color', 'nodeIds'],
+        additionalProperties: false,
+        properties: {
+          label: { type: 'string' },
+          color: { type: 'string' },
+          nodeIds: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  },
+};
+
+/** Try to parse module groups from LLM response */
+function _parseModuleGroups(content: string): ModuleGroup[] | null {
+  try {
+    const extracted = _extractJsonFromLLM(content);
+    const parsed = JSON.parse(extracted) as { groups?: ModuleGroup[] } | ModuleGroup[];
+    // Handle both wrapped { groups: [...] } and raw array
+    const arr = Array.isArray(parsed) ? parsed : parsed?.groups;
+    if (!Array.isArray(arr)) return null;
+    const valid = arr.filter(
+      (g) =>
+        typeof g.label === 'string' &&
+        typeof g.color === 'string' &&
+        Array.isArray(g.nodeIds) &&
+        g.nodeIds.length > 0,
+    );
+    return valid.length > 0 ? valid : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Use an LLM to semantically group code nodes into logical modules.
- * Takes the project's nodes and returns an array of groups.
+ * Uses structured output (JSON schema) for reliable parsing.
+ * Retry cascade: fast model → powerful model → cloud fallback.
  */
 export async function generateModuleGroups(
   nodes: Array<{ id: string; name: string; type: string; file_path: string }>,
   resolvedKey: ResolvedKey,
+  adminDb?: unknown,
 ): Promise<ModuleGroup[]> {
   if (nodes.length === 0) return [];
 
@@ -1153,44 +1292,173 @@ export async function generateModuleGroups(
     })
     .join('\n');
 
-  const model = selectModel('overview', '', resolvedKey.provider, 'fast');
+  const llmMessages: LLMMessage[] = [
+    { role: 'system', content: SYSTEM_PROMPTS.moduleGrouping },
+    { role: 'user', content: `Group these code nodes:\n\n${nodeList}` },
+  ];
 
-  let result;
-  try {
-    result = await callLLM(
-      [
-        { role: 'system', content: SYSTEM_PROMPTS.moduleGrouping },
-        { role: 'user', content: `Group these code nodes:\n\n${nodeList}` },
-      ],
-      resolvedKey,
-      { model, maxTokens: 1024, temperature: 0.2 },
-    );
-  } catch (error) {
-    logger.warn(
-      {
-        provider: resolvedKey.provider,
-        nodeCount: nodes.length,
-        error: error instanceof Error ? error.message : String(error),
-      },
-      'Module grouping skipped due to LLM error',
-    );
-    return [];
+  // Attempt 1: fast model with structured output
+  const fastModel = selectModel('overview', '', resolvedKey.provider, 'fast');
+  const attempt1 = await _tryModuleGrouping(llmMessages, resolvedKey, fastModel, adminDb);
+  if (attempt1) {
+    logger.info({ model: fastModel, attempt: 1 }, 'Module grouping succeeded');
+    return attempt1;
   }
 
+  // Attempt 2: powerful model with structured output
+  const powerfulModel = selectModel('overview', '', resolvedKey.provider, 'powerful');
+  if (powerfulModel !== fastModel) {
+    const attempt2 = await _tryModuleGrouping(llmMessages, resolvedKey, powerfulModel, adminDb);
+    if (attempt2) {
+      logger.info({ model: powerfulModel, attempt: 2 }, 'Module grouping succeeded on retry');
+      return attempt2;
+    }
+  }
+
+  logger.warn({ provider: resolvedKey.provider, nodeCount: nodes.length }, 'Module grouping failed after all attempts');
+  return [];
+}
+
+/** Single attempt at module grouping with structured output */
+async function _tryModuleGrouping(
+  messages: LLMMessage[],
+  resolvedKey: ResolvedKey,
+  model: string,
+  adminDb?: unknown,
+): Promise<ModuleGroup[] | null> {
+  const start = Date.now();
   try {
-    const parsed = JSON.parse(_extractJsonFromLLM(result.content)) as ModuleGroup[];
-    if (!Array.isArray(parsed)) return [];
-    // Validate structure
-    return parsed.filter(
-      (g) =>
-        typeof g.label === 'string' &&
-        typeof g.color === 'string' &&
-        Array.isArray(g.nodeIds) &&
-        g.nodeIds.length > 0,
+    const result = await callLLM(messages, resolvedKey, {
+      model,
+      maxTokens: 1024,
+      temperature: 0,
+      responseSchema: MODULE_GROUP_SCHEMA,
+    });
+    const groups = _parseModuleGroups(result.content);
+    const latency = Date.now() - start;
+    if (adminDb) {
+      recordModelPerformance(adminDb, 'moduleGrouping', model, resolvedKey.provider, !!groups, latency).catch(() => {});
+    }
+    if (!groups) {
+      logger.warn({ model, content: result.content.slice(0, 200) }, 'Failed to parse module groups from LLM');
+    }
+    return groups;
+  } catch (error) {
+    const latency = Date.now() - start;
+    if (adminDb) {
+      recordModelPerformance(adminDb, 'moduleGrouping', model, resolvedKey.provider, false, latency).catch(() => {});
+    }
+    logger.warn(
+      { model, error: error instanceof Error ? error.message : String(error) },
+      'Module grouping attempt failed',
     );
-  } catch {
-    logger.warn({ content: result.content.slice(0, 200) }, 'Failed to parse module groups from LLM');
-    return [];
+    return null;
+  }
+}
+
+// ─── Project Personality ─────────────────────────────────────
+
+/**
+ * Generate a concise "project personality" — a 2-3 sentence description of what
+ * the project does, its domain, architecture style, and key technologies.
+ *
+ * Stored in `projects.settings.project_personality` and injected as the first
+ * line of context in every LLM prompt so the AI instantly knows the project.
+ *
+ * Called as fire-and-forget after push (similar to embeddings backfill).
+ */
+export async function generateProjectPersonality(
+  projectId: string,
+  resolvedKey: ResolvedKey,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: any,
+): Promise<void> {
+  try {
+    // Fetch project metadata + summaries to build context
+    const db = adminDb;
+    const { data: project } = await db
+      .from('projects')
+      .select('name, description, primary_language, framework, detected_stack, settings')
+      .eq('id', projectId)
+      .single();
+
+    if (!project) return;
+
+    const p = project as Record<string, unknown>;
+    const settings = (p.settings ?? {}) as Record<string, unknown>;
+
+    // Skip if personality was recently generated (avoid regenerating on every push)
+    if (settings.project_personality && settings.personality_generated_at) {
+      const generatedAt = new Date(String(settings.personality_generated_at));
+      const hoursSince = (Date.now() - generatedAt.getTime()) / (1000 * 60 * 60);
+      if (hoursSince < 24) return; // regenerate at most once per day
+    }
+
+    // Fetch directory summaries for context
+    const { data: summaries } = await db
+      .from('code_summaries')
+      .select('scope, path, summary')
+      .eq('project_id', projectId)
+      .eq('scope', 'directory')
+      .order('node_count', { ascending: false })
+      .limit(10);
+
+    const summaryLines = (summaries as Array<{ path: string; summary: string }> | null)
+      ?.map((s) => `- ${s.path}: ${s.summary}`)
+      .join('\n') ?? '';
+
+    const contextLines: string[] = [];
+    if (p.name) contextLines.push(`Project: ${p.name}`);
+    if (p.description) contextLines.push(`Description: ${p.description}`);
+    if (p.primary_language) contextLines.push(`Language: ${p.primary_language}`);
+    if (p.framework) contextLines.push(`Framework: ${p.framework}`);
+    if (summaryLines) contextLines.push(`\nDirectory summaries:\n${summaryLines}`);
+
+    const model = selectModel('overview', '', resolvedKey.provider, 'fast');
+
+    const start = Date.now();
+    const result = await callLLM(
+      [
+        {
+          role: 'system',
+          content: `Write a 2-3 sentence "project personality" that captures: what this project does, its domain/purpose, architecture approach, and primary technologies. Be specific — mention actual libraries, patterns, and features. This will be injected into every AI prompt as context.`,
+        },
+        {
+          role: 'user',
+          content: contextLines.join('\n'),
+        },
+      ],
+      resolvedKey,
+      { model, maxTokens: 256, temperature: 0.3 },
+    );
+    const latency = Date.now() - start;
+
+    const personality = result.content.trim();
+    if (personality.length < 20 || personality.length > 1000) {
+      recordModelPerformance(adminDb, 'projectPersonality', model, resolvedKey.provider, false, latency).catch(() => {});
+      return;
+    }
+
+    recordModelPerformance(adminDb, 'projectPersonality', model, resolvedKey.provider, true, latency).catch(() => {});
+
+    // Store in projects.settings as JSONB merge
+    const newSettings = {
+      ...settings,
+      project_personality: personality,
+      personality_generated_at: new Date().toISOString(),
+    };
+
+    await db
+      .from('projects')
+      .update({ settings: newSettings })
+      .eq('id', projectId);
+
+    logger.info({ projectId, model }, 'Project personality generated');
+  } catch (error) {
+    logger.warn(
+      { projectId, error: error instanceof Error ? error.message : String(error) },
+      'Project personality generation failed (non-fatal)',
+    );
   }
 }
 

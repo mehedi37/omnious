@@ -233,7 +233,7 @@ function GraphPageInner() {
       className="h-full grid overflow-hidden"
       style={{
         gridTemplateColumns: `${leftPanelOpen ? '280px' : '0px'} 1fr ${
-          detailPanelOpen ? '360px' : '0px'
+          detailPanelOpen ? '420px' : '0px'
         }`,
         transition: 'grid-template-columns 200ms ease',
       }}

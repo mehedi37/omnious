@@ -24,6 +24,14 @@ export interface OmniousNodeData {
   /** Error heatmap data */
   errorCount?: number;
   errorSeverity?: string;
+  /** Source code body for this node */
+  codeBody?: string | null;
+  /** Number of edges connected to this node (in + out) */
+  connectionCount?: number;
+  /** Size tier derived from type + connections */
+  sizeTier?: 'large' | 'medium' | 'small';
+  /** Whether this node is a graph entry point (no upstream callers) */
+  isEntryPoint?: boolean;
   [key: string]: unknown;
 }
 
@@ -42,6 +50,63 @@ export type OmniousEdge = Edge<OmniousEdgeData>;
 // ─── Node flow animation state ───────────────────────────────────────────────
 
 export type NodeFlowState = 'idle' | 'active' | 'completed' | 'error';
+
+// ─── Node sizing helpers ─────────────────────────────────────────────────────
+
+const STRUCTURAL_TYPES: ReadonlySet<OIRNodeType> = new Set([
+  'module', 'package', 'namespace', 'class', 'component', 'route',
+]);
+
+const ENTRY_POINT_TYPES: ReadonlySet<OIRNodeType> = new Set([
+  'route', 'event_listener', 'middleware',
+]);
+
+/** Node dimensions per size tier (width x height) */
+export const NODE_SIZE_DIMENSIONS = {
+  large:  { width: 220, height: 72 },
+  medium: { width: 200, height: 60 },
+  small:  { width: 170, height: 48 },
+} as const;
+
+/** Compute connection counts, size tiers, and entry-point flags for nodes */
+function enrichNodesWithGraphMetrics(
+  nodes: OmniousNode[],
+  edges: OmniousEdge[],
+): OmniousNode[] {
+  // Count connections per node
+  const connectionCounts = new Map<string, number>();
+  const hasIncoming = new Set<string>();
+  for (const edge of edges) {
+    connectionCounts.set(edge.source, (connectionCounts.get(edge.source) ?? 0) + 1);
+    connectionCounts.set(edge.target, (connectionCounts.get(edge.target) ?? 0) + 1);
+    hasIncoming.add(edge.target);
+  }
+
+  return nodes.map((n) => {
+    const count = connectionCounts.get(n.id) ?? 0;
+    const isStructural = STRUCTURAL_TYPES.has(n.data.oirType);
+    const isEntryPoint = ENTRY_POINT_TYPES.has(n.data.oirType) && !hasIncoming.has(n.id);
+
+    let sizeTier: 'large' | 'medium' | 'small';
+    if (isStructural || count >= 5) {
+      sizeTier = 'large';
+    } else if (count <= 1) {
+      sizeTier = 'small';
+    } else {
+      sizeTier = 'medium';
+    }
+
+    return {
+      ...n,
+      data: {
+        ...n.data,
+        connectionCount: count,
+        sizeTier,
+        isEntryPoint,
+      },
+    };
+  });
+}
 
 // ─── Store types ─────────────────────────────────────────────────────────────
 
@@ -100,6 +165,13 @@ interface GraphState {
 
   // Module grouping
   moduleGroups: Array<{ label: string; color: string; nodeIds: string[] }>;
+
+  // Error flow path
+  errorFlowNodeIds: Set<string>;
+  errorFlowEdgeIds: Set<string>;
+
+  // Focus depth rings
+  nodeDepthMap: Map<string, number>;
 
   // ── Actions ──────────────────────────────────────────────────────────────
 
@@ -165,6 +237,10 @@ interface GraphState {
   // Module grouping
   setModuleGroups: (groups: Array<{ label: string; color: string; nodeIds: string[] }>) => void;
   clearModuleGroups: () => void;
+
+  // Error flow path
+  traceErrorPath: (errorNodeId: string) => void;
+  clearErrorPath: () => void;
 }
 
 export const useGraphStore = create<GraphState>()(
@@ -211,6 +287,11 @@ export const useGraphStore = create<GraphState>()(
 
       moduleGroups: [],
 
+      errorFlowNodeIds: new Set<string>(),
+      errorFlowEdgeIds: new Set<string>(),
+
+      nodeDepthMap: new Map<string, number>(),
+
       // ── Node/edge management ───────────────────────────────────────────
 
       setNodes: (nodes) =>
@@ -225,7 +306,7 @@ export const useGraphStore = create<GraphState>()(
 
       setGraph: (nodes, edges) =>
         set((state) => {
-          state.nodes = nodes;
+          state.nodes = enrichNodesWithGraphMetrics(nodes, edges);
           state.edges = edges;
           state.selectedNodeIds = new Set();
           state.neighborNodeIds = new Set();
@@ -454,18 +535,21 @@ export const useGraphStore = create<GraphState>()(
 
       setFocusMode: (nodeId) =>
         set((state) => {
-          // Collect 2-hop neighbors from edges
+          // Collect 2-hop neighbors from edges + track depth
           const connected = new Set<string>([nodeId]);
+          const depthMap = new Map<string, number>([[nodeId, 0]]);
           const hop1 = new Set<string>();
 
           for (const edge of state.edges) {
             if (edge.source === nodeId) {
               connected.add(edge.target);
               hop1.add(edge.target);
+              depthMap.set(edge.target, 1);
             }
             if (edge.target === nodeId) {
               connected.add(edge.source);
               hop1.add(edge.source);
+              depthMap.set(edge.source, 1);
             }
           }
 
@@ -474,13 +558,20 @@ export const useGraphStore = create<GraphState>()(
             if (connected.size >= 50) break;
             for (const edge of state.edges) {
               if (connected.size >= 50) break;
-              if (edge.source === n1 && !connected.has(edge.target)) connected.add(edge.target);
-              if (edge.target === n1 && !connected.has(edge.source)) connected.add(edge.source);
+              if (edge.source === n1 && !connected.has(edge.target)) {
+                connected.add(edge.target);
+                depthMap.set(edge.target, 2);
+              }
+              if (edge.target === n1 && !connected.has(edge.source)) {
+                connected.add(edge.source);
+                depthMap.set(edge.source, 2);
+              }
             }
           }
 
           state.focusedNodeId = nodeId;
           state.connectedNodeIds = connected;
+          state.nodeDepthMap = depthMap;
           state.selectedNodeIds = new Set([nodeId]);
           state.neighborNodeIds = hop1;
         }),
@@ -489,6 +580,7 @@ export const useGraphStore = create<GraphState>()(
         set((state) => {
           state.focusedNodeId = null;
           state.connectedNodeIds = new Set();
+          state.nodeDepthMap = new Map();
           state.selectedNodeIds = new Set();
           state.neighborNodeIds = new Set();
           state.highlightedNodeId = null;
@@ -544,6 +636,51 @@ export const useGraphStore = create<GraphState>()(
         set((state) => {
           state.moduleGroups = [];
         }),
+
+      // ── Error flow path ─────────────────────────────────────────────────
+
+      traceErrorPath: (errorNodeId) =>
+        set((state) => {
+          // BFS upstream from errorNodeId following incoming edges
+          const visited = new Set<string>([errorNodeId]);
+          const pathEdges = new Set<string>();
+          const queue = [errorNodeId];
+
+          // Build a reverse adjacency list (target → edges)
+          const incomingEdges = new Map<string, OmniousEdge[]>();
+          for (const edge of state.edges) {
+            const list = incomingEdges.get(edge.target);
+            if (list) list.push(edge);
+            else incomingEdges.set(edge.target, [edge]);
+          }
+
+          // BFS up to 6 hops upstream
+          let depth = 0;
+          while (queue.length > 0 && depth < 6) {
+            const next: string[] = [];
+            for (const nodeId of queue) {
+              for (const edge of incomingEdges.get(nodeId) ?? []) {
+                pathEdges.add(edge.id);
+                if (!visited.has(edge.source)) {
+                  visited.add(edge.source);
+                  next.push(edge.source);
+                }
+              }
+            }
+            queue.length = 0;
+            queue.push(...next);
+            depth++;
+          }
+
+          state.errorFlowNodeIds = visited;
+          state.errorFlowEdgeIds = pathEdges;
+        }),
+
+      clearErrorPath: () =>
+        set((state) => {
+          state.errorFlowNodeIds = new Set();
+          state.errorFlowEdgeIds = new Set();
+        }),
     })),
   ),
 );
@@ -565,6 +702,7 @@ export function toReactFlowNodes(
     metadata: Record<string, unknown> | null;
     source?: 'seed' | 'traversal' | 'semantic';
     relevance?: number;
+    code_body?: string | null;
   }>,
 ): OmniousNode[] {
   return subgraphNodes.map((n, i) => ({
@@ -584,6 +722,7 @@ export function toReactFlowNodes(
       oirId: n.oir_id,
       source: n.source,
       relevance: n.relevance,
+      codeBody: n.code_body ?? null,
     },
   }));
 }

@@ -2,14 +2,13 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, projectProcedure } from '../trpc/index.js';
 import { logger } from '../lib/logger.js';
-import { resolveApiKey, callLLM, selectModel, SYSTEM_PROMPTS, encryptApiKey } from '../services/ai.service.js';
+import { resolveApiKey, callLLM, selectModel, SYSTEM_PROMPTS, encryptApiKey, extractSessionInsights } from '../services/ai.service.js';
 import {
   querySubgraph,
   getOverviewGraph,
   getErrorSubgraph,
   getTraceSubgraph,
   getDependencySubgraph,
-  buildGraphSlice,
 } from '../services/graph-query.service.js';
 
 const aiMessageAttachmentSchema = z.object({
@@ -115,10 +114,10 @@ export const aiRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      // Fetch current messages
+      // Fetch current messages + project_id for insight extraction
       const { data: session, error: fetchError } = await ctx.db
         .from('ai_sessions')
-        .select('messages, prompt_tokens, completion_tokens')
+        .select('messages, prompt_tokens, completion_tokens, project_id')
         .eq('id', input.sessionId)
         .eq('user_id', ctx.user.id)
         .single();
@@ -161,6 +160,21 @@ export const aiRouter = router({
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
           message: error.message,
+        });
+      }
+
+      // Fire-and-forget: extract insights when conversation has enough turns
+      const hasAssistantMsg = input.messages.some((m) => m.role === 'assistant');
+      if (hasAssistantMsg && session.project_id) {
+        const allMsgs = updatedMessages as Array<{ role: string; content: string }>;
+        extractSessionInsights(
+          input.sessionId,
+          session.project_id as string,
+          ctx.user.id,
+          allMsgs,
+          ctx.adminDb,
+        ).catch((err) => {
+          logger.debug({ err, sessionId: input.sessionId }, 'Insight extraction failed (non-critical)');
         });
       }
 
@@ -216,7 +230,7 @@ export const aiRouter = router({
       const { data: errorSnap, error: snapError } = await ctx.db
         .from('error_snapshots')
         .select(
-          `*, code_node:code_nodes (id, name, type, file_path, line_start, line_end, signature, doc_comment)`,
+          `*, code_node:code_nodes (id, name, type, file_path, line_start, line_end, signature, doc_comment, code_body)`,
         )
         .eq('id', input.errorId)
         .eq('project_id', input.projectId)
@@ -252,6 +266,10 @@ export const aiRouter = router({
         ];
         if (node.signature) codeParts.push(`Signature: \`${String(node.signature)}\``);
         if (node.doc_comment) codeParts.push(`Docs: ${String(node.doc_comment)}`);
+        if (node.code_body) {
+          const codeSnippet = String(node.code_body).slice(0, 3000);
+          codeParts.push(`\n### Source Code\n\`\`\`\n${codeSnippet}\n\`\`\``);
+        }
         contextSections.push(`## Affected Code\n${codeParts.join('\n')}`);
       }
 
@@ -888,8 +906,8 @@ export const aiRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { data, error } = await ctx.db
-        .from('ai_graph_slices')
+      const { data, error } = await (ctx.db
+        .from('ai_graph_slices' as any) as any)
         .insert({
           project_id: input.projectId,
           user_id: ctx.user.id,
@@ -927,8 +945,8 @@ export const aiRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const { data: slice, error: sliceError } = await ctx.db
-        .from('ai_graph_slices')
+      const { data: slice, error: sliceError } = await (ctx.db
+        .from('ai_graph_slices' as any) as any)
         .select('*')
         .eq('id', input.sliceId)
         .eq('project_id', input.projectId)
@@ -1006,8 +1024,8 @@ export const aiRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const { data, error } = await ctx.db
-        .from('ai_graph_slices')
+      const { data, error } = await (ctx.db
+        .from('ai_graph_slices' as any) as any)
         .select('id, title, query_text, slice_type, tags, entry_point_oir_id, created_at, updated_at, user_id')
         .eq('project_id', input.projectId)
         .order('created_at', { ascending: false })
