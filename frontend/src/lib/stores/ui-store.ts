@@ -4,7 +4,7 @@ interface UIState {
   sidebarCollapsed: boolean;
   commandPaletteOpen: boolean;
   detailPanelOpen: boolean;
-  activeDetailTab: 'details' | 'code' | 'ai';
+  activeDetailTab: 'details' | 'code' | 'ai' | 'slices';
   pendingReplayTraceId: string | null;
   filtersOpen: boolean;
   keyboardShortcutsOpen: boolean;

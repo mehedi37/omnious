@@ -156,8 +156,30 @@ export async function buildProjectContext(
 
   parts.push(`## Project: ${p.name ?? 'Unknown'}`);
 
-  // Inject project personality if available (stored in settings.project_personality)
   const settings = (p.settings ?? {}) as Record<string, unknown>;
+
+  // Inject AI profile if available (structured project overview — Tier 1a)
+  if (settings.ai_profile && typeof settings.ai_profile === 'object') {
+    const profile = settings.ai_profile as Record<string, unknown>;
+    const profileLines: string[] = [];
+    if (profile.architecture_style) profileLines.push(`**Architecture:** ${profile.architecture_style}`);
+    if (Array.isArray(profile.key_patterns) && profile.key_patterns.length > 0) {
+      profileLines.push(`**Patterns:** ${(profile.key_patterns as string[]).join(', ')}`);
+    }
+    if (profile.naming_conventions) profileLines.push(`**Naming:** ${profile.naming_conventions}`);
+    if (Array.isArray(profile.module_boundaries) && profile.module_boundaries.length > 0) {
+      profileLines.push(`**Modules:** ${(profile.module_boundaries as string[]).join(' | ')}`);
+    }
+    if (Array.isArray(profile.entry_points) && profile.entry_points.length > 0) {
+      profileLines.push(`**Entry points:** ${(profile.entry_points as string[]).join(', ')}`);
+    }
+    if (Array.isArray(profile.common_abstractions) && profile.common_abstractions.length > 0) {
+      profileLines.push(`**Abstractions:** ${(profile.common_abstractions as string[]).join(', ')}`);
+    }
+    if (profileLines.length > 0) parts.push(profileLines.join('\n'));
+  }
+
+  // Inject project personality if available (stored in settings.project_personality)
   if (settings.project_personality && typeof settings.project_personality === 'string') {
     parts.push(String(settings.project_personality));
   } else if (p.description) {
@@ -332,8 +354,12 @@ export interface QueryAttachment {
   subtype?: string;
 }
 
+/** Pipeline stage identifiers for frontend progress indicators */
+export type StreamStage = 'embedding' | 'searching' | 'traversing' | 'analyzing' | 'rendering';
+
 /** SSE event emitted by querySubgraphStream */
 export type StreamEvent =
+  | { type: 'stage'; stage: StreamStage }
   | { type: 'step'; text: string }
   | { type: 'delta'; text: string }
   | { type: 'done'; nodes: SubgraphNode[]; edges: SubgraphEdge[]; steps: string[] }
@@ -416,6 +442,8 @@ async function _buildSubgraphPayload(
   contextNodeIds?: string[],
   attachments?: QueryAttachment[],
   modelPreference?: 'auto' | 'fast' | 'powerful',
+  onStage?: (stage: StreamStage) => void,
+  previousMessages?: Array<{ role: 'user' | 'assistant'; content: string }>,
 ): Promise<SubgraphPayload> {
   const steps: string[] = [];
   const attachmentContextLines: string[] = [];
@@ -428,6 +456,7 @@ async function _buildSubgraphPayload(
   steps.push(`Using ${resolvedKey.source} ${resolvedKey.provider} key`);
 
   // 2. Generate embedding — use HyDE for complex queries, direct embedding for simple ones
+  onStage?.('embedding');
   const lowerQuery = query.toLowerCase();
   const isComplexQuery = query.length > 40 || DEBUG_KEYWORDS.some((kw) => lowerQuery.includes(kw))
     || PATH_KEYWORDS.some((kw) => new RegExp(kw).test(lowerQuery));
@@ -445,6 +474,7 @@ async function _buildSubgraphPayload(
 
   // 3. Multi-signal ranked search — find seed nodes using weighted scoring:
   //    semantic similarity, trigram matching, graph centrality, error frequency, recency
+  onStage?.('searching');
   const identifierTokens = query.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) ?? [];
   const queryText = identifierTokens.join(' ');
 
@@ -667,6 +697,7 @@ async function _buildSubgraphPayload(
   steps.push(`Traversal depth: ${traversalDepth} (${depthReason})`);
 
   // 5. Traverse neighbors from top seed nodes
+  onStage?.('traversing');
   const topSeeds = seedNodes.slice(0, 5);
   const allNodeIds = new Set<string>(seedNodes.map((n) => n.id));
   const traversalNodes: Array<Record<string, unknown>> = [];
@@ -882,11 +913,24 @@ async function _buildSubgraphPayload(
 
   const llmMessages: LLMMessage[] = [
     { role: 'system', content: SYSTEM_PROMPTS.graphQuery },
-    {
-      role: 'user',
-      content: `User question: "${query}"\n\n${projectContext ? `${projectContext}\n\n` : ''}${contextText}${mentionContext}${globalKnowledge}${insightsContext}`,
-    },
   ];
+
+  // Inject compressed conversation history so the AI has multi-turn context
+  if (previousMessages && previousMessages.length > 0) {
+    const recentHistory = previousMessages.slice(-6);
+    const historyLines = recentHistory
+      .map((m) => `${m.role === 'user' ? 'User' : 'AI'}: ${m.content.length > 300 ? m.content.slice(0, 300) + '…' : m.content}`)
+      .join('\n\n');
+    llmMessages.push({
+      role: 'system',
+      content: `Previous conversation context (${recentHistory.length} messages):\n\n${historyLines}`,
+    });
+  }
+
+  llmMessages.push({
+    role: 'user',
+    content: `User question: "${query}"\n\n${projectContext ? `${projectContext}\n\n` : ''}${contextText}${mentionContext}${globalKnowledge}${insightsContext}`,
+  });
 
   return {
     resolvedKey,
@@ -973,12 +1017,20 @@ export async function* querySubgraphStream(
   contextNodeIds?: string[],
   attachments?: QueryAttachment[],
   modelPreference?: 'auto' | 'fast' | 'powerful',
+  previousMessages?: Array<{ role: 'user' | 'assistant'; content: string }>,
 ): AsyncGenerator<StreamEvent> {
+  // Collect stage events emitted during payload build
+  const pendingStages: StreamStage[] = [];
+  const onStage = (stage: StreamStage) => { pendingStages.push(stage); };
+
   const payload = await _buildSubgraphPayload(
-    projectId, query, userId, db, adminDb, apiKeyId, contextNodeIds, attachments, modelPreference,
+    projectId, query, userId, db, adminDb, apiKeyId, contextNodeIds, attachments, modelPreference, onStage, previousMessages,
   );
 
-  // Emit pipeline step events before the LLM starts
+  // Emit collected stage + step events before the LLM starts
+  for (const stage of pendingStages) {
+    yield { type: 'stage', stage };
+  }
   for (const step of payload.steps) {
     yield { type: 'step', text: step };
   }
@@ -998,6 +1050,7 @@ export async function* querySubgraphStream(
   }
 
   // Stream the LLM response token-by-token, collecting for cache write
+  yield { type: 'stage', stage: 'analyzing' };
   let fullResponse = '';
   for await (const delta of callLLMStream(payload.llmMessages, payload.resolvedKey, {
     maxTokens: 2048,
@@ -1014,6 +1067,7 @@ export async function* querySubgraphStream(
     fullResponse, payload.model, nodeOirIds, adminDb,
   ).catch(() => { /* non-critical */ });
 
+  yield { type: 'stage', stage: 'rendering' };
   yield {
     type: 'done',
     nodes: payload.nodes,

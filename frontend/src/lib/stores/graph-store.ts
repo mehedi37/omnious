@@ -163,12 +163,29 @@ interface GraphState {
   latestSliceId: string | null;
   shareNextSlice: boolean;
 
+  // Slice narrative (Phase 2.3)
+  sliceNarrative: {
+    summary: string;
+    pattern: string | null;
+    dataFlow: string | null;
+    followUpQuestions: string[];
+  } | null;
+
   // Module grouping
   moduleGroups: Array<{ label: string; color: string; nodeIds: string[] }>;
+
+  // Cluster data (nodeId → cluster info)
+  clusterMap: Map<string, { label: string; color: string; layer: string | null }>;
+
+  // Group collapse state
+  collapsedGroups: Set<string>;
 
   // Error flow path
   errorFlowNodeIds: Set<string>;
   errorFlowEdgeIds: Set<string>;
+
+  // Edge hover (single source of truth — event delegation)
+  hoveredEdgeId: string | null;
 
   // Focus depth rings
   nodeDepthMap: Map<string, number>;
@@ -233,14 +250,25 @@ interface GraphState {
   setLatestSliceId: (sliceId: string | null) => void;
   setShareNextSlice: (shared: boolean) => void;
   clearQueryResult: () => void;
+  setSliceNarrative: (narrative: { summary: string; pattern: string | null; dataFlow: string | null; followUpQuestions: string[] } | null) => void;
 
   // Module grouping
   setModuleGroups: (groups: Array<{ label: string; color: string; nodeIds: string[] }>) => void;
   clearModuleGroups: () => void;
 
+  // Cluster data
+  setClusterData: (clusters: Array<{ label: string; color: string; layer: string | null; nodeIds: string[] }>) => void;
+  clearClusterData: () => void;
+
+  // Group collapse
+  toggleGroupCollapse: (groupId: string) => void;
+
   // Error flow path
   traceErrorPath: (errorNodeId: string) => void;
   clearErrorPath: () => void;
+
+  // Edge hover (event delegation)
+  setHoveredEdgeId: (edgeId: string | null) => void;
 }
 
 export const useGraphStore = create<GraphState>()(
@@ -284,11 +312,18 @@ export const useGraphStore = create<GraphState>()(
       querySteps: [],
       latestSliceId: null,
       shareNextSlice: false,
+      sliceNarrative: null,
 
       moduleGroups: [],
 
+      clusterMap: new Map<string, { label: string; color: string; layer: string | null }>(),
+
+      collapsedGroups: new Set<string>(),
+
       errorFlowNodeIds: new Set<string>(),
       errorFlowEdgeIds: new Set<string>(),
+
+      hoveredEdgeId: null,
 
       nodeDepthMap: new Map<string, number>(),
 
@@ -625,6 +660,12 @@ export const useGraphStore = create<GraphState>()(
           state.queryExplanation = null;
           state.querySteps = [];
           state.latestSliceId = null;
+          state.sliceNarrative = null;
+        }),
+
+      setSliceNarrative: (narrative) =>
+        set((state) => {
+          state.sliceNarrative = narrative;
         }),
 
       setModuleGroups: (groups) =>
@@ -635,6 +676,45 @@ export const useGraphStore = create<GraphState>()(
       clearModuleGroups: () =>
         set((state) => {
           state.moduleGroups = [];
+        }),
+
+      setClusterData: (clusters) =>
+        set((state) => {
+          const map = new Map<string, { label: string; color: string; layer: string | null }>();
+          for (const c of clusters) {
+            for (const nodeId of c.nodeIds) {
+              map.set(nodeId, { label: c.label, color: c.color, layer: c.layer });
+            }
+          }
+          state.clusterMap = map;
+        }),
+
+      clearClusterData: () =>
+        set((state) => {
+          state.clusterMap = new Map();
+        }),
+
+      toggleGroupCollapse: (groupId) =>
+        set((state) => {
+          const next = new Set(state.collapsedGroups);
+          if (next.has(groupId)) {
+            next.delete(groupId);
+            // Show children again
+            for (const node of state.nodes) {
+              if ((node as any).parentId === groupId) {
+                (node as any).hidden = false;
+              }
+            }
+          } else {
+            next.add(groupId);
+            // Hide children
+            for (const node of state.nodes) {
+              if ((node as any).parentId === groupId) {
+                (node as any).hidden = true;
+              }
+            }
+          }
+          state.collapsedGroups = next;
         }),
 
       // ── Error flow path ─────────────────────────────────────────────────
@@ -680,6 +760,11 @@ export const useGraphStore = create<GraphState>()(
         set((state) => {
           state.errorFlowNodeIds = new Set();
           state.errorFlowEdgeIds = new Set();
+        }),
+
+      setHoveredEdgeId: (edgeId) =>
+        set((state) => {
+          state.hoveredEdgeId = edgeId;
         }),
     })),
   ),
@@ -746,4 +831,37 @@ export function toReactFlowEdges(
       edgeType: e.type as OIREdgeType,
     },
   }));
+}
+
+// ─── Memoized selectors ──────────────────────────────────────────────────────
+
+/** Consolidated per-node state selector. Returns a flat object for `useShallow`. */
+export interface NodeGraphState {
+  isPinned: boolean;
+  heatmapActive: boolean;
+  isActiveFlowNode: boolean;
+  isInErrorFlow: boolean;
+  errorFlowActive: boolean;
+  focusDepth: number | undefined;
+  focusActive: boolean;
+}
+
+const nodeStateSelectorCache = new Map<string, (s: GraphState) => NodeGraphState>();
+
+/** Get a stable selector for a given node ID (avoids creating new functions on every render). */
+export function selectNodeGraphState(nodeId: string): (s: GraphState) => NodeGraphState {
+  let selector = nodeStateSelectorCache.get(nodeId);
+  if (!selector) {
+    selector = (s: GraphState): NodeGraphState => ({
+      isPinned: s.pinnedNodeIds.has(nodeId),
+      heatmapActive: s.heatmapActive,
+      isActiveFlowNode: s.activeNodeId === nodeId,
+      isInErrorFlow: s.errorFlowNodeIds.has(nodeId),
+      errorFlowActive: s.errorFlowNodeIds.size > 0,
+      focusDepth: s.nodeDepthMap.get(nodeId),
+      focusActive: s.focusedNodeId !== null,
+    });
+    nodeStateSelectorCache.set(nodeId, selector);
+  }
+  return selector;
 }

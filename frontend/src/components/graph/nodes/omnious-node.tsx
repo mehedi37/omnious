@@ -1,12 +1,13 @@
 'use client';
 
-import { Handle, type NodeProps, Position } from '@xyflow/react';
+import { Handle, type NodeProps, Position, useStore } from '@xyflow/react';
 import { ArrowRight, FileCode, Lock } from 'lucide-react';
 import { memo, useCallback, useRef, useState } from 'react';
+import { useShallow } from 'zustand/shallow';
 import { NODE_BG_CLASSES_STRONG, NODE_TYPE_ICONS } from '@/lib/oir/constants';
 import type { OIRNodeType } from '@/lib/oir/types';
 import type { OmniousNodeData } from '@/lib/stores/graph-store';
-import { useGraphStore } from '@/lib/stores/graph-store';
+import { selectNodeGraphState, useGraphStore } from '@/lib/stores/graph-store';
 import { useAIStore } from '@/lib/stores/ai-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
@@ -39,6 +40,16 @@ const LABEL_SIZE_CLASSES = {
   small:  'text-xs',
 } as const;
 
+type LODLevel = 'minimal' | 'compact' | 'full';
+
+/** Quantized zoom selector — only re-renders nodes when LOD level changes */
+const zoomLODSelector = (state: { transform: [number, number, number] }): LODLevel => {
+  const zoom = state.transform[2];
+  if (zoom < 0.3) return 'minimal';
+  if (zoom < 0.7) return 'compact';
+  return 'full';
+};
+
 /**
  * Custom React Flow node for Omnious code graph.
  * Displays: icon + name + type badge + file path.
@@ -57,13 +68,21 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
   const isEntryPoint = nodeData.isEntryPoint ?? false;
   const connectionCount = nodeData.connectionCount ?? 0;
 
-  const isPinned = useGraphStore((s) => s.pinnedNodeIds.has(id));
-  const heatmapActive = useGraphStore((s) => s.heatmapActive);
-  const isActiveFlowNode = useGraphStore((s) => s.activeNodeId === id);
-  const isInErrorFlow = useGraphStore((s) => s.errorFlowNodeIds.has(id));
-  const errorFlowActive = useGraphStore((s) => s.errorFlowNodeIds.size > 0);
-  const focusDepth = useGraphStore((s) => s.nodeDepthMap.get(id));
-  const focusActive = useGraphStore((s) => s.focusedNodeId !== null);
+  // LOD: quantized zoom level — only re-renders on LOD transition, not every zoom tick
+  const lod = useStore(zoomLODSelector);
+
+  const {
+    isPinned,
+    heatmapActive,
+    isActiveFlowNode,
+    isInErrorFlow,
+    errorFlowActive,
+    focusDepth,
+    focusActive,
+  } = useGraphStore(useShallow(selectNodeGraphState(id)));
+
+  // Cluster data (community detection)
+  const clusterInfo = useGraphStore((s) => s.clusterMap.get(id));
 
   // Debounced hover tooltip
   const [showTooltip, setShowTooltip] = useState(false);
@@ -102,6 +121,67 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
     ? focusDepth === 0 ? 1 : focusDepth === 1 ? 0.85 : 0.6
     : undefined;
   const depthDim = focusActive && focusDepth === undefined;
+
+  // ── LOD: Minimal — colored dot + first letter (zoom < 0.3) ──
+  if (lod === 'minimal') {
+    return (
+      <>
+        <Handle type="target" position={Position.Top} className="w-1! h-1! bg-transparent!" />
+        <div
+          className={`flex h-8 w-8 items-center justify-center rounded-full border ${bgClass} ${selected ? 'ring-2 ring-primary' : ''}`}
+          style={{
+            opacity: errorFlowDim ? 0.3 : depthDim ? 0.25 : depthOpacity ?? undefined,
+            boxShadow: clusterInfo ? `0 0 0 2px ${clusterInfo.color}40` : undefined,
+          }}
+        >
+          <span className="text-xs font-bold leading-none">
+            {nodeData.label.charAt(0).toUpperCase()}
+          </span>
+        </div>
+        <Handle type="source" position={Position.Bottom} className="w-1! h-1! bg-transparent!" />
+      </>
+    );
+  }
+
+  // ── LOD: Compact — icon + name + type badge (zoom 0.3–0.7) ──
+  if (lod === 'compact') {
+    return (
+      <>
+        <Handle type="target" position={Position.Top} className="w-1.5! h-1.5! bg-muted-foreground/40!" />
+        <div
+          className={`relative rounded-md border-2 px-2 py-1 ${bgClass} ${selected ? 'ring-2 ring-primary' : ''} ${heatmapClass}`}
+          style={{ opacity: errorFlowDim ? 0.3 : depthDim ? 0.25 : depthOpacity ?? undefined }}
+        >
+          <div className="flex items-center gap-1.5">
+            <Icon className="h-3 w-3 shrink-0 opacity-70" />
+            <span className="text-xs font-medium truncate max-w-32">
+              {formatNodeLabel(nodeData.label, nodeData.filePath)}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[9px] text-muted-foreground">
+            <span className="rounded-sm bg-background/50 px-1 py-0.5 font-mono uppercase tracking-wider">
+              {oirType.replace(/_/g, ' ')}
+            </span>
+          </div>
+          {hasError && (
+            <div className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[8px] font-bold text-white">
+              {nodeData.errorCount}
+            </div>
+          )}
+          {clusterInfo && (
+            <div
+              className="absolute -bottom-1 -left-1 h-3 w-3 rounded-full border border-background shadow-sm"
+              style={{ backgroundColor: clusterInfo.color }}
+              title={clusterInfo.label}
+            />
+          )}
+        </div>
+        <Handle type="source" position={Position.Bottom} className="w-1.5! h-1.5! bg-muted-foreground/40!" />
+      </>
+    );
+  }
+
+  // ── LOD: Full — complete node rendering (zoom > 0.7) ──
 
   return (
     <>
@@ -189,6 +269,15 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
           </div>
         )}
 
+        {/* Cluster indicator dot */}
+        {clusterInfo && (
+          <div
+            className="absolute -bottom-1.5 -left-1.5 h-4 w-4 rounded-full border-2 border-background shadow-sm"
+            style={{ backgroundColor: clusterInfo.color }}
+            title={clusterInfo.label}
+          />
+        )}
+
         {/* Pin indicator */}
         {isPinned && (
           <div className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-muted/80 text-muted-foreground opacity-50">
@@ -223,6 +312,12 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
                 {connectionCount > 0 && <span>&middot; {connectionCount} connections</span>}
                 {hasError && <span className="text-red-400">&middot; {nodeData.errorCount} errors</span>}
               </div>
+              {clusterInfo && (
+                <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <div className="h-2 w-2 rounded-full" style={{ backgroundColor: clusterInfo.color }} />
+                  <span>{clusterInfo.label}{clusterInfo.layer ? ` · ${clusterInfo.layer}` : ''}</span>
+                </div>
+              )}
             </div>
           </div>
         )}

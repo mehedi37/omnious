@@ -384,4 +384,87 @@ export const projectRouter = router({
 
       return data;
     }),
+
+  /** Comprehensive project overview for the web dashboard (mirrors CLI `omnious status --remote`) */
+  getProjectOverview: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const pid = input.projectId;
+
+      // Fetch project details
+      const { data: project, error: projectError } = await ctx.db
+        .from('projects')
+        .select('id, name, slug, status, last_indexed_at, last_index_hash, settings')
+        .eq('id', pid)
+        .single();
+
+      if (projectError || !project) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Project not found.' });
+      }
+
+      // Parallel count queries
+      const [
+        nodeCount,
+        edgeCount,
+        traceCount,
+        errorCount,
+        summaryCount,
+        clusterCount,
+        nodeTypeBreakdown,
+      ] = await Promise.all([
+        ctx.db.from('code_nodes').select('*', { count: 'exact', head: true }).eq('project_id', pid).then((r) => r.count ?? 0),
+        ctx.db.from('code_edges').select('*', { count: 'exact', head: true }).eq('project_id', pid).then((r) => r.count ?? 0),
+        ctx.db.from('traces').select('*', { count: 'exact', head: true }).eq('project_id', pid).then((r) => r.count ?? 0),
+        ctx.db.from('error_snapshots').select('*', { count: 'exact', head: true }).eq('project_id', pid).eq('resolved', false).then((r) => r.count ?? 0),
+        ctx.db.from('code_summaries').select('*', { count: 'exact', head: true }).eq('project_id', pid).then((r) => r.count ?? 0),
+        ctx.db.from('code_node_clusters').select('*', { count: 'exact', head: true }).eq('project_id', pid).then((r) => r.count ?? 0),
+        ctx.db.from('code_nodes').select('type').eq('project_id', pid).then((r) => {
+          const counts: Record<string, number> = {};
+          for (const row of r.data ?? []) {
+            counts[row.type] = (counts[row.type] || 0) + 1;
+          }
+          return counts;
+        }),
+      ]);
+
+      // Derive sync state
+      type SyncState = 'empty' | 'synced' | 'importing' | 'error' | 'stale' | 'unknown';
+      let syncState: SyncState = 'unknown';
+      if (project.status === 'importing') {
+        syncState = 'importing';
+      } else if (project.status === 'error') {
+        syncState = 'error';
+      } else if (nodeCount === 0 && !project.last_indexed_at) {
+        syncState = 'empty';
+      } else if (project.last_index_hash && project.last_indexed_at) {
+        const lastIndexed = new Date(project.last_indexed_at);
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        syncState = lastIndexed < sevenDaysAgo ? 'stale' : 'synced';
+      } else if (nodeCount > 0) {
+        syncState = 'synced';
+      }
+
+      // Check if AI profile exists
+      const settings = project.settings as Record<string, unknown> | null;
+      const hasAiProfile = !!(settings?.ai_profile);
+
+      return {
+        name: project.name,
+        slug: project.slug,
+        status: project.status ?? 'active',
+        last_indexed_at: project.last_indexed_at,
+        last_index_hash: project.last_index_hash,
+        sync_state: syncState,
+        has_ai_profile: hasAiProfile,
+        counts: {
+          nodes: nodeCount,
+          edges: edgeCount,
+          traces: traceCount,
+          errors: errorCount,
+          summaries: summaryCount,
+          clusters: clusterCount,
+        },
+        node_type_breakdown: nodeTypeBreakdown,
+      };
+    }),
 });

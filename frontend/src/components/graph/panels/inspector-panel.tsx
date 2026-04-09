@@ -1,12 +1,15 @@
 'use client';
 
-import { Bot, FileCode, Info, PanelRightClose } from 'lucide-react';
+import { Bot, FileCode, Info, Layers, PanelRightClose } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 import { UnifiedAIPanel } from '@/components/ai/unified-ai-panel';
 import { CodePreviewPanel } from '@/components/graph/panels/code-preview-panel';
 import { NodeDetailPanel } from '@/components/graph/panels/node-detail-panel';
+import { SlicesPanel } from '@/components/graph/panels/slices-panel';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { AIMessageAttachment } from '@/lib/stores/ai-store';
+import { useAIStore } from '@/lib/stores/ai-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
 type ModelTier = 'auto' | 'fast' | 'powerful';
@@ -34,6 +37,17 @@ export function InspectorPanel({
 }: InspectorPanelProps) {
   const activeTab = useUIStore((s) => s.activeDetailTab);
   const setActiveTab = useUIStore((s) => s.setActiveDetailTab);
+  const messageCount = useAIStore((s) => s.messages.length);
+  const isStreaming = useAIStore((s) => s.isStreaming);
+  const prevStreamingRef = useRef(isStreaming);
+
+  // Auto-switch to AI tab when a new AI response arrives (streaming ends)
+  useEffect(() => {
+    if (prevStreamingRef.current && !isStreaming && messageCount > 0 && activeTab !== 'ai') {
+      setActiveTab('ai');
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming, messageCount, activeTab, setActiveTab]);
 
   const handleClose = () => {
     if (onClose) {
@@ -47,7 +61,7 @@ export function InspectorPanel({
     <div className="flex h-full flex-col border-l bg-background">
       <Tabs
         value={activeTab}
-        onValueChange={(val) => setActiveTab(val as 'details' | 'code' | 'ai')}
+        onValueChange={(val) => setActiveTab(val as 'details' | 'code' | 'ai' | 'slices')}
         className="flex h-full flex-col"
       >
         <div className="flex items-center justify-between border-b px-2 py-1">
@@ -72,6 +86,13 @@ export function InspectorPanel({
             >
               <Bot className="h-3 w-3 mr-1" />
               AI
+            </TabsTrigger>
+            <TabsTrigger
+              value="slices"
+              className="h-6 px-2 text-xs data-[state=active]:bg-accent data-[state=active]:shadow-none"
+            >
+              <Layers className="h-3 w-3 mr-1" />
+              Slices
             </TabsTrigger>
           </TabsList>
           <Button
@@ -101,6 +122,10 @@ export function InspectorPanel({
             onLoadOverview={onLoadOverview}
             isQuerying={isQuerying}
           />
+        </TabsContent>
+
+        <TabsContent value="slices" className="flex-1 m-0 overflow-hidden">
+          <SlicesPanel />
         </TabsContent>
       </Tabs>
     </div>

@@ -783,9 +783,9 @@ export async function extractSessionInsights(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adminDb: any,
 ): Promise<{ extracted: number }> {
-  // Only extract when we have enough conversation (at least 2 full turns)
+  // Only extract when we have enough conversation (at least 1 full turn)
   const turnMessages = messages.filter((m) => m.role !== 'system');
-  if (turnMessages.length < 4) return { extracted: 0 };
+  if (turnMessages.length < 2) return { extracted: 0 };
 
   // Check if we already extracted insights for this session recently
   const { data: existing } = await adminDb
@@ -1458,6 +1458,178 @@ export async function generateProjectPersonality(
     logger.warn(
       { projectId, error: error instanceof Error ? error.message : String(error) },
       'Project personality generation failed (non-fatal)',
+    );
+  }
+}
+
+// ─── Auto-Generated Project Profile ──────────────────────────────
+
+/**
+ * Generate a structured project profile from code summaries and metadata.
+ * Stored in `projects.settings.ai_profile` — always available as Tier 1 context.
+ * Regenerated at most once every 12 hours to avoid spamming LLM calls.
+ */
+export async function generateProjectProfile(
+  projectId: string,
+  resolvedKey: ResolvedKey,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: any,
+): Promise<void> {
+  try {
+    const db = adminDb;
+    const { data: project } = await db
+      .from('projects')
+      .select('name, description, primary_language, framework, detected_stack, settings')
+      .eq('id', projectId)
+      .single();
+
+    if (!project) return;
+
+    const p = project as Record<string, unknown>;
+    const settings = (p.settings ?? {}) as Record<string, unknown>;
+
+    // Skip if profile was recently generated
+    if (settings.ai_profile && settings.ai_profile_generated_at) {
+      const generatedAt = new Date(String(settings.ai_profile_generated_at));
+      const hoursSince = (Date.now() - generatedAt.getTime()) / (1000 * 60 * 60);
+      if (hoursSince < 12) return;
+    }
+
+    // Fetch directory summaries for context
+    const { data: dirSummaries } = await db
+      .from('code_summaries')
+      .select('scope, path, summary, node_count')
+      .eq('project_id', projectId)
+      .eq('scope', 'directory')
+      .order('node_count', { ascending: false })
+      .limit(20);
+
+    // Fetch top-level file summaries for pattern detection
+    const { data: fileSummaries } = await db
+      .from('code_summaries')
+      .select('path, summary')
+      .eq('project_id', projectId)
+      .eq('scope', 'file')
+      .order('node_count', { ascending: false })
+      .limit(15);
+
+    // Fetch node type distribution
+    const { data: nodeTypes } = await db
+      .from('code_nodes')
+      .select('oir_type')
+      .eq('project_id', projectId);
+
+    const typeCounts: Record<string, number> = {};
+    if (nodeTypes) {
+      for (const n of nodeTypes as Array<{ oir_type: string }>) {
+        typeCounts[n.oir_type] = (typeCounts[n.oir_type] ?? 0) + 1;
+      }
+    }
+
+    const contextLines: string[] = [];
+    if (p.name) contextLines.push(`Project: ${p.name}`);
+    if (p.description) contextLines.push(`Description: ${p.description}`);
+    if (p.primary_language) contextLines.push(`Language: ${p.primary_language}`);
+    if (p.framework) contextLines.push(`Framework: ${p.framework}`);
+    if (p.detected_stack && typeof p.detected_stack === 'object') {
+      contextLines.push(`Stack: ${JSON.stringify(p.detected_stack)}`);
+    }
+    if (Object.keys(typeCounts).length > 0) {
+      contextLines.push(`Node type distribution: ${JSON.stringify(typeCounts)}`);
+    }
+    if (dirSummaries && (dirSummaries as unknown[]).length > 0) {
+      contextLines.push('\nDirectory summaries:');
+      for (const s of dirSummaries as Array<{ path: string; summary: string; node_count: number }>) {
+        contextLines.push(`- ${s.path} (${s.node_count} nodes): ${s.summary}`);
+      }
+    }
+    if (fileSummaries && (fileSummaries as unknown[]).length > 0) {
+      contextLines.push('\nKey files:');
+      for (const s of fileSummaries as Array<{ path: string; summary: string }>) {
+        contextLines.push(`- ${s.path}: ${s.summary}`);
+      }
+    }
+
+    const model = selectModel('overview', '', resolvedKey.provider, 'fast');
+
+    const profileSchema = {
+      type: 'object' as const,
+      properties: {
+        architecture_style: {
+          type: 'string' as const,
+          description: 'Primary architecture pattern (e.g., "Monorepo with microservices", "MVC", "Layered backend + SPA frontend")',
+        },
+        key_patterns: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Important design patterns used (e.g., "Repository pattern", "Event-driven", "CQRS")',
+        },
+        naming_conventions: {
+          type: 'string' as const,
+          description: 'Observed naming conventions (e.g., "camelCase functions, PascalCase components, kebab-case files")',
+        },
+        module_boundaries: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Key module/package boundaries with their responsibility (e.g., "backend/src/services — business logic")',
+        },
+        entry_points: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Main entry points of the application (e.g., "backend/src/server.ts", "frontend/src/app/page.tsx")',
+        },
+        common_abstractions: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Key abstractions/base types used across the codebase (e.g., "tRPC routers", "Zustand stores", "React Flow custom nodes")',
+        },
+      },
+      required: ['architecture_style', 'key_patterns', 'naming_conventions', 'module_boundaries', 'entry_points', 'common_abstractions'],
+    };
+
+    const start = Date.now();
+    const result = await callLLM(
+      [
+        {
+          role: 'system',
+          content: 'Analyze the codebase metadata and produce a structured project profile. Be specific — use actual directory names, patterns, and technologies found in the code. Keep arrays concise (3-8 items). This profile will be used as persistent AI context.',
+        },
+        {
+          role: 'user',
+          content: contextLines.join('\n'),
+        },
+      ],
+      resolvedKey,
+      { model, maxTokens: 1024, temperature: 0.2, responseSchema: profileSchema },
+    );
+    const latency = Date.now() - start;
+
+    let profile: unknown;
+    try {
+      profile = JSON.parse(result.content);
+    } catch {
+      recordModelPerformance(adminDb, 'projectProfile', model, resolvedKey.provider, false, latency).catch(() => {});
+      return;
+    }
+
+    recordModelPerformance(adminDb, 'projectProfile', model, resolvedKey.provider, true, latency).catch(() => {});
+
+    const newSettings = {
+      ...settings,
+      ai_profile: profile,
+      ai_profile_generated_at: new Date().toISOString(),
+    };
+
+    await db
+      .from('projects')
+      .update({ settings: newSettings })
+      .eq('id', projectId);
+
+    logger.info({ projectId, model }, 'Project profile generated');
+  } catch (error) {
+    logger.warn(
+      { projectId, error: error instanceof Error ? error.message : String(error) },
+      'Project profile generation failed (non-fatal)',
     );
   }
 }

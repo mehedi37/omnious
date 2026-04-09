@@ -21,10 +21,13 @@ import { toast } from 'sonner';
 import type { OmniousEdge, OmniousNode as OmniousNodeType } from '@/lib/stores/graph-store';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
+import { useAIStore } from '@/lib/stores/ai-store';
 import { AnimatedFlowEdge } from './edges/animated-flow-edge';
 import { useGraphContextMenu } from './graph-context-menu';
 import { ModuleGroupNode } from './nodes/module-group-node';
 import { OmniousNode } from './nodes/omnious-node';
+import { AISliceAnnotation, type SliceNarrative } from './ai-slice-annotation';
+import { KeyboardShortcutsDialog } from '@/components/shared/keyboard-shortcuts-dialog';
 
 // Register custom node/edge types
 const nodeTypes = {
@@ -53,6 +56,7 @@ export function ReactFlowCanvas() {
   const storeEdges = useGraphStore((s) => s.edges);
   const isLayouting = useGraphStore((s) => s.isLayouting);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
+  const sliceNarrative = useGraphStore((s) => s.sliceNarrative);
   const minimapVisible = useUIStore((s) => s.minimapVisible);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<OmniousNodeType>([]);
@@ -93,14 +97,23 @@ export function ReactFlowCanvas() {
   const connectedNodeIds = useGraphStore((s) => s.connectedNodeIds);
 
   useEffect(() => {
+    if (storeNodes.length === 0) {
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
+
     let filteredNodes = storeNodes;
 
     if (nodeTypeFilters.size > 0) {
-      filteredNodes = storeNodes.filter((n) => !nodeTypeFilters.has(n.data.oirType));
+      filteredNodes = storeNodes.filter((n) =>
+        (n.type as string) === 'group' || !nodeTypeFilters.has(n.data.oirType),
+      );
     }
 
     if (severityFilters.size > 0) {
       filteredNodes = filteredNodes.filter((n) => {
+        if ((n.type as string) === 'group') return true;
         const sev = n.data.errorSeverity as string | undefined;
         if (!sev) return true;
         return severityFilters.has(sev as 'error' | 'warning' | 'info');
@@ -177,7 +190,7 @@ export function ReactFlowCanvas() {
   // ── fitView: triggered after layout completes ────────────────────────
   useEffect(() => {
     function handleFit() {
-      fitView({ padding: 0.15, duration: 0 });
+      fitView({ padding: 0.2, duration: 500 });
     }
     window.addEventListener('omnious:focus-fit', handleFit);
     return () => window.removeEventListener('omnious:focus-fit', handleFit);
@@ -279,6 +292,7 @@ export function ReactFlowCanvas() {
         edgeTypes={edgeTypes}
         minZoom={0.1}
         maxZoom={3}
+        onlyRenderVisibleElements
         elevateNodesOnSelect={false}
         proOptions={{ hideAttribution: true }}
         className="bg-background"
@@ -316,6 +330,23 @@ export function ReactFlowCanvas() {
 
       {/* Context menu overlay */}
       {menuElement}
+
+      {/* Keyboard shortcuts dialog (portal-rendered) */}
+      <KeyboardShortcutsDialog />
+
+      {/* AI slice narrative annotation */}
+      {sliceNarrative && (
+        <AISliceAnnotation
+          narrative={sliceNarrative}
+          onFollowUp={(question) => {
+            useAIStore.getState().setPrefillMessage(question);
+            useUIStore.getState().setActiveDetailTab('ai');
+          }}
+          onDismiss={() => {
+            useGraphStore.getState().setSliceNarrative(null);
+          }}
+        />
+      )}
 
       {/* Layout processing overlay */}
       {isLayouting && <LayoutOverlay nodeCount={storeNodes.length} />}

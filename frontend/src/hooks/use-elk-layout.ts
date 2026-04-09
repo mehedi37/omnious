@@ -7,8 +7,9 @@ const LAYOUT_TIMEOUT_MS = 20_000;
 
 type LayoutResponse = {
   requestId: number;
-  positions: Array<{ id: string; x: number; y: number }>;
+  positions: Array<{ id: string; x: number; y: number; parentId?: string }>;
   edgeRoutes: Array<{ id: string; points: Array<{ x: number; y: number }> }>;
+  groups: Array<{ id: string; x: number; y: number; width: number; height: number; childIds: string[] }>;
   error?: string;
 };
 
@@ -67,7 +68,7 @@ export function useElkLayout() {
 
     // Handle worker results
     worker.onmessage = (e: MessageEvent<LayoutResponse>) => {
-      const { requestId, positions, error } = e.data;
+      const { requestId, positions, groups, error } = e.data;
 
       try {
         if (settledRequestIdsRef.current.has(requestId)) {
@@ -85,15 +86,41 @@ export function useElkLayout() {
 
         const store = useGraphStore.getState();
 
-        // Apply computed positions to nodes
+        // Build lookup for parent assignments
+        const parentMap = new Map<string, string>();
+        for (const pos of positions) {
+          if (pos.parentId) parentMap.set(pos.id, pos.parentId);
+        }
+
+        // Create group nodes from ELK compound layout
+        const groupNodes = (groups ?? []).map((g) => ({
+          id: g.id,
+          type: 'group' as const,
+          position: { x: g.x, y: g.y },
+          style: { width: g.width, height: g.height },
+          data: {
+            label: g.id.split('/').pop() || g.id,
+            color: _groupColor(g.id),
+            nodeCount: g.childIds.length,
+          },
+        }));
+
+        // Apply computed positions to existing nodes + set parentId for grouped nodes
         const posMap = new Map(positions.map((p) => [p.id, p]));
         const updated = store.nodes.map((node) => {
           const pos = posMap.get(node.id);
           if (!pos) return node;
-          return { ...node, position: { x: pos.x, y: pos.y } };
+          const parent = parentMap.get(node.id);
+          return {
+            ...node,
+            position: { x: pos.x, y: pos.y },
+            ...(parent ? { parentId: parent } : {}),
+            extent: parent ? ('parent' as const) : undefined,
+          };
         });
 
-        store.setNodes(updated);
+        // Group nodes must come before their children in the array
+        store.setNodes([...groupNodes as any[], ...updated]);
 
         // Trigger a fitView after positions settle
         requestAnimationFrame(() => {
@@ -190,4 +217,18 @@ export function useElkLayout() {
       workerRef.current = null;
     };
   }, []);
+}
+
+/** Deterministic color assignment for directory groups */
+const GROUP_COLORS = [
+  '#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316',
+  '#eab308', '#22c55e', '#14b8a6', '#06b6d4', '#3b82f6',
+];
+
+function _groupColor(groupId: string): string {
+  let hash = 0;
+  for (let i = 0; i < groupId.length; i++) {
+    hash = ((hash << 5) - hash + groupId.charCodeAt(i)) | 0;
+  }
+  return GROUP_COLORS[Math.abs(hash) % GROUP_COLORS.length]!;
 }

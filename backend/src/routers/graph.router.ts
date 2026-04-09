@@ -2,8 +2,9 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, projectProcedure, apiKeyProcedure } from '../trpc/index.js';
 import { oirNodeTypeSchema, oirNodeSchema, oirEdgeSchema, oirEdgeByOirIdSchema } from '@omnious/shared/oir-schemas';
-import { resolveApiKey, generateModuleGroups, backfillNodeEmbeddings, selectModel, generateProjectPersonality, indexProjectDocuments } from '../services/ai.service.js';
+import { resolveApiKey, generateModuleGroups, backfillNodeEmbeddings, selectModel, generateProjectPersonality, generateProjectProfile, indexProjectDocuments } from '../services/ai.service.js';
 import { generateCodeSummaries, getCodeSummaries } from '../services/summary.service.js';
+import { computeAndPersistClusters, getClusters, enhanceClusterLabels } from '../services/clustering.service.js';
 import { logger } from '../lib/logger.js';
 
 const listNodesSchema = z.object({
@@ -482,6 +483,44 @@ export const graphRouter = router({
         );
       });
 
+      // Generate structured project profile (non-blocking — fire and forget)
+      generateProjectProfile(project.id, summaryKey, ctx.adminDb).catch((err) => {
+        logger.warn(
+          { projectId: project.id, error: err instanceof Error ? err.message : String(err) },
+          'Project profile generation failed (non-fatal)',
+        );
+      });
+
+      // Compute and persist community clusters (non-blocking — fire and forget)
+      computeAndPersistClusters(project.id, ctx.adminDb)
+        .then((clusters) => {
+          // Enhance cluster labels with LLM (fire-and-forget)
+          enhanceClusterLabels(project.id, clusters, summaryKey, ctx.adminDb).catch(() => {});
+        })
+        .catch((err) => {
+          logger.warn(
+            { projectId: project.id, error: err instanceof Error ? err.message : String(err) },
+            'Community detection failed (non-fatal)',
+          );
+        });
+
+      // ── Broadcast push completion via Supabase Realtime ──
+      const pushEvent = {
+        project_id: project.id,
+        project_name: project.name,
+        nodes_upserted: nodesUpserted,
+        edges_upserted: edgesUpserted,
+        pushed_at: new Date().toISOString(),
+      };
+      ctx.adminDb
+        .channel(`project:${project.id}`)
+        .send({ type: 'broadcast', event: 'push_completed', payload: pushEvent })
+        .then(() => {
+          // Clean up the channel after sending
+          ctx.adminDb.removeChannel(ctx.adminDb.channel(`project:${project.id}`));
+        })
+        .catch(() => { /* best-effort */ });
+
       return {
         project_id: project.id,
         project_name: project.name,
@@ -716,64 +755,42 @@ export const graphRouter = router({
     }),
 
   /** Detect communities using algorithmic label propagation (LLM-free) */
+  /** Detect communities — reads persisted clusters, recomputes if empty */
   detectCommunities: projectProcedure
     .input(z.object({ projectId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
-      const { data, error } = await ctx.adminDb.rpc('detect_communities', {
-        p_project_id: input.projectId,
-        p_max_iterations: 10,
-      });
+      // Try persisted clusters first (fast path)
+      let clusters = await getClusters(input.projectId, ctx.db);
 
-      if (error) {
-        throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: `Community detection failed: ${error.message}`,
-        });
-      }
-
-      // Group by community label and assign colors
-      const COMMUNITY_COLORS = [
-        '#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6',
-        '#ec4899', '#06b6d4', '#f97316', '#14b8a6', '#6366f1',
-        '#84cc16', '#e11d48',
-      ];
-
-      const communityMap = new Map<string, Array<{ id: string; name: string; type: string; file_path: string }>>();
-      for (const row of data ?? []) {
-        const communityId = row.community;
-        const arr = communityMap.get(communityId) ?? [];
-        arr.push({
-          id: row.node_id,
-          name: row.node_name,
-          type: row.node_type,
-          file_path: row.file_path,
-        });
-        communityMap.set(communityId, arr);
-      }
-
-      // Convert to labeled groups, sorted by size descending
-      const communities = [...communityMap.entries()]
-        .sort((a, b) => b[1].length - a[1].length)
-        .slice(0, 20) // Cap at 20 communities
-        .map(([_id, members], idx) => {
-          // Derive community name from most common directory prefix
-          const dirs = members.map((m) => {
-            const parts = m.file_path.split('/');
-            return parts.length > 1 ? parts.slice(0, -1).join('/') : '/';
+      // If no persisted clusters, compute fresh ones
+      if (clusters.length === 0) {
+        try {
+          clusters = await computeAndPersistClusters(input.projectId, ctx.adminDb);
+        } catch (err) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: err instanceof Error ? err.message : 'Community detection failed',
           });
-          const dirCounts = new Map<string, number>();
-          for (const d of dirs) dirCounts.set(d, (dirCounts.get(d) ?? 0) + 1);
-          const topDir = [...dirCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'misc';
+        }
+      }
 
-          return {
-            label: topDir,
-            color: COMMUNITY_COLORS[idx % COMMUNITY_COLORS.length],
-            nodeIds: members.map((m) => m.id),
-            nodeCount: members.length,
-          };
-        });
+      const communities = clusters.map((c) => ({
+        label: c.label,
+        color: c.color,
+        layer: c.layer,
+        nodeIds: c.nodeIds,
+        nodeCount: c.nodeCount,
+      }));
 
       return { communities };
+    }),
+
+  /** Fast read of persisted clusters (no recomputation) */
+  getClusters: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const clusters = await getClusters(input.projectId, ctx.db);
+      return { clusters };
     }),
 
   /** Report a runtime error from the CLI (parses stack frames and maps to code nodes) */

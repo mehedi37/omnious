@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, protectedProcedure, projectProcedure } from '../trpc/index.js';
+import { router, protectedProcedure, projectProcedure, apiKeyProcedure } from '../trpc/index.js';
 import { logger } from '../lib/logger.js';
 import { resolveApiKey, callLLM, selectModel, SYSTEM_PROMPTS, encryptApiKey, extractSessionInsights } from '../services/ai.service.js';
 import {
@@ -10,6 +10,7 @@ import {
   getTraceSubgraph,
   getDependencySubgraph,
 } from '../services/graph-query.service.js';
+import { generateSliceNarrative } from '../services/clustering.service.js';
 
 const aiMessageAttachmentSchema = z.object({
   kind: z.enum(['node', 'module', 'function', 'file', 'error']),
@@ -734,6 +735,54 @@ export const aiRouter = router({
     }),
 
   /**
+   * Generate a natural language narrative for a saved graph slice.
+   * Persists the narrative into saved_views.narrative and returns it.
+   */
+  generateNarrative: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        viewId: z.string().uuid(),
+        nodes: z.array(z.object({ name: z.string(), type: z.string(), file_path: z.string() })).min(1).max(300),
+        edges: z.array(z.object({ source: z.string(), target: z.string(), type: z.string() })).max(1000),
+        query: z.string().max(2000),
+        explanation: z.string().max(20000),
+        apiKeyId: z.string().uuid().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      let resolvedKey;
+      try {
+        resolvedKey = await resolveApiKey(ctx.user.id, ctx.db, {
+          apiKeyId: input.apiKeyId,
+          projectId: input.projectId,
+        });
+      } catch {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'AI is not configured. Ensure Ollama is running or add an API key.',
+        });
+      }
+
+      const narrative = await generateSliceNarrative(
+        input.nodes,
+        input.edges,
+        input.query,
+        input.explanation,
+        resolvedKey,
+      );
+
+      // Persist narrative to saved_views (best-effort)
+      await ctx.db
+        .from('saved_views')
+        .update({ narrative: JSON.parse(JSON.stringify(narrative)) })
+        .eq('id', input.viewId)
+        .eq('project_id', input.projectId);
+
+      return narrative;
+    }),
+
+  /**
    * Load a persisted AI graph slice by ID.
    */
   getGraphSlice: projectProcedure
@@ -746,7 +795,7 @@ export const aiRouter = router({
     .query(async ({ ctx, input }) => {
       const { data: view, error: viewError } = await ctx.db
         .from('saved_views')
-        .select('id, name, description, visible_nodes, filters, user_id, is_shared')
+        .select('id, name, description, visible_nodes, filters, user_id, is_shared, narrative')
         .eq('id', input.viewId)
         .eq('project_id', input.projectId)
         .single();
@@ -772,6 +821,7 @@ export const aiRouter = router({
           edges: [],
           explanation: null,
           query: null,
+          narrative: null,
           viewId: view.id,
         };
       }
@@ -815,6 +865,7 @@ export const aiRouter = router({
         description: view.description,
         query: filterData.query ?? null,
         explanation: filterData.explanation ?? null,
+        narrative: (view.narrative as Record<string, unknown> | null) ?? null,
         nodes: (nodes ?? []).map((n: Record<string, unknown>) => ({
           id: String(n.id),
           oir_id: String(n.oir_id),
@@ -878,6 +929,34 @@ export const aiRouter = router({
         }));
 
       return { slices };
+    }),
+
+  /**
+   * Delete a user-owned graph slice.
+   */
+  deleteGraphSlice: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        viewId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { error } = await ctx.db
+        .from('saved_views')
+        .delete()
+        .eq('id', input.viewId)
+        .eq('project_id', input.projectId)
+        .eq('user_id', ctx.user.id);
+
+      if (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error.message,
+        });
+      }
+
+      return { success: true };
     }),
 
   // ─── OIR-Based Graph Slices (portable across re-indexes) ───
@@ -1048,5 +1127,130 @@ export const aiRouter = router({
           isOwnedByCurrentUser: String(row.user_id) === ctx.user.id,
         })),
       };
+    }),
+
+  /** Check what AI context layers are available for a project */
+  getContextStatus: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const pid = input.projectId;
+
+      // Check code summaries (Tier 2 context)
+      const { count: summaryCount } = await ctx.db
+        .from('code_summaries')
+        .select('id', { count: 'exact', head: true })
+        .eq('project_id', pid);
+
+      // Check project documents (Tier 3 context)
+      const { count: docCount } = await ctx.db
+        .from('project_documents')
+        .select('id', { count: 'exact', head: true })
+        .eq('project_id', pid);
+
+      // Check past session insights (conversation memory)
+      const { count: insightCount } = await ctx.db
+        .from('ai_session_insights')
+        .select('id', { count: 'exact', head: true })
+        .eq('project_id', pid)
+        .eq('user_id', ctx.user.id);
+
+      // Check project metadata (Tier 1 — always present if project exists)
+      const { data: project } = await ctx.db
+        .from('projects')
+        .select('id, settings')
+        .eq('id', pid)
+        .single();
+
+      const hasProfile = !!(project?.settings as Record<string, unknown> | null)?.ai_profile;
+
+      return {
+        hasProfile,
+        summaryCount: summaryCount ?? 0,
+        docCount: docCount ?? 0,
+        insightCount: insightCount ?? 0,
+      };
+    }),
+
+  // ── MCP / API-Key-Authenticated Endpoints ──
+
+  /** Query the code graph using an API key (for MCP server / external integrations) */
+  queryGraphFromAPI: apiKeyProcedure
+    .input(
+      z.object({
+        projectApiKey: z.string(),
+        query: z.string().min(3).max(2000),
+        contextNodeIds: z.array(z.string().uuid()).max(10).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Resolve workspace owner as the userId for API key resolution
+      const { data: workspace } = await ctx.adminDb
+        .from('workspaces')
+        .select('owner_id')
+        .eq('id', ctx.apiKeyProject.workspace_id)
+        .single();
+
+      const userId = workspace?.owner_id ?? '00000000-0000-0000-0000-000000000000';
+
+      try {
+        return await querySubgraph(
+          ctx.apiKeyProject.id,
+          input.query,
+          userId,
+          ctx.adminDb,
+          ctx.adminDb,
+          undefined,
+          input.contextNodeIds,
+        );
+      } catch (err) {
+        if (err instanceof TRPCError) throw err;
+        logger.error({ err, projectId: ctx.apiKeyProject.id }, 'queryGraphFromAPI failed');
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Graph query failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }),
+
+  /** Search code nodes by name (for MCP server) */
+  searchNodesFromAPI: apiKeyProcedure
+    .input(
+      z.object({
+        projectApiKey: z.string(),
+        query: z.string().min(1).max(200),
+        limit: z.number().int().min(1).max(20).default(5),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { data, error } = await ctx.adminDb
+        .from('code_nodes')
+        .select('id, name, type, file_path, line_start, line_end, signature, doc_comment, code_body')
+        .eq('project_id', ctx.apiKeyProject.id)
+        .ilike('name', `%${input.query}%`)
+        .limit(input.limit);
+
+      if (error) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: error.message });
+      }
+
+      return { nodes: data ?? [] };
+    }),
+
+  /** Get AI overview for a project via API key (for MCP server) */
+  getOverviewFromAPI: apiKeyProcedure
+    .input(z.object({ projectApiKey: z.string() }))
+    .query(async ({ ctx }) => {
+      try {
+        return await getOverviewGraph(
+          ctx.apiKeyProject.id,
+          ctx.adminDb,
+        );
+      } catch (err) {
+        logger.error({ err, projectId: ctx.apiKeyProject.id }, 'getOverviewFromAPI failed');
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Overview failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     }),
 });

@@ -15,6 +15,7 @@ import { useElkLayout } from '@/hooks/use-elk-layout';
 import { useErrorHeatmap } from '@/hooks/use-error-heatmap';
 import { useGraphQuery } from '@/hooks/use-graph-query';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
+import { usePushNotifications } from '@/hooks/use-push-notifications';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
@@ -84,6 +85,9 @@ function GraphPageInner() {
 
   // Wire up error heatmap data fetch
   useErrorHeatmap();
+
+  // Subscribe to Realtime push events — auto-refresh graph when CLI pushes
+  usePushNotifications();
 
   // Connect ELK layout worker to graph store
   useElkLayout();

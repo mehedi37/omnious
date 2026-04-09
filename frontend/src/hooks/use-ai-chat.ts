@@ -1,7 +1,7 @@
 'use client';
 
 import { createClient as createBrowserClient } from '@/lib/supabase/client';
-import { useAIStore } from '@/lib/stores/ai-store';
+import { useAIStore, type StreamStage } from '@/lib/stores/ai-store';
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -74,11 +74,14 @@ export async function streamChat(
         const raw = line.slice(6).trim();
         try {
           const event = JSON.parse(raw) as
+            | { type: 'stage'; stage: string }
             | { type: 'delta'; text: string }
             | { type: 'done' }
             | { type: 'error'; message: string };
 
-          if (event.type === 'delta') {
+          if (event.type === 'stage') {
+            useAIStore.getState().setCurrentStage(event.stage as StreamStage);
+          } else if (event.type === 'delta') {
             useAIStore.getState().appendToLastMessage(event.text);
           } else if (event.type === 'error') {
             throw new Error(event.message);
