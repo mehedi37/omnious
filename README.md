@@ -49,7 +49,7 @@ omnious/                    # Turborepo monorepo root
 - **Node.js** ≥ 20
 - **npm** ≥ 10
 - **Supabase** project (cloud or self-hosted via `supabase start`)
-- **Ollama** running locally with `llama3:latest` and `nomic-embed-text`
+- **Ollama** running locally with `gemma4:latest` and `nomic-embed-text-v2-moe`
 
 ### Setup
 
@@ -63,8 +63,8 @@ cp .env.example .env
 # Fill in your Supabase credentials and confirm OLLAMA_* values (see .env.example)
 
 # 2.1 Ensure local models are available
-ollama pull llama3:latest
-ollama pull nomic-embed-text
+ollama pull gemma4:latest
+ollama pull nomic-embed-text-v2-moe
 
 # 3. Start development (all services via Turborepo)
 npm run dev

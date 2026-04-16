@@ -391,7 +391,7 @@ export async function callLLM(
       maxOutputTokens: maxTokens,
       temperature,
     });
-    // Strip qwen3-style <think>...</think> reasoning blocks from output
+    // Strip <think>...</think> reasoning blocks emitted by thinking-capable models
     const content = result.text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
     return {
       content,
@@ -708,9 +708,20 @@ export async function indexProjectDocuments(
     const MAX_CHUNK = 4000;
     const content = doc.content.slice(0, MAX_CHUNK);
 
+    // Try to generate embedding — degrade gracefully if Ollama is unavailable.
+    // Docs stored without embeddings are still usable for full-text search;
+    // they will gain embeddings on the next push once Ollama is back.
+    let embedding: number[] | null = null;
     try {
-      const embedding = await generateEmbedding(content);
+      embedding = await generateEmbedding(content);
+    } catch (embedErr) {
+      logger.warn(
+        { docPath: doc.path, error: embedErr instanceof Error ? embedErr.message : String(embedErr) },
+        'Embedding failed — storing doc without vector (will retry on next push)',
+      );
+    }
 
+    try {
       const { error } = await adminDb
         .from('project_documents')
         .upsert(
@@ -720,7 +731,7 @@ export async function indexProjectDocuments(
             doc_type: doc.docType ?? 'markdown',
             content,
             content_hash: hash,
-            embedding: JSON.stringify(embedding),
+            embedding: embedding ? JSON.stringify(embedding) : null,
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'project_id,doc_path' },
@@ -734,12 +745,47 @@ export async function indexProjectDocuments(
     } catch (err) {
       logger.warn(
         { docPath: doc.path, error: err instanceof Error ? err.message : String(err) },
-        'Failed to embed document',
+        'Failed to store document',
       );
     }
   }
 
   logger.info({ projectId, indexed, skipped, deleted: toDelete.length }, 'Document indexing complete');
+
+  // Backfill: retry embedding for docs that were stored without a vector
+  // (e.g., because Ollama was unavailable during a previous push).
+  // Only attempt if we're not already in a degraded state (at least 1 successful embedding this run).
+  if (indexed > 0) {
+    try {
+      const { data: nullEmbedDocs } = await adminDb
+        .from('project_documents')
+        .select('id, doc_path, content')
+        .eq('project_id', projectId)
+        .is('embedding', null)
+        .limit(20);
+
+      let backfilled = 0;
+      for (const row of (nullEmbedDocs ?? []) as Array<{ id: string; doc_path: string; content: string }>) {
+        if (!row.content) continue;
+        try {
+          const emb = await generateEmbedding(row.content.slice(0, 4000));
+          await adminDb
+            .from('project_documents')
+            .update({ embedding: JSON.stringify(emb), updated_at: new Date().toISOString() })
+            .eq('id', row.id);
+          backfilled++;
+        } catch {
+          break; // Ollama still down — stop trying
+        }
+      }
+      if (backfilled > 0) {
+        logger.info({ projectId, backfilled }, 'Backfilled embeddings for previously unembedded docs');
+      }
+    } catch {
+      // Non-critical — skip silently
+    }
+  }
+
   return { indexed, skipped, deleted: toDelete.length };
 }
 
@@ -782,21 +828,38 @@ export async function extractSessionInsights(
   messages: Array<{ role: string; content: string }>,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adminDb: any,
+  _sessionType?: string,
 ): Promise<{ extracted: number }> {
   // Only extract when we have enough conversation (at least 1 full turn)
   const turnMessages = messages.filter((m) => m.role !== 'system');
   if (turnMessages.length < 2) return { extracted: 0 };
 
-  // Check if we already extracted insights for this session recently
+  // Check if we already extracted insights for this session recently.
+  // Re-extract if the conversation has grown by 6+ messages since last extraction.
   const { data: existing } = await adminDb
     .from('ai_session_insights')
     .select('id')
     .eq('session_id', sessionId)
     .limit(1);
 
+  // Holds session metadata for write-back after extraction (populated if insights already exist).
+  let sessionMeta: Record<string, unknown> = {};
+
   if (existing && existing.length > 0) {
-    // Already extracted — skip to avoid duplicates per session
-    return { extracted: 0 };
+    // Already extracted — only re-run if conversation has grown significantly.
+    // Use session metadata to track last extraction message count.
+    const { data: sessionRow } = await adminDb
+      .from('ai_sessions')
+      .select('metadata')
+      .eq('id', sessionId)
+      .single();
+
+    sessionMeta = (sessionRow?.metadata ?? {}) as Record<string, unknown>;
+    const lastExtractionCount = Number(sessionMeta.last_extraction_msg_count ?? 0);
+
+    if (turnMessages.length < lastExtractionCount + 6) {
+      return { extracted: 0 };
+    }
   }
 
   // Build a condensed conversation for the extraction prompt
@@ -874,6 +937,44 @@ export async function extractSessionInsights(
     }
 
     logger.info({ sessionId, extracted }, 'Extracted session insights');
+
+    // Persist the message count so the next call can decide whether to re-extract.
+    if (extracted > 0) {
+      adminDb
+        .from('ai_sessions')
+        .update({ metadata: { ...sessionMeta, last_extraction_msg_count: turnMessages.length } })
+        .eq('id', sessionId)
+        .catch(() => null); // fire-and-forget
+    }
+
+    // ── MemPalace: mine conversation into the project palace ──
+    // Fire-and-forget — does not block the response or affect extracted count.
+    try {
+      const { data: projectRow } = await adminDb
+        .from('projects')
+        .select('slug')
+        .eq('id', projectId)
+        .single();
+
+      if (projectRow?.slug) {
+        const transcript = turnMessages
+          .map((m: { role: string; content: string }) =>
+            `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`,
+          )
+          .join('\n\n');
+
+        const { memPalaceService } = await import('./mempalace.service.js');
+        memPalaceService.mineConversation(
+          projectId,
+          projectRow.slug as string,
+          sessionId,
+          transcript,
+        ).catch(() => null);
+      }
+    } catch {
+      // Non-critical: MemPalace augments existing memory, does not replace it
+    }
+
     return { extracted };
   } catch (err) {
     logger.debug(
@@ -886,6 +987,7 @@ export async function extractSessionInsights(
 
 /**
  * Fetch relevant past insights for a project + user based on query similarity.
+ * Combines pgvector similarity hits with MemPalace semantic search.
  * Returns a formatted string to inject into the LLM context, or empty string.
  */
 export async function fetchRelevantInsights(
@@ -894,7 +996,11 @@ export async function fetchRelevantInsights(
   queryEmbedding: number[],
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adminDb: any,
+  projectSlug?: string,
 ): Promise<string> {
+  const parts: string[] = [];
+
+  // ── pgvector insights (existing) ─────────────────────────
   try {
     const { data } = await adminDb.rpc('match_session_insights', {
       p_project_id: projectId,
@@ -904,17 +1010,35 @@ export async function fetchRelevantInsights(
       match_count: 5,
     });
 
-    if (!data || data.length === 0) return '';
-
-    const insights = data as Array<{ insight: string; category: string; similarity: number }>;
-    const lines = insights.map(
-      (i) => `- [${i.category}] ${i.insight}`,
-    );
-    return `\n### Previous Insights\nRelevant knowledge from past conversations:\n${lines.join('\n')}\n`;
+    if (data && data.length > 0) {
+      const insights = data as Array<{ insight: string; category: string; similarity: number }>;
+      const lines = insights.map((i) => `- [${i.category}] ${i.insight}`);
+      parts.push(`### Previous Insights\nRelevant knowledge from past conversations:\n${lines.join('\n')}`);
+    }
   } catch {
     // Table may not exist yet — degrade gracefully
-    return '';
   }
+
+  // ── MemPalace semantic search (augments pgvector results) ─
+  if (projectSlug) {
+    try {
+      const { memPalaceService } = await import('./mempalace.service.js');
+      // Build a text query from the embedding's source — we approximate
+      // by searching with a representative query drawn from pgvector hits.
+      // For direct text queries (from session context), callers should pass
+      // the raw query text via fetchRelevantInsights; for now we use a
+      // generic lookup keyed on project.
+      const memCtx = await memPalaceService.search(projectId, projectSlug, '');
+      if (memCtx.trim()) {
+        parts.push(memCtx.trim());
+      }
+    } catch {
+      // Degrade gracefully — MemPalace is additive context only
+    }
+  }
+
+  if (parts.length === 0) return '';
+  return '\n' + parts.join('\n\n') + '\n';
 }
 
 /**

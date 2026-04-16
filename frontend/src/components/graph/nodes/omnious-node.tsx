@@ -2,12 +2,13 @@
 
 import { Handle, type NodeProps, Position, useStore } from '@xyflow/react';
 import { ArrowRight, FileCode, Lock } from 'lucide-react';
-import { memo, useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { NODE_BG_CLASSES_STRONG, NODE_TYPE_ICONS } from '@/lib/oir/constants';
 import type { OIRNodeType } from '@/lib/oir/types';
 import type { OmniousNodeData } from '@/lib/stores/graph-store';
 import { selectNodeGraphState, useGraphStore } from '@/lib/stores/graph-store';
+import { useGraphGlobalFlags } from '@/components/graph/graph-global-flags-context';
 import { useAIStore } from '@/lib/stores/ai-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
@@ -71,15 +72,17 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
   // LOD: quantized zoom level — only re-renders on LOD transition, not every zoom tick
   const lod = useStore(zoomLODSelector);
 
+  // Memoize the selector to keep a stable reference — prevents memo() from breaking on every render
+  const nodeStateSelector = useMemo(() => selectNodeGraphState(id), [id]);
   const {
     isPinned,
-    heatmapActive,
     isActiveFlowNode,
     isInErrorFlow,
-    errorFlowActive,
     focusDepth,
-    focusActive,
-  } = useGraphStore(useShallow(selectNodeGraphState(id)));
+  } = useGraphStore(useShallow(nodeStateSelector));
+
+  // Global flags: read from context (single subscription at canvas level, not per-node)
+  const { heatmapActive, errorFlowActive, focusActive } = useGraphGlobalFlags();
 
   // Cluster data (community detection)
   const clusterInfo = useGraphStore((s) => s.clusterMap.get(id));
@@ -88,6 +91,7 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
   const [showTooltip, setShowTooltip] = useState(false);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onMouseEnter = useCallback(() => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
     hoverTimer.current = setTimeout(() => setShowTooltip(true), 400);
   }, []);
   const onMouseLeave = useCallback(() => {
@@ -109,6 +113,7 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
             : 'omnious-heatmap-low';
   }
 
+  // Pulse fires once on activation — not a continuous animation
   const pulseClass = (selected || isActiveFlowNode) && !heatmapClass ? 'omnious-node-pulse' : '';
 
   // Error flow: dim nodes not on the error path
@@ -116,11 +121,9 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
   // Error flow: highlight nodes on the red path
   const errorFlowHighlight = errorFlowActive && isInErrorFlow && hasError;
 
-  // Focus depth: opacity decreases with distance from focused node
-  const depthOpacity = focusActive && focusDepth !== undefined
-    ? focusDepth === 0 ? 1 : focusDepth === 1 ? 0.85 : 0.6
-    : undefined;
-  const depthDim = focusActive && focusDepth === undefined;
+  // Focus: only the focused node at depth-0 is opaque; everything else gets a single dim level.
+  // Removed graduated opacity (0.85/0.6) — it caused all nodes to re-render on every selection.
+  const depthDim = focusActive && focusDepth !== 0;
 
   // ── LOD: Minimal — colored dot + first letter (zoom < 0.3) ──
   if (lod === 'minimal') {
@@ -130,7 +133,7 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
         <div
           className={`flex h-8 w-8 items-center justify-center rounded-full border ${bgClass} ${selected ? 'ring-2 ring-primary' : ''}`}
           style={{
-            opacity: errorFlowDim ? 0.3 : depthDim ? 0.25 : depthOpacity ?? undefined,
+            opacity: errorFlowDim ? 0.3 : depthDim ? 0.3 : undefined,
             boxShadow: clusterInfo ? `0 0 0 2px ${clusterInfo.color}40` : undefined,
           }}
         >
@@ -150,7 +153,7 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
         <Handle type="target" position={Position.Top} className="w-1.5! h-1.5! bg-muted-foreground/40!" />
         <div
           className={`relative rounded-md border-2 px-2 py-1 ${bgClass} ${selected ? 'ring-2 ring-primary' : ''} ${heatmapClass}`}
-          style={{ opacity: errorFlowDim ? 0.3 : depthDim ? 0.25 : depthOpacity ?? undefined }}
+          style={{ opacity: errorFlowDim ? 0.3 : depthDim ? 0.3 : undefined }}
         >
           <div className="flex items-center gap-1.5">
             <Icon className="h-3 w-3 shrink-0 opacity-70" />
@@ -203,7 +206,7 @@ function OmniousNodeComponent({ id, data, selected }: NodeProps) {
           hover:shadow-md hover:scale-[1.02]
         `}
         style={{
-          opacity: errorFlowDim ? 0.3 : depthDim ? 0.25 : depthOpacity ?? undefined,
+          opacity: errorFlowDim ? 0.3 : depthDim ? 0.3 : undefined,
         }}
       >
         {/* Header: icon + name + entry-point marker */}

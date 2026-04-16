@@ -8,6 +8,7 @@ import { statusCommand } from '../src/commands/status.js';
 import { configCommand } from '../src/commands/config.js';
 import { summarizeCommand } from '../src/commands/summarize.js';
 import { reportErrorCommand } from '../src/commands/report-error.js';
+import { memoryCommand } from '../src/commands/memory.js';
 
 const program = new Command();
 
@@ -57,24 +58,26 @@ program
 // ── omnious sync ──
 program
   .command('sync')
-  .description('Parse codebase and push to backend in one step (index + push)')
+  .description('Recommended: scan, index, and push your codebase in one step')
   .option('--api-key <key>', 'Project API key')
   .option('-c, --config <path>', 'Path to .omnious.yml')
   .option('--force', 'Re-parse and re-push even if nothing changed')
   .option('-v, --verbose', 'Show detailed output')
+  .option('--skip-summarize', 'Skip the manifest scan and context upload step')
   .action(async (opts) => {
     await syncCommand({
       apiKey: opts.apiKey,
       config: opts.config,
       force: opts.force,
       verbose: opts.verbose,
+      skipSummarize: opts.skipSummarize,
     });
   });
 
 // ── omnious index ──
 program
   .command('index')
-  .description('Parse the codebase and build local OIR graph')
+  .description('Advanced: parse codebase and build local OIR graph (use `sync` for most cases)')
   .option('-c, --config <path>', 'Path to .omnious.yml')
   .option('-v, --verbose', 'Show detailed output')
   .option('--dry-run', 'Parse without writing index file')
@@ -91,7 +94,7 @@ program
 // ── omnious push ──
 program
   .command('push')
-  .description('Upload OIR graph to the Omnious backend')
+  .description('Advanced: upload OIR graph to the backend (use `sync` for most cases)')
   .option('--api-key <key>', 'Project API key')
   .option('-c, --config <path>', 'Path to .omnious.yml')
   .option('--force', 'Push even if project hash is unchanged')
@@ -127,7 +130,7 @@ program
 // ── omnious summarize ──
 program
   .command('summarize')
-  .description('Scan project and generate context metadata for smarter AI')
+  .description('Advanced: scan project manifests and generate context metadata (auto-runs in `sync`)')
   .option('-c, --config <path>', 'Path to .omnious.yml')
   .option('-v, --verbose', 'Show full context JSON')
   .action(async (opts) => {
@@ -137,13 +140,33 @@ program
     });
   });
 
-// ── omnious report-error ──
+// ── omnious error (primary) + report-error (hidden alias for backwards compat) ──
 program
-  .command('report-error')
-  .description('Report a runtime error (from file or stdin) and map to code graph')
+  .command('error')
+  .description('Report a runtime error (from file or stdin) and map it to the code graph')
   .option('-f, --file <path>', 'Read error from a file')
   .option('-t, --type <type>', 'Override error type (e.g. TypeError)')
   .option('-s, --severity <severity>', 'Error severity: error, warning, info', 'error')
+  .option('-k, --api-key <key>', 'Project API key')
+  .option('-c, --config <path>', 'Path to .omnious.yml')
+  .option('-v, --verbose', 'Show parsed stack frames')
+  .action(async (opts) => {
+    await reportErrorCommand({
+      file: opts.file,
+      type: opts.type,
+      severity: opts.severity,
+      apiKey: opts.apiKey,
+      config: opts.config,
+      verbose: opts.verbose,
+    });
+  });
+
+program
+  .command('report-error', { hidden: true })
+  .description('Alias for `error` (deprecated name)')
+  .option('-f, --file <path>', 'Read error from a file')
+  .option('-t, --type <type>', 'Override error type')
+  .option('-s, --severity <severity>', 'Error severity', 'error')
   .option('-k, --api-key <key>', 'Project API key')
   .option('-c, --config <path>', 'Path to .omnious.yml')
   .option('-v, --verbose', 'Show parsed stack frames')
@@ -183,6 +206,9 @@ configCmd
   .action(async (key: string, value: string) => {
     await configCommand({ action: 'set', key, value });
   });
+
+// ── omnious memory ──
+program.addCommand(memoryCommand().description('Query and manage your project AI memory'));
 
 // ── Parse errors gracefully ──
 program.exitOverride();

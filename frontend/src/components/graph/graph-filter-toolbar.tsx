@@ -73,10 +73,10 @@ export function GraphFilterToolbar({
   const severityFilters = useGraphStore((s) => s.severityFilters);
   const heatmapActive = useGraphStore((s) => s.heatmapActive);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
-  const nodes = useGraphStore((s) => s.nodes);
+  const nodeMap = useGraphStore((s) => s.nodeMap);
 
   const focusedNodeName = focusedNodeId
-    ? (nodes.find((n) => n.id === focusedNodeId)?.data.label ?? focusedNodeId)
+    ? (nodeMap.get(focusedNodeId)?.label ?? focusedNodeId)
     : null;
 
   const toggleSeverity = useCallback((severity: Severity) => {

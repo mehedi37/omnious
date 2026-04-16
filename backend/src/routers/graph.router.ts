@@ -5,6 +5,7 @@ import { oirNodeTypeSchema, oirNodeSchema, oirEdgeSchema, oirEdgeByOirIdSchema }
 import { resolveApiKey, generateModuleGroups, backfillNodeEmbeddings, selectModel, generateProjectPersonality, generateProjectProfile, indexProjectDocuments } from '../services/ai.service.js';
 import { generateCodeSummaries, getCodeSummaries } from '../services/summary.service.js';
 import { computeAndPersistClusters, getClusters, enhanceClusterLabels } from '../services/clustering.service.js';
+import { memPalaceService } from '../services/mempalace.service.js';
 import { logger } from '../lib/logger.js';
 
 const listNodesSchema = z.object({
@@ -492,9 +493,14 @@ export const graphRouter = router({
       });
 
       // Compute and persist community clusters (non-blocking — fire and forget)
+      // Skip if the graph hash hasn't changed (re-push of identical code)
+      const graphHashChanged = !input.index_hash || input.index_hash !== project.last_index_hash;
       computeAndPersistClusters(project.id, ctx.adminDb)
         .then((clusters) => {
-          // Enhance cluster labels with LLM (fire-and-forget)
+          // Only enhance labels when the graph actually changed — avoids wasting an LLM call
+          // on every identical re-push (the in-memory label would no longer match the already-
+          // enhanced label stored in DB, so enhanced: 0 was the result anyway).
+          if (!graphHashChanged) return;
           enhanceClusterLabels(project.id, clusters, summaryKey, ctx.adminDb).catch(() => {});
         })
         .catch((err) => {
@@ -939,6 +945,16 @@ export const graphRouter = router({
         })),
         ctx.adminDb,
       );
+
+      // Mine docs into MemPalace (fire-and-forget).
+      // MemPalace uses chromadb — no Ollama dependency — so this works even
+      // when Ollama is unavailable and the pgvector path failed.
+      memPalaceService.mineDocs(
+        ctx.apiKeyProject.id,
+        ctx.apiKeyProject.slug,
+        input.documents.map((d) => ({ path: d.path, content: d.content })),
+      ).catch(() => { /* non-fatal */ });
+
       return result;
     }),
 });

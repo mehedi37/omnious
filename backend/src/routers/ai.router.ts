@@ -3,6 +3,7 @@ import { TRPCError } from '@trpc/server';
 import { router, protectedProcedure, projectProcedure, apiKeyProcedure } from '../trpc/index.js';
 import { logger } from '../lib/logger.js';
 import { resolveApiKey, callLLM, selectModel, SYSTEM_PROMPTS, encryptApiKey, extractSessionInsights } from '../services/ai.service.js';
+import { memPalaceService } from '../services/mempalace.service.js';
 import {
   querySubgraph,
   getOverviewGraph,
@@ -1252,5 +1253,117 @@ export const aiRouter = router({
           message: `Overview failed: ${err instanceof Error ? err.message : String(err)}`,
         });
       }
+    }),
+
+  // ── MemPalace memory procedures ──────────────────────────
+
+  /** Search this project's memory palace for relevant context */
+  searchMemory: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        query: z.string().min(1).max(500),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { data: project } = await ctx.db
+        .from('projects')
+        .select('slug')
+        .eq('id', input.projectId)
+        .single();
+
+      if (!project?.slug) {
+        return { results: '' };
+      }
+
+      const results = await memPalaceService.search(
+        input.projectId,
+        project.slug as string,
+        input.query,
+      );
+      return { results };
+    }),
+
+  /** Get the L0+L1 wake-up context for a project */
+  getMemoryContext: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const { data: project } = await ctx.db
+        .from('projects')
+        .select('slug')
+        .eq('id', input.projectId)
+        .single();
+
+      if (!project?.slug) return { context: '' };
+
+      const context = await memPalaceService.wakeUp(
+        input.projectId,
+        project.slug as string,
+      );
+      return { context };
+    }),
+
+  /** Manually add a memory insight to the project palace */
+  addMemoryInsight: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        content: z.string().min(1).max(4000),
+        hall: z.enum(['hall_facts', 'hall_events', 'hall_discoveries', 'hall_preferences', 'hall_advice']).default('hall_facts'),
+        room: z.string().min(1).max(100).default('room_general'),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { data: project } = await ctx.db
+        .from('projects')
+        .select('slug')
+        .eq('id', input.projectId)
+        .single();
+
+      if (!project?.slug) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Project not found' });
+      }
+
+      await memPalaceService.addDrawer({
+        projectId: input.projectId,
+        slug: project.slug as string,
+        sessionId: `manual_${Date.now()}`,
+        sessionType: 'general',
+        content: input.content,
+      });
+
+      return { ok: true };
+    }),
+
+  /** Get the timeline of facts for an entity in this project's knowledge graph */
+  getKnowledgeTimeline: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        entity: z.string().min(1).max(200),
+      }),
+    )
+    .query(async ({ input }) => {
+      const timeline = await memPalaceService.kgTimeline(input.projectId, input.entity);
+      return { timeline };
+    }),
+
+  /** Get memory palace status overview for a project */
+  getMemoryStats: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const { data: project } = await ctx.db
+        .from('projects')
+        .select('slug')
+        .eq('id', input.projectId)
+        .single();
+
+      if (!project?.slug) return { status: '' };
+
+      const status = await memPalaceService.status(
+        input.projectId,
+        project.slug as string,
+      );
+      return { status };
     }),
 });

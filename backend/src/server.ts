@@ -25,6 +25,34 @@ import {
   type LLMMessage,
 } from './services/ai.service.js';
 
+/**
+ * Probe Ollama at startup to give early feedback.
+ * Non-fatal — a warn log is emitted but the server continues.
+ */
+async function checkOllamaConnectivity(baseUrl: string): Promise<void> {
+  const endpoint = `${baseUrl}/models`;
+  try {
+    const controller = new AbortController();
+    const timerId = setTimeout(() => controller.abort(), 5_000);
+    const res = await fetch(endpoint, { signal: controller.signal });
+    clearTimeout(timerId);
+    if (res.ok) {
+      logger.info({ endpoint }, 'Ollama connected');
+    } else {
+      logger.warn({ endpoint, status: res.status }, 'Ollama responded with non-OK status');
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isConnErr = message.toLowerCase().includes('econnrefused') || message.toLowerCase().includes('fetch failed');
+    logger.warn(
+      { endpoint },
+      isConnErr
+        ? `Cannot reach Ollama at ${baseUrl}. If backend runs in Docker, start Ollama with OLLAMA_HOST=0.0.0.0:11434 and set OLLAMA_BASE_URL_DOCKER=http://host.docker.internal:11434/v1`
+        : `Ollama check failed: ${message}`,
+    );
+  }
+}
+
 async function buildServer() {
   const server = Fastify({
     logger: loggerConfig,
@@ -92,6 +120,19 @@ async function buildServer() {
     status: 'ok',
     timestamp: new Date().toISOString(),
   }));
+
+  // ─── Ollama status endpoint (for frontend AI panel) ───────────
+  server.get('/health/ollama', async () => {
+    try {
+      const controller = new AbortController();
+      const timerId = setTimeout(() => controller.abort(), 3_000);
+      const res = await fetch(`${env.OLLAMA_BASE_URL}/models`, { signal: controller.signal });
+      clearTimeout(timerId);
+      return { status: res.ok ? 'ok' : 'unavailable', model: env.OLLAMA_MODEL };
+    } catch {
+      return { status: 'unavailable', model: env.OLLAMA_MODEL };
+    }
+  });
 
   // ─── Streaming standalone AI chat (SSE) ───────────────────────
   server.post<{
@@ -325,6 +366,9 @@ async function main() {
     logger.fatal(err, 'Failed to start server');
     process.exit(1);
   }
+
+  // Fire-and-forget Ollama connectivity check — warn on failure, never block startup
+  checkOllamaConnectivity(env.OLLAMA_BASE_URL).catch(() => {/* already logged */});
 }
 
 main();

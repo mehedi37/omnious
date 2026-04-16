@@ -39,7 +39,7 @@ async function _checkSemanticCache(
     const { data, error } = await adminDb.rpc('match_knowledge_cache', {
       p_project_id: projectId,
       query_embedding: JSON.stringify(queryEmbedding),
-      similarity_threshold: 0.92,
+      similarity_threshold: 0.90,
     });
     if (error || !data || (data as unknown[]).length === 0) return null;
     const hit = (data as CacheHit[])[0]!;
@@ -116,6 +116,50 @@ async function _fetchGlobalKnowledge(
     return `\n\n## Reference Knowledge\n${lines.join('\n\n')}`;
   } catch {
     return ''; // degrade gracefully
+  }
+}
+
+/**
+ * Fetch the top unresolved errors for a project. Injected into the LLM prompt
+ * when the query is debug-oriented so the AI has concrete error context, not
+ * just abstract ranking weights.
+ */
+async function _fetchErrorContext(
+  projectId: string,
+  adminDb: DbClient,
+): Promise<string> {
+  try {
+    const { data, error } = await adminDb
+      .from('error_snapshots')
+      .select('error_type, error_message, severity, occurrence_count, last_seen_at, code_node:code_nodes(name, file_path, line_start)')
+      .eq('project_id', projectId)
+      .is('resolved_at', null)
+      .order('occurrence_count', { ascending: false })
+      .limit(4);
+
+    if (error || !data || (data as unknown[]).length === 0) return '';
+
+    const rows = data as Array<{
+      error_type: string | null;
+      error_message: string;
+      severity: string;
+      occurrence_count: number;
+      last_seen_at: string;
+      code_node: { name: string; file_path: string; line_start: number | null } | null;
+    }>;
+
+    const lines = rows.map((e) => {
+      const type = e.error_type ?? 'Error';
+      const msg = e.error_message.slice(0, 200);
+      const loc = e.code_node
+        ? ` — \`${e.code_node.file_path}:${e.code_node.line_start ?? '?'}\` (${e.code_node.name})`
+        : '';
+      return `- **${type}** (${e.severity}, ×${e.occurrence_count})${loc}: ${msg}`;
+    });
+
+    return `\n\n## Recent Errors\n${lines.join('\n')}`;
+  } catch {
+    return '';
   }
 }
 
@@ -230,6 +274,33 @@ export async function buildProjectContext(
       for (const s of dirSummaries.slice(0, 25)) {
         parts.push(`- \`${s.path}\` — ${s.summary}`);
       }
+    }
+
+    // ── Tier 2.5: Code communities (cluster/community labels) ──
+    try {
+      const { data: clusters } = await adminDb
+        .from('code_node_clusters')
+        .select('cluster_label, layer, node_count, representative_dir')
+        .eq('project_id', projectId)
+        .order('node_count', { ascending: false })
+        .limit(8);
+
+      if (clusters && (clusters as unknown[]).length > 0) {
+        const clusterRows = clusters as Array<{
+          cluster_label: string;
+          layer: string | null;
+          node_count: number;
+          representative_dir: string | null;
+        }>;
+        parts.push('\n### Code Communities');
+        for (const c of clusterRows) {
+          const layerTag = c.layer ? ` [${c.layer}]` : '';
+          const dir = c.representative_dir ? ` — \`${c.representative_dir}\`` : '';
+          parts.push(`- **${c.cluster_label}**${layerTag} (${c.node_count} nodes)${dir}`);
+        }
+      }
+    } catch {
+      // table may not exist — degrade gracefully
     }
 
     // ── Tier 3: Documentation fragments from project_documents ──
@@ -375,6 +446,8 @@ interface SubgraphPayload {
   steps: string[];
   /** Query embedding for semantic cache writes */
   queryEmbedding: number[];
+  /** Set when the pipeline found a semantic cache hit — skip the LLM call */
+  cachedResponse?: CacheHit;
 }
 
 // DB client type — matches Supabase client interface
@@ -442,6 +515,7 @@ async function _buildSubgraphPayload(
   contextNodeIds?: string[],
   attachments?: QueryAttachment[],
   modelPreference?: 'auto' | 'fast' | 'powerful',
+  precomputedEmbedding?: number[],
   onStage?: (stage: StreamStage) => void,
   previousMessages?: Array<{ role: 'user' | 'assistant'; content: string }>,
 ): Promise<SubgraphPayload> {
@@ -467,6 +541,10 @@ async function _buildSubgraphPayload(
     const hyde = await generateHyDE(query, resolvedKey, fastModel);
     embedding = hyde.embedding;
     steps.push(hyde.hypothetical ? 'Generated HyDE embedding (hypothetical code)' : 'Generated query embedding (HyDE fallback)');
+  } else if (precomputedEmbedding) {
+    // Reuse embedding generated externally — skip redundant Ollama call
+    embedding = precomputedEmbedding;
+    steps.push('Generated query embedding');
   } else {
     embedding = await generateEmbedding(query);
     steps.push('Generated query embedding');
@@ -835,6 +913,23 @@ async function _buildSubgraphPayload(
     ? `\n\nMention context:\n${attachmentContextLines.join('\n')}`
     : '';
 
+  // 10.5. Semantic cache check — skip agentic eval + enrichment + LLM if semantically cached.
+  //       Placed here so nodes/edges are available for the UI even on cache hits.
+  const earlyCache = await _checkSemanticCache(projectId, embedding, adminDb);
+  if (earlyCache) {
+    steps.push(`Semantic cache hit (similarity: ${earlyCache.similarity.toFixed(3)})`);
+    return {
+      resolvedKey,
+      nodes: subgraphNodes,
+      edges: subgraphEdges,
+      llmMessages: [],
+      model: earlyCache.response_model,
+      steps,
+      queryEmbedding: embedding,
+      cachedResponse: earlyCache,
+    };
+  }
+
   // 11. Agentic evaluation — for complex queries, check if context is sufficient
   //     and do ONE refinement pass if the LLM says critical info is missing.
   if (isComplexQuery && subgraphNodes.length > 0) {
@@ -893,23 +988,26 @@ async function _buildSubgraphPayload(
     }
   }
 
-  // 12. Enrich context with global knowledge (library docs, patterns)
-  const globalKnowledge = await _fetchGlobalKnowledge(embedding, adminDb);
-  if (globalKnowledge) {
-    steps.push('Added global reference knowledge to context');
-  }
-
-  // 13. Fetch per-project context (metadata + code summaries + docs)
-  const projectContext = await buildProjectContext(projectId, db, adminDb, embedding);
-  if (projectContext) {
-    steps.push('Added project metadata and architecture context');
-  }
-
-  // 14. Fetch relevant past insights from conversation memory
-  const insightsContext = await fetchRelevantInsights(projectId, userId, embedding, adminDb);
-  if (insightsContext) {
-    steps.push('Added conversation memory insights');
-  }
+  // 12-15. Enrich context in parallel: global knowledge + project context + MemPalace insights
+  //         + recent errors (debug queries only). All independent reads.
+  const [globalKnResult, projCtxResult, insightsResult, errorCtxResult] = await Promise.allSettled([
+    _fetchGlobalKnowledge(embedding, adminDb),
+    buildProjectContext(projectId, db, adminDb, embedding),
+    // Fetch the project slug for MemPalace lookup, then run insights query
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    db.from('projects').select('slug').eq('id', projectId).single().then((result: any) =>
+      fetchRelevantInsights(projectId, userId, embedding, adminDb, result?.data?.slug as string | undefined)),
+    // Only fetch recent errors for debug-oriented queries
+    isDebugQuery ? _fetchErrorContext(projectId, adminDb) : Promise.resolve(''),
+  ]);
+  const globalKnowledge = globalKnResult.status === 'fulfilled' ? globalKnResult.value : '';
+  const projectContext = projCtxResult.status === 'fulfilled' ? projCtxResult.value : '';
+  const insightsContext = insightsResult.status === 'fulfilled' ? insightsResult.value : '';
+  const errorContext = errorCtxResult.status === 'fulfilled' ? errorCtxResult.value : '';
+  if (globalKnowledge) steps.push('Added global reference knowledge to context');
+  if (projectContext) steps.push('Added project metadata and architecture context');
+  if (insightsContext) steps.push('Added conversation memory insights');
+  if (errorContext) steps.push('Added recent error context');
 
   const llmMessages: LLMMessage[] = [
     { role: 'system', content: SYSTEM_PROMPTS.graphQuery },
@@ -929,7 +1027,7 @@ async function _buildSubgraphPayload(
 
   llmMessages.push({
     role: 'user',
-    content: `User question: "${query}"\n\n${projectContext ? `${projectContext}\n\n` : ''}${contextText}${mentionContext}${globalKnowledge}${insightsContext}`,
+    content: `User question: "${query}"\n\n${projectContext ? `${projectContext}\n\n` : ''}${contextText}${mentionContext}${errorContext}${globalKnowledge}${insightsContext}`,
   });
 
   return {
@@ -963,16 +1061,14 @@ export async function querySubgraph(
     projectId, query, userId, db, adminDb, apiKeyId, contextNodeIds, attachments, modelPreference,
   );
 
-  // Semantic cache: check before calling the LLM
-  const cacheHit = await _checkSemanticCache(projectId, payload.queryEmbedding, adminDb);
-  if (cacheHit) {
-    payload.steps.push(`Semantic cache hit (similarity: ${cacheHit.similarity.toFixed(3)})`);
+  // Cache hit was detected inside the pipeline (after graph build, before LLM)
+  if (payload.cachedResponse) {
     return {
       nodes: payload.nodes,
       edges: payload.edges,
-      explanation: cacheHit.response_text,
+      explanation: payload.cachedResponse.response_text,
       steps: payload.steps,
-      usage: { promptTokens: 0, completionTokens: 0, model: cacheHit.response_model },
+      usage: { promptTokens: 0, completionTokens: 0, model: payload.cachedResponse.response_model },
     };
   }
 
@@ -1024,7 +1120,7 @@ export async function* querySubgraphStream(
   const onStage = (stage: StreamStage) => { pendingStages.push(stage); };
 
   const payload = await _buildSubgraphPayload(
-    projectId, query, userId, db, adminDb, apiKeyId, contextNodeIds, attachments, modelPreference, onStage, previousMessages,
+    projectId, query, userId, db, adminDb, apiKeyId, contextNodeIds, attachments, modelPreference, undefined, onStage, previousMessages,
   );
 
   // Emit collected stage + step events before the LLM starts
@@ -1035,16 +1131,14 @@ export async function* querySubgraphStream(
     yield { type: 'step', text: step };
   }
 
-  // Semantic cache: check before calling the LLM
-  const cacheHit = await _checkSemanticCache(projectId, payload.queryEmbedding, adminDb);
-  if (cacheHit) {
-    yield { type: 'step', text: `Semantic cache hit (similarity: ${cacheHit.similarity.toFixed(3)})` };
-    yield { type: 'delta', text: cacheHit.response_text };
+  // Cache hit was detected inside the pipeline (after graph build, before LLM)
+  if (payload.cachedResponse) {
+    yield { type: 'delta', text: payload.cachedResponse.response_text };
     yield {
       type: 'done',
       nodes: payload.nodes,
       edges: payload.edges,
-      steps: [...payload.steps, `Semantic cache hit (similarity: ${cacheHit.similarity.toFixed(3)})`],
+      steps: payload.steps,
     };
     return;
   }

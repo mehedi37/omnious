@@ -80,6 +80,48 @@ export class OmniousClient {
     });
   }
 
+  /** Search project memory palace */
+  async searchMemory(projectId: string, query: string): Promise<{ results: string }> {
+    return this.query('ai.searchMemory', {
+      projectApiKey: this.apiKey,
+      projectId,
+      query,
+    });
+  }
+
+  /** Load L0+L1 wake-up context for a project */
+  async getMemoryContext(projectId: string): Promise<{ context: string }> {
+    return this.query('ai.getMemoryContext', {
+      projectApiKey: this.apiKey,
+      projectId,
+    });
+  }
+
+  /** Manually store an insight into the memory palace */
+  async storeInsight(
+    projectId: string,
+    content: string,
+    hall: string,
+    room: string,
+  ): Promise<{ ok: boolean }> {
+    return this.mutate('ai.addMemoryInsight', {
+      projectApiKey: this.apiKey,
+      projectId,
+      content,
+      hall,
+      room,
+    });
+  }
+
+  /** Get the knowledge graph timeline for an entity */
+  async getKnowledgeTimeline(projectId: string, entity: string): Promise<{ timeline: unknown[] }> {
+    return this.query('ai.getKnowledgeTimeline', {
+      projectApiKey: this.apiKey,
+      projectId,
+      entity,
+    });
+  }
+
   private async unwrap<T>(res: Response, procedure: string): Promise<T> {
     const json = (await res.json()) as {
       result?: { data: { json: T } };

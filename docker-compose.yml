@@ -67,6 +67,9 @@ services:
       - ENABLE_BYOK_AI=${ENABLE_BYOK_AI:-false}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ENABLE_BILLING=${ENABLE_BILLING:-false}
+      - MEMPALACE_DATA_DIR=/data/palaces
+    volumes:
+      - palaces_data:/data/palaces
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))"]
       interval: 100s
@@ -87,3 +90,7 @@ services:
 networks:
   omnious:
     driver: bridge
+
+volumes:
+  palaces_data:
+    driver: local

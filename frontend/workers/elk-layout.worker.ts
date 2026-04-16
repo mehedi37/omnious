@@ -23,7 +23,7 @@ interface LayoutRequest {
 }
 
 /** Threshold above which we switch to faster algorithms */
-const LARGE_GRAPH_THRESHOLD = 500;
+const LARGE_GRAPH_THRESHOLD = 150;
 
 const LAYOUT_OPTIONS: Record<string, Record<string, string>> = {
   'layered-tb': {

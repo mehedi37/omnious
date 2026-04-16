@@ -5,6 +5,7 @@ import {
   workspaceProcedure,
   projectProcedure,
 } from '../trpc/index.js';
+import { memPalaceService } from '../services/mempalace.service.js';
 
 const createProjectSchema = z.object({
   workspaceId: z.string().uuid(),
@@ -144,6 +145,9 @@ export const projectRouter = router({
           message: error.message,
         });
       }
+
+      // Fire-and-forget: initialise MemPalace wing for this project
+      memPalaceService.initProject(data.id as string, data.slug as string).catch(() => null);
 
       return data;
     }),

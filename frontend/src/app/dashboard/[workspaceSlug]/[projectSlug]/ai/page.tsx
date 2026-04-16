@@ -1,6 +1,7 @@
 'use client';
 
 import { Brain, Bug, GitGraph, Languages, MessageSquare, Plus, Shield, Wrench } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useCallback } from 'react';
 import { UnifiedAIPanel } from '@/components/ai/unified-ai-panel';
 import { Button } from '@/components/ui/button';
@@ -12,7 +13,7 @@ import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { cn } from '@/lib/utils';
 import { trpc } from '@/trpc/client';
 
-const SESSION_ICONS: Record<AISessionType, React.ElementType> = {
+const SESSION_ICONS: Record<AISessionType, LucideIcon> = {
   explain_flow: Brain,
   why_broke: Bug,
   fix_it: Wrench,

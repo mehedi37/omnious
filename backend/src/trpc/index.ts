@@ -169,7 +169,7 @@ const hasApiKeyAccess = t.middleware(async (opts) => {
 
   const { data: project, error } = await opts.ctx.adminDb
     .from('projects')
-    .select('id, name, slug, workspace_id')
+    .select('id, name, slug, workspace_id, last_index_hash')
     .eq('api_key', apiKey)
     .single();
 

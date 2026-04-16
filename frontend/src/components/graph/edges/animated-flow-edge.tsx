@@ -102,14 +102,6 @@ function AnimatedFlowEdgeComponent({
           strokeDasharray: isDashed ? '6 3' : undefined,
         }}
         markerEnd={`url(#${markerId})`}
-      />
-
-      {/* Invisible wider hit area for hover detection */}
-      <path
-        d={edgePath}
-        fill="none"
-        stroke="transparent"
-        strokeWidth={16}
         onMouseEnter={() => setHoveredEdgeId(id)}
         onMouseLeave={() => setHoveredEdgeId(null)}
       />

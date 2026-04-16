@@ -243,6 +243,92 @@ server.tool(
 
 // ── Start Server ──
 
+// ── Tool: omnious_recall ──
+
+server.tool(
+  'omnious_recall',
+  'Search the persistent memory palace for this project. Returns relevant past decisions, debugging sessions, discoveries, and architectural choices. Use this before answering questions that likely have historical context — "why was X done this way?", "what did we decide about Y?", "has this bug appeared before?"',
+  {
+    query: z.string().describe('What to look up in project memory (e.g., "auth migration decision", "why we chose Postgres", "past debugging of this error")'),
+  },
+  async ({ query }) => {
+    const { id: pId } = await ensureProject();
+    const results = await client.searchMemory(pId, query);
+    return {
+      content: [{
+        type: 'text' as const,
+        text: results.results || '_No relevant memories found for this query._',
+      }],
+    };
+  },
+);
+
+// ── Tool: omnious_store_insight ──
+
+server.tool(
+  'omnious_store_insight',
+  'Permanently store an important finding, decision, or discovery into the project memory palace. Use this when you observe something notable: an architectural pattern, a bug root cause, a team decision, or a "why" that would help future conversations.',
+  {
+    content: z.string().describe('The insight to store verbatim — be specific and include enough context to be useful in isolation.'),
+    hall: z.enum(['hall_facts', 'hall_events', 'hall_discoveries', 'hall_preferences', 'hall_advice'])
+      .default('hall_discoveries')
+      .describe('Memory type: facts=decisions, events=debugging/milestones, discoveries=new insights, preferences=habits/opinions, advice=recommendations'),
+    room: z.string().default('room_general').describe('Room within the hall — a named concept like "auth-migration", "ci-pipeline", or "rate-limiting"'),
+  },
+  async ({ content, hall, room }) => {
+    const { id: pId } = await ensureProject();
+    await client.storeInsight(pId, content, hall, room);
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Stored in \`${hall}/${room}\`. This will be recalled in future relevant conversations.`,
+      }],
+    };
+  },
+);
+
+// ── Tool: omnious_project_context ──
+
+server.tool(
+  'omnious_project_context',
+  'Load the critical memory context for this project (Layer 0 + Layer 1 of the memory stack — ~170 tokens). Gives the AI a snapshot of who works on this project, the main tech decisions, and current priorities. Call this at the start of a new session.',
+  {},
+  async () => {
+    const { id: pId } = await ensureProject();
+    const ctx = await client.getMemoryContext(pId);
+    return {
+      content: [{
+        type: 'text' as const,
+        text: ctx.context || '_No memory context available yet. The project memory will grow as you use Omnious._',
+      }],
+    };
+  },
+);
+
+// ── Tool: omnious_knowledge_timeline ──
+
+server.tool(
+  'omnious_knowledge_timeline',
+  'Get the temporal history of a specific entity — a person, module, feature, or concept — as tracked in the project knowledge graph. Returns a chronological record of decisions and status changes.',
+  {
+    entity: z.string().describe('Entity to look up (e.g., "AuthService", "Redis cache", "deploy pipeline", a teammate\'s name)'),
+  },
+  async ({ entity }) => {
+    const { id: pId } = await ensureProject();
+    const { timeline } = await client.getKnowledgeTimeline(pId, entity);
+
+    const text = Array.isArray(timeline) && timeline.length > 0
+      ? timeline.map((t) => `- ${JSON.stringify(t)}`).join('\n')
+      : `_No timeline entries found for "${entity}"._`;
+
+    return {
+      content: [{ type: 'text' as const, text: `## Timeline: ${entity}\n\n${text}` }],
+    };
+  },
+);
+
+// ── Start Server ──
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);

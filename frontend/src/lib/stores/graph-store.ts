@@ -68,6 +68,13 @@ export const NODE_SIZE_DIMENSIONS = {
   small:  { width: 170, height: 48 },
 } as const;
 
+/** Build a fast O(1) lookup map from node id → node data */
+function buildNodeMap(nodes: OmniousNode[]): Map<string, OmniousNodeData> {
+  const map = new Map<string, OmniousNodeData>();
+  for (const n of nodes) map.set(n.id, n.data);
+  return map;
+}
+
 /** Compute connection counts, size tiers, and entry-point flags for nodes */
 function enrichNodesWithGraphMetrics(
   nodes: OmniousNode[],
@@ -114,6 +121,8 @@ interface GraphState {
   // React Flow nodes and edges
   nodes: OmniousNode[];
   edges: OmniousEdge[];
+  /** O(1) lookup index: node id → node data (always in sync with nodes[]) */
+  nodeMap: Map<string, OmniousNodeData>;
 
   // Layout state
   layoutMode: 'layered-tb' | 'layered-lr' | 'force' | 'stress';
@@ -276,6 +285,7 @@ export const useGraphStore = create<GraphState>()(
     immer((set) => ({
       nodes: [],
       edges: [],
+      nodeMap: new Map<string, OmniousNodeData>(),
 
       layoutMode: 'layered-tb',
       isLayouting: false,
@@ -332,6 +342,7 @@ export const useGraphStore = create<GraphState>()(
       setNodes: (nodes) =>
         set((state) => {
           state.nodes = nodes;
+          state.nodeMap = buildNodeMap(nodes);
         }),
 
       setEdges: (edges) =>
@@ -342,6 +353,7 @@ export const useGraphStore = create<GraphState>()(
       setGraph: (nodes, edges) =>
         set((state) => {
           state.nodes = enrichNodesWithGraphMetrics(nodes, edges);
+          state.nodeMap = buildNodeMap(state.nodes);
           state.edges = edges;
           state.selectedNodeIds = new Set();
           state.neighborNodeIds = new Set();
@@ -354,6 +366,7 @@ export const useGraphStore = create<GraphState>()(
         set((state) => {
           state.nodes = [];
           state.edges = [];
+          state.nodeMap = new Map();
           state.selectedNodeIds = new Set();
           state.neighborNodeIds = new Set();
           state.focusedNodeId = null;
@@ -442,6 +455,7 @@ export const useGraphStore = create<GraphState>()(
               },
             };
           });
+          state.nodeMap = buildNodeMap(state.nodes);
         }),
 
       clearHeatmapData: () =>
@@ -452,6 +466,7 @@ export const useGraphStore = create<GraphState>()(
             ...n,
             data: { ...n.data, errorCount: undefined, errorSeverity: undefined },
           }));
+          state.nodeMap = buildNodeMap(state.nodes);
         }),
       // ── Pinning ───────────────────────────────────────────────────────
 
@@ -838,12 +853,9 @@ export function toReactFlowEdges(
 /** Consolidated per-node state selector. Returns a flat object for `useShallow`. */
 export interface NodeGraphState {
   isPinned: boolean;
-  heatmapActive: boolean;
   isActiveFlowNode: boolean;
   isInErrorFlow: boolean;
-  errorFlowActive: boolean;
   focusDepth: number | undefined;
-  focusActive: boolean;
 }
 
 const nodeStateSelectorCache = new Map<string, (s: GraphState) => NodeGraphState>();
@@ -854,12 +866,9 @@ export function selectNodeGraphState(nodeId: string): (s: GraphState) => NodeGra
   if (!selector) {
     selector = (s: GraphState): NodeGraphState => ({
       isPinned: s.pinnedNodeIds.has(nodeId),
-      heatmapActive: s.heatmapActive,
       isActiveFlowNode: s.activeNodeId === nodeId,
       isInErrorFlow: s.errorFlowNodeIds.has(nodeId),
-      errorFlowActive: s.errorFlowNodeIds.size > 0,
       focusDepth: s.nodeDepthMap.get(nodeId),
-      focusActive: s.focusedNodeId !== null,
     });
     nodeStateSelectorCache.set(nodeId, selector);
   }
