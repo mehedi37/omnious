@@ -20,11 +20,16 @@ COPY backend/src/ ./backend/src/
 RUN npm run build --workspace=@omnious/backend
 
 # ─── Production stage ────────────────────────────────────────────
-FROM node:22-alpine AS runner
+# Use Debian slim (glibc) — Alpine (musl) has no onnxruntime wheels, which
+# chromadb (a mempalace dependency) requires.
+FROM node:22-slim AS runner
 
-RUN apk add --no-cache tini && \
-    addgroup -g 1001 -S omnious && \
-    adduser -S omnious -u 1001
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends tini python3 python3-pip && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip3 install --no-cache-dir mempalace --break-system-packages && \
+    groupadd -g 1001 omnious && \
+    useradd -r -u 1001 -g omnious omnious
 
 WORKDIR /app
 
@@ -42,6 +47,7 @@ USER omnious
 
 ENV NODE_ENV=production
 ENV PORT=4000
+ENV MEMPALACE_DATA_DIR=/data/palaces
 EXPOSE 4000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

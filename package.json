@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "dev": "turbo run dev",
+    "start": "turbo run start --filter=!@omnious/mcp --filter=!@omnious/cli",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
@@ -26,7 +27,7 @@
   },
   "devDependencies": {
     "immer": "^11.1.4",
-    "turbo": "^2.8.9"
+    "turbo": "^2.9.5"
   },
   "engines": {
     "node": ">=20.0.0"

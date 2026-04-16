@@ -2,6 +2,9 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import type { AISessionType } from '../oir/types';
 
+/** Pipeline stage identifiers — matches backend StreamStage */
+export type StreamStage = 'embedding' | 'searching' | 'traversing' | 'analyzing' | 'rendering';
+
 export interface AIMessageAttachment {
   kind: 'node' | 'module' | 'function' | 'file' | 'error';
   id: string;
@@ -22,6 +25,7 @@ interface AIState {
   sessionType: AISessionType | null;
   messages: AIMessage[];
   isStreaming: boolean;
+  currentStage: StreamStage | null;
   tokenUsage: { prompt: number; completion: number; total: number };
   // Actions
   setProjectId: (id: string | null) => void;
@@ -30,6 +34,7 @@ interface AIState {
   addMessage: (message: AIMessage) => void;
   appendToLastMessage: (delta: string) => void;
   setStreaming: (val: boolean) => void;
+  setCurrentStage: (stage: StreamStage | null) => void;
   setTokenUsage: (usage: { prompt: number; completion: number; total: number }) => void;
   prefillMessage: string | null;
   setPrefillMessage: (text: string | null) => void;
@@ -45,6 +50,7 @@ export const useAIStore = create<AIState>()(
     sessionType: null,
     messages: [],
     isStreaming: false,
+    currentStage: null,
     tokenUsage: { prompt: 0, completion: 0, total: 0 },
     prefillMessage: null,
     pendingErrorExplain: null,
@@ -56,6 +62,7 @@ export const useAIStore = create<AIState>()(
           state.sessionType = null;
           state.messages = [];
           state.isStreaming = false;
+          state.currentStage = null;
           state.tokenUsage = { prompt: 0, completion: 0, total: 0 };
         }
         state.projectId = id;
@@ -74,6 +81,7 @@ export const useAIStore = create<AIState>()(
         state.sessionType = null;
         state.messages = [];
         state.isStreaming = false;
+        state.currentStage = null;
         state.tokenUsage = { prompt: 0, completion: 0, total: 0 };
       }),
 
@@ -95,6 +103,12 @@ export const useAIStore = create<AIState>()(
     setStreaming: (val) =>
       set((state) => {
         state.isStreaming = val;
+        if (!val) state.currentStage = null;
+      }),
+
+    setCurrentStage: (stage) =>
+      set((state) => {
+        state.currentStage = stage;
       }),
 
     setTokenUsage: (usage) =>

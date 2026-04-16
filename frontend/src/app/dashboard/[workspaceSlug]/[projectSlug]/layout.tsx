@@ -1,6 +1,6 @@
 'use client';
 
-import { Activity, AlertTriangle, Bot, GitGraph, Settings } from 'lucide-react';
+import { Activity, AlertTriangle, Bot, GitGraph, LayoutDashboard, Settings } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, usePathname } from 'next/navigation';
 import { useEffect } from 'react';
@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils';
 import { trpc } from '@/trpc/client';
 
 const PROJECT_TABS = [
+  { title: 'Overview', icon: LayoutDashboard, segment: '' },
   { title: 'Graph', icon: GitGraph, segment: 'graph' },
   { title: 'Traces', icon: Activity, segment: 'traces' },
   { title: 'Errors', icon: AlertTriangle, segment: 'errors' },
@@ -114,12 +115,14 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
           {/* Project tab navigation */}
           <nav className="flex items-center gap-0.5 px-3 pb-1">
             {PROJECT_TABS.map((tab) => {
-              const href = `${basePath}/${tab.segment}`;
-              const isActive = pathname.startsWith(href);
+              const href = tab.segment ? `${basePath}/${tab.segment}` : basePath;
+              const isActive = tab.segment
+                ? pathname.startsWith(`${basePath}/${tab.segment}`)
+                : pathname === basePath || pathname === `${basePath}/`;
               const Icon = tab.icon;
               return (
                 <Link
-                  key={tab.segment}
+                  key={tab.segment || 'overview'}
                   href={href}
                   className={cn(
                     'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors',

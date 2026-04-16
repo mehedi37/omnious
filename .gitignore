@@ -24,3 +24,12 @@ coverage/
 supabase/*
 !supabase/migrations/
 !suabase/seed.sql
+
+
+# agents and skills
+
+.claude/*
+.agents/*
+.skills/*
+
+debug/*

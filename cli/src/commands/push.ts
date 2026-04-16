@@ -13,12 +13,22 @@ import type { OIRIndex } from '../oir/types.js';
 const CACHE_DIR = '.omnious';
 const INDEX_FILE = 'index.json';
 const PUSH_STATE_FILE = 'last-push.json';
+const DOC_CACHE_FILE = 'doc-cache.json';
 
 /** Batch size for node/edge uploads */
 const BATCH_SIZE = 500;
 
+/** Max wait for doc indexing before giving up (Ollama can be slow) */
+const DOC_PUSH_TIMEOUT_MS = 30_000;
+
 /** Simple sleep helper for retry delays */
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+/** Returns a promise that rejects after `ms` milliseconds with a timeout error */
+const rejectAfter = (ms: number) =>
+  new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`Timed out after ${ms / 1000}s`)), ms),
+  );
 
 interface PushOptions {
   apiKey?: string;
@@ -382,21 +392,39 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
 
   // ── Phase 4: Index project documentation ──
   spinner.start('Scanning for project documentation…');
-  const docs = collectProjectDocs(cwd);
-  if (docs.length > 0) {
-    spinner.succeed(`Found ${docs.length} document(s)`);
-    spinner.start('Indexing documentation for AI…');
-    try {
-      const docResult = await client.pushDocuments(docs);
-      const parts: string[] = [];
-      if (docResult.indexed > 0) parts.push(`${docResult.indexed} indexed`);
-      if (docResult.skipped > 0) parts.push(`${docResult.skipped} unchanged`);
-      if (docResult.deleted > 0) parts.push(`${docResult.deleted} removed`);
-      spinner.succeed(`Docs: ${parts.join(', ')}`);
-    } catch (err) {
-      spinner.warn('Failed to index docs (non-fatal)');
-      if (opts.verbose) {
+  const allDocs = collectProjectDocs(cwd);
+  if (allDocs.length > 0) {
+    // Client-side hash cache — skip docs whose content hasn't changed since last push
+    const { createHash } = await import('node:crypto');
+    const prevDocHashes = loadDocCache(cwd);
+    const currentDocHashes: Record<string, string> = {};
+    for (const doc of allDocs) {
+      currentDocHashes[doc.path] = createHash('sha256').update(doc.content).digest('hex');
+    }
+    const docs = allDocs.filter((doc) => prevDocHashes[doc.path] !== currentDocHashes[doc.path]);
+    const unchanged = allDocs.length - docs.length;
+
+    if (docs.length === 0) {
+      spinner.succeed(`Docs: ${unchanged} unchanged (skipped)`);
+    } else {
+      spinner.succeed(`Found ${docs.length} changed document(s)${unchanged > 0 ? ` (${unchanged} unchanged)` : ''}`);
+      spinner.start('Indexing documentation for AI…');
+      try {
+        const docResult = await Promise.race([
+          client.pushDocuments(docs),
+          rejectAfter(DOC_PUSH_TIMEOUT_MS),
+        ]);
+        const parts: string[] = [];
+        if (docResult.indexed > 0) parts.push(`${docResult.indexed} indexed`);
+        if (docResult.skipped > 0) parts.push(`${docResult.skipped} unchanged`);
+        if (docResult.deleted > 0) parts.push(`${docResult.deleted} removed`);
+        spinner.succeed(`Docs: ${parts.join(', ')}`);
+        // Only save cache on success so next push retries failed docs
+        saveDocCache(cwd, currentDocHashes);
+      } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        const isTimeout = msg.includes('Timed out');
+        spinner.warn(`Failed to index docs (non-fatal)${isTimeout ? ' — Ollama timed out' : ''}`);
         logger.dim(`  ${msg}`);
       }
     }
@@ -443,6 +471,28 @@ function savePushState(cwd: string, state: PushState): void {
   }
   const statePath = path.join(cacheDir, PUSH_STATE_FILE);
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8');
+}
+
+/**
+ * Load cached doc content hashes from previous push.
+ * Returns Record<docPath, sha256hex> or empty object if no cache.
+ */
+function loadDocCache(cwd: string): Record<string, string> {
+  const cachePath = path.join(cwd, CACHE_DIR, DOC_CACHE_FILE);
+  if (!fs.existsSync(cachePath)) return {};
+  try {
+    const raw = fs.readFileSync(cachePath, 'utf-8');
+    return JSON.parse(raw) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+/** Persist updated doc content hashes after a successful push. */
+function saveDocCache(cwd: string, hashes: Record<string, string>): void {
+  const cacheDir = path.join(cwd, CACHE_DIR);
+  if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
+  fs.writeFileSync(path.join(cacheDir, DOC_CACHE_FILE), JSON.stringify(hashes, null, 2), 'utf-8');
 }
 
 function chunk<T>(arr: T[], size: number): T[][] {

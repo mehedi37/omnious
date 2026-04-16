@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import ora from 'ora';
-import { loadConfig } from '../config/loader.js';
 import { logger } from '../utils/logger.js';
 
 const CACHE_DIR = '.omnious';
@@ -51,39 +50,23 @@ const ENTRY_POINT_PATTERNS = [
 ];
 
 /**
- * `omnious summarize` — scan project and generate context metadata.
- *
- * Detects languages, frameworks, build tools, and entry points
- * from manifest files. Output is saved to `.omnious/project-context.json`.
+ * Scan the current project and return extracted metadata (no side effects).
+ * Used by both `omnious summarize` (for display + file write) and
+ * `omnious sync` (for uploading context to the backend).
  */
-export async function summarizeCommand(opts: SummarizeOptions): Promise<void> {
-  const cwd = process.cwd();
-  logger.banner();
-  console.log('');
-
-  const spinner = ora({ isSilent: !!process.env['CI'] });
-
-  // Load config (optional — summarize can work without .omnious.yml)
+export async function extractProjectContext(cwd: string): Promise<ProjectContext> {
   let projectName = path.basename(cwd);
-  try {
-    const config = loadConfig(opts.config);
-    if (config.project?.name) projectName = config.project.name;
-  } catch {
-    // Summarize can work without config
-  }
 
-  // Step 1: Find manifest files
-  spinner.start('Scanning for manifest files…');
+  try {
+    const config = (await import('../config/loader.js')).loadConfig();
+    if (config.project?.name) projectName = config.project.name;
+  } catch { /* ok */ }
+
   const foundManifests: string[] = [];
   for (const manifest of MANIFEST_FILES) {
-    if (fs.existsSync(path.join(cwd, manifest))) {
-      foundManifests.push(manifest);
-    }
+    if (fs.existsSync(path.join(cwd, manifest))) foundManifests.push(manifest);
   }
-  spinner.succeed(`Found ${logger.theme.brand(String(foundManifests.length))} manifest files`);
 
-  // Step 2: Extract metadata from manifests
-  spinner.start('Extracting project metadata…');
   const languages = new Set<string>();
   const frameworks = new Set<string>();
   const buildTools = new Set<string>();
@@ -101,11 +84,9 @@ export async function summarizeCommand(opts: SummarizeOptions): Promise<void> {
         if (pkg.name && projectName === path.basename(cwd)) projectName = pkg.name;
       } catch { /* skip */ }
     } else if (manifest === 'pyproject.toml' || manifest === 'requirements.txt' || manifest === 'setup.py') {
-      languages.add('Python');
-      extractPythonFrameworks(content, frameworks);
+      languages.add('Python'); extractPythonFrameworks(content, frameworks);
     } else if (manifest === 'go.mod') {
-      languages.add('Go');
-      extractGoFrameworks(content, frameworks);
+      languages.add('Go'); extractGoFrameworks(content, frameworks);
     } else if (manifest === 'Cargo.toml') {
       languages.add('Rust');
     } else if (manifest === 'pom.xml' || manifest === 'build.gradle') {
@@ -124,32 +105,47 @@ export async function summarizeCommand(opts: SummarizeOptions): Promise<void> {
     }
   }
 
-  // Detect entry points
   const entryPoints: string[] = [];
   for (const ep of ENTRY_POINT_PATTERNS) {
-    if (fs.existsSync(path.join(cwd, ep))) {
-      entryPoints.push(ep);
-    }
+    if (fs.existsSync(path.join(cwd, ep))) entryPoints.push(ep);
   }
 
-  // Infer domains from directory names
-  const domains = inferDomains(cwd);
-
-  spinner.succeed('Project metadata extracted');
-
-  // Step 3: Build context
-  const context: ProjectContext = {
+  return {
     name: projectName,
     description,
     languages: [...languages],
     frameworks: [...frameworks],
     buildTools: [...buildTools],
     entryPoints,
-    domains,
+    domains: inferDomains(cwd),
     generatedAt: new Date().toISOString(),
   };
+}
 
-  // Step 4: Write output
+/**
+ * `omnious summarize` — scan project and generate context metadata.
+ *
+ * Detects languages, frameworks, build tools, and entry points
+ * from manifest files. Output is saved to `.omnious/project-context.json`.
+ */
+export async function summarizeCommand(opts: SummarizeOptions): Promise<void> {
+  const cwd = process.cwd();
+  logger.banner();
+  console.log('');
+
+  const spinner = ora({ isSilent: !!process.env['CI'] });
+
+  // Step 1: Find manifest files
+  spinner.start('Scanning for manifest files…');
+  const manifestCount = MANIFEST_FILES.filter((m) => fs.existsSync(path.join(cwd, m))).length;
+  spinner.succeed(`Found ${logger.theme.brand(String(manifestCount))} manifest files`);
+
+  // Step 2: Extract metadata
+  spinner.start('Extracting project metadata…');
+  const context = await extractProjectContext(cwd);
+  spinner.succeed('Project metadata extracted');
+
+  // Step 3: Write output
   const cacheDir = path.join(cwd, CACHE_DIR);
   if (!fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir, { recursive: true });

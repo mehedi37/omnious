@@ -18,10 +18,40 @@ import {
   callLLMStream,
   resolveApiKey,
   selectModel,
+  fetchRelevantInsights,
+  generateEmbedding,
   SYSTEM_PROMPTS,
   compressSessionHistory,
   type LLMMessage,
 } from './services/ai.service.js';
+
+/**
+ * Probe Ollama at startup to give early feedback.
+ * Non-fatal — a warn log is emitted but the server continues.
+ */
+async function checkOllamaConnectivity(baseUrl: string): Promise<void> {
+  const endpoint = `${baseUrl}/models`;
+  try {
+    const controller = new AbortController();
+    const timerId = setTimeout(() => controller.abort(), 5_000);
+    const res = await fetch(endpoint, { signal: controller.signal });
+    clearTimeout(timerId);
+    if (res.ok) {
+      logger.info({ endpoint }, 'Ollama connected');
+    } else {
+      logger.warn({ endpoint, status: res.status }, 'Ollama responded with non-OK status');
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isConnErr = message.toLowerCase().includes('econnrefused') || message.toLowerCase().includes('fetch failed');
+    logger.warn(
+      { endpoint },
+      isConnErr
+        ? `Cannot reach Ollama at ${baseUrl}. If backend runs in Docker, start Ollama with OLLAMA_HOST=0.0.0.0:11434 and set OLLAMA_BASE_URL_DOCKER=http://host.docker.internal:11434/v1`
+        : `Ollama check failed: ${message}`,
+    );
+  }
+}
 
 async function buildServer() {
   const server = Fastify({
@@ -91,6 +121,19 @@ async function buildServer() {
     timestamp: new Date().toISOString(),
   }));
 
+  // ─── Ollama status endpoint (for frontend AI panel) ───────────
+  server.get('/health/ollama', async () => {
+    try {
+      const controller = new AbortController();
+      const timerId = setTimeout(() => controller.abort(), 3_000);
+      const res = await fetch(`${env.OLLAMA_BASE_URL}/models`, { signal: controller.signal });
+      clearTimeout(timerId);
+      return { status: res.ok ? 'ok' : 'unavailable', model: env.OLLAMA_MODEL };
+    } catch {
+      return { status: 'unavailable', model: env.OLLAMA_MODEL };
+    }
+  });
+
   // ─── Streaming standalone AI chat (SSE) ───────────────────────
   server.post<{
     Body: {
@@ -129,6 +172,15 @@ async function buildServer() {
     // Fetch per-project context (metadata + code summaries) so the AI knows what project it's working with
     const projectContext = await buildProjectContext(projectId, db, supabaseAdmin);
 
+    // Fetch relevant past insights to enrich the AI context
+    let insightsContext = '';
+    try {
+      const queryEmbedding = await generateEmbedding(lastUserMsg);
+      insightsContext = await fetchRelevantInsights(projectId, user.id, queryEmbedding, supabaseAdmin);
+    } catch {
+      // Insights are best-effort — degrade gracefully
+    }
+
     reply.raw.writeHead(200, {
       ...(reply.getHeaders() as import('node:http').OutgoingHttpHeaders),
       'Content-Type': 'text/event-stream',
@@ -147,6 +199,9 @@ async function buildServer() {
     if (projectContext) {
       systemMessages.push({ role: 'system', content: projectContext });
     }
+    if (insightsContext) {
+      systemMessages.push({ role: 'system', content: insightsContext });
+    }
 
     const llmMessages: LLMMessage[] = compressSessionHistory([
       ...systemMessages,
@@ -157,6 +212,7 @@ async function buildServer() {
 
     let fullContent = '';
     try {
+      sendEvent({ type: 'stage', stage: 'analyzing' });
       for await (const delta of callLLMStream(llmMessages, resolvedKey, { model })) {
         fullContent += delta;
         sendEvent({ type: 'delta', text: delta });
@@ -212,6 +268,7 @@ async function buildServer() {
       contextNodeIds?: string[];
       attachments?: Array<{ kind: string; id: string; label: string; subtype?: string }>;
       modelPreference?: 'auto' | 'fast' | 'powerful';
+      previousMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
     };
   }>('/api/ai/stream-graph-query', {
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
@@ -237,7 +294,7 @@ async function buildServer() {
     }
 
     const db = createUserClient(token);
-    const { apiKeyId, contextNodeIds, attachments, modelPreference } = req.body;
+    const { apiKeyId, contextNodeIds, attachments, modelPreference, previousMessages } = req.body;
 
     // Set SSE headers and begin streaming
     reply.raw.writeHead(200, {
@@ -263,6 +320,7 @@ async function buildServer() {
         contextNodeIds,
         attachments as Array<{ kind: 'node' | 'module' | 'function' | 'file' | 'error'; id: string; label: string; subtype?: string }>,
         modelPreference,
+        previousMessages as Array<{ role: 'user' | 'assistant'; content: string }> | undefined,
       );
       for await (const event of stream) {
         sendEvent(event);
@@ -308,6 +366,9 @@ async function main() {
     logger.fatal(err, 'Failed to start server');
     process.exit(1);
   }
+
+  // Fire-and-forget Ollama connectivity check — warn on failure, never block startup
+  checkOllamaConnectivity(env.OLLAMA_BASE_URL).catch(() => {/* already logged */});
 }
 
 main();

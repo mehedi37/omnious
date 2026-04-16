@@ -29,15 +29,15 @@ import { trpc } from '@/trpc/client';
  */
 function useSelectedNodeData(): { nodeId: string; data: OmniousNodeData } | null {
   const selectedNodeIds = useGraphStore((s) => s.selectedNodeIds);
-  const nodes = useGraphStore((s) => s.nodes);
+  const nodeMap = useGraphStore((s) => s.nodeMap);
 
   return useMemo(() => {
     if (selectedNodeIds.size === 0) return null;
     const firstId = selectedNodeIds.values().next().value as string;
-    const node = nodes.find((n) => n.id === firstId);
-    if (!node) return null;
-    return { nodeId: firstId, data: node.data };
-  }, [selectedNodeIds, nodes]);
+    const nodeData = nodeMap.get(firstId);
+    if (!nodeData) return null;
+    return { nodeId: firstId, data: nodeData };
+  }, [selectedNodeIds, nodeMap]);
 }
 
 /**
@@ -45,12 +45,10 @@ function useSelectedNodeData(): { nodeId: string; data: OmniousNodeData } | null
  */
 function useConnectedNodes(nodeId: string | null) {
   const edges = useGraphStore((s) => s.edges);
-  const nodes = useGraphStore((s) => s.nodes);
+  const nodeMap = useGraphStore((s) => s.nodeMap);
 
   return useMemo(() => {
     if (!nodeId) return { incoming: [], outgoing: [] };
-
-    const nodeMap = new Map(nodes.map((n) => [n.id, n.data]));
 
     const incoming: Array<{ id: string; label: string; oirType: string; edgeType: string }> = [];
     const outgoing: Array<{ id: string; label: string; oirType: string; edgeType: string }> = [];
@@ -92,7 +90,7 @@ function useConnectedNodes(nodeId: string | null) {
     }
 
     return { incoming, outgoing };
-  }, [nodeId, edges, nodes]);
+  }, [nodeId, edges, nodeMap]);
 }
 
 export function NodeDetailPanel() {

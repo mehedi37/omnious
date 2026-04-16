@@ -391,7 +391,7 @@ export async function callLLM(
       maxOutputTokens: maxTokens,
       temperature,
     });
-    // Strip qwen3-style <think>...</think> reasoning blocks from output
+    // Strip <think>...</think> reasoning blocks emitted by thinking-capable models
     const content = result.text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
     return {
       content,
@@ -708,9 +708,20 @@ export async function indexProjectDocuments(
     const MAX_CHUNK = 4000;
     const content = doc.content.slice(0, MAX_CHUNK);
 
+    // Try to generate embedding — degrade gracefully if Ollama is unavailable.
+    // Docs stored without embeddings are still usable for full-text search;
+    // they will gain embeddings on the next push once Ollama is back.
+    let embedding: number[] | null = null;
     try {
-      const embedding = await generateEmbedding(content);
+      embedding = await generateEmbedding(content);
+    } catch (embedErr) {
+      logger.warn(
+        { docPath: doc.path, error: embedErr instanceof Error ? embedErr.message : String(embedErr) },
+        'Embedding failed — storing doc without vector (will retry on next push)',
+      );
+    }
 
+    try {
       const { error } = await adminDb
         .from('project_documents')
         .upsert(
@@ -720,7 +731,7 @@ export async function indexProjectDocuments(
             doc_type: doc.docType ?? 'markdown',
             content,
             content_hash: hash,
-            embedding: JSON.stringify(embedding),
+            embedding: embedding ? JSON.stringify(embedding) : null,
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'project_id,doc_path' },
@@ -734,12 +745,47 @@ export async function indexProjectDocuments(
     } catch (err) {
       logger.warn(
         { docPath: doc.path, error: err instanceof Error ? err.message : String(err) },
-        'Failed to embed document',
+        'Failed to store document',
       );
     }
   }
 
   logger.info({ projectId, indexed, skipped, deleted: toDelete.length }, 'Document indexing complete');
+
+  // Backfill: retry embedding for docs that were stored without a vector
+  // (e.g., because Ollama was unavailable during a previous push).
+  // Only attempt if we're not already in a degraded state (at least 1 successful embedding this run).
+  if (indexed > 0) {
+    try {
+      const { data: nullEmbedDocs } = await adminDb
+        .from('project_documents')
+        .select('id, doc_path, content')
+        .eq('project_id', projectId)
+        .is('embedding', null)
+        .limit(20);
+
+      let backfilled = 0;
+      for (const row of (nullEmbedDocs ?? []) as Array<{ id: string; doc_path: string; content: string }>) {
+        if (!row.content) continue;
+        try {
+          const emb = await generateEmbedding(row.content.slice(0, 4000));
+          await adminDb
+            .from('project_documents')
+            .update({ embedding: JSON.stringify(emb), updated_at: new Date().toISOString() })
+            .eq('id', row.id);
+          backfilled++;
+        } catch {
+          break; // Ollama still down — stop trying
+        }
+      }
+      if (backfilled > 0) {
+        logger.info({ projectId, backfilled }, 'Backfilled embeddings for previously unembedded docs');
+      }
+    } catch {
+      // Non-critical — skip silently
+    }
+  }
+
   return { indexed, skipped, deleted: toDelete.length };
 }
 
@@ -782,21 +828,38 @@ export async function extractSessionInsights(
   messages: Array<{ role: string; content: string }>,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adminDb: any,
+  _sessionType?: string,
 ): Promise<{ extracted: number }> {
-  // Only extract when we have enough conversation (at least 2 full turns)
+  // Only extract when we have enough conversation (at least 1 full turn)
   const turnMessages = messages.filter((m) => m.role !== 'system');
-  if (turnMessages.length < 4) return { extracted: 0 };
+  if (turnMessages.length < 2) return { extracted: 0 };
 
-  // Check if we already extracted insights for this session recently
+  // Check if we already extracted insights for this session recently.
+  // Re-extract if the conversation has grown by 6+ messages since last extraction.
   const { data: existing } = await adminDb
     .from('ai_session_insights')
     .select('id')
     .eq('session_id', sessionId)
     .limit(1);
 
+  // Holds session metadata for write-back after extraction (populated if insights already exist).
+  let sessionMeta: Record<string, unknown> = {};
+
   if (existing && existing.length > 0) {
-    // Already extracted — skip to avoid duplicates per session
-    return { extracted: 0 };
+    // Already extracted — only re-run if conversation has grown significantly.
+    // Use session metadata to track last extraction message count.
+    const { data: sessionRow } = await adminDb
+      .from('ai_sessions')
+      .select('metadata')
+      .eq('id', sessionId)
+      .single();
+
+    sessionMeta = (sessionRow?.metadata ?? {}) as Record<string, unknown>;
+    const lastExtractionCount = Number(sessionMeta.last_extraction_msg_count ?? 0);
+
+    if (turnMessages.length < lastExtractionCount + 6) {
+      return { extracted: 0 };
+    }
   }
 
   // Build a condensed conversation for the extraction prompt
@@ -874,6 +937,44 @@ export async function extractSessionInsights(
     }
 
     logger.info({ sessionId, extracted }, 'Extracted session insights');
+
+    // Persist the message count so the next call can decide whether to re-extract.
+    if (extracted > 0) {
+      adminDb
+        .from('ai_sessions')
+        .update({ metadata: { ...sessionMeta, last_extraction_msg_count: turnMessages.length } })
+        .eq('id', sessionId)
+        .catch(() => null); // fire-and-forget
+    }
+
+    // ── MemPalace: mine conversation into the project palace ──
+    // Fire-and-forget — does not block the response or affect extracted count.
+    try {
+      const { data: projectRow } = await adminDb
+        .from('projects')
+        .select('slug')
+        .eq('id', projectId)
+        .single();
+
+      if (projectRow?.slug) {
+        const transcript = turnMessages
+          .map((m: { role: string; content: string }) =>
+            `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`,
+          )
+          .join('\n\n');
+
+        const { memPalaceService } = await import('./mempalace.service.js');
+        memPalaceService.mineConversation(
+          projectId,
+          projectRow.slug as string,
+          sessionId,
+          transcript,
+        ).catch(() => null);
+      }
+    } catch {
+      // Non-critical: MemPalace augments existing memory, does not replace it
+    }
+
     return { extracted };
   } catch (err) {
     logger.debug(
@@ -886,6 +987,7 @@ export async function extractSessionInsights(
 
 /**
  * Fetch relevant past insights for a project + user based on query similarity.
+ * Combines pgvector similarity hits with MemPalace semantic search.
  * Returns a formatted string to inject into the LLM context, or empty string.
  */
 export async function fetchRelevantInsights(
@@ -894,7 +996,11 @@ export async function fetchRelevantInsights(
   queryEmbedding: number[],
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adminDb: any,
+  projectSlug?: string,
 ): Promise<string> {
+  const parts: string[] = [];
+
+  // ── pgvector insights (existing) ─────────────────────────
   try {
     const { data } = await adminDb.rpc('match_session_insights', {
       p_project_id: projectId,
@@ -904,17 +1010,35 @@ export async function fetchRelevantInsights(
       match_count: 5,
     });
 
-    if (!data || data.length === 0) return '';
-
-    const insights = data as Array<{ insight: string; category: string; similarity: number }>;
-    const lines = insights.map(
-      (i) => `- [${i.category}] ${i.insight}`,
-    );
-    return `\n### Previous Insights\nRelevant knowledge from past conversations:\n${lines.join('\n')}\n`;
+    if (data && data.length > 0) {
+      const insights = data as Array<{ insight: string; category: string; similarity: number }>;
+      const lines = insights.map((i) => `- [${i.category}] ${i.insight}`);
+      parts.push(`### Previous Insights\nRelevant knowledge from past conversations:\n${lines.join('\n')}`);
+    }
   } catch {
     // Table may not exist yet — degrade gracefully
-    return '';
   }
+
+  // ── MemPalace semantic search (augments pgvector results) ─
+  if (projectSlug) {
+    try {
+      const { memPalaceService } = await import('./mempalace.service.js');
+      // Build a text query from the embedding's source — we approximate
+      // by searching with a representative query drawn from pgvector hits.
+      // For direct text queries (from session context), callers should pass
+      // the raw query text via fetchRelevantInsights; for now we use a
+      // generic lookup keyed on project.
+      const memCtx = await memPalaceService.search(projectId, projectSlug, '');
+      if (memCtx.trim()) {
+        parts.push(memCtx.trim());
+      }
+    } catch {
+      // Degrade gracefully — MemPalace is additive context only
+    }
+  }
+
+  if (parts.length === 0) return '';
+  return '\n' + parts.join('\n\n') + '\n';
 }
 
 /**
@@ -1458,6 +1582,178 @@ export async function generateProjectPersonality(
     logger.warn(
       { projectId, error: error instanceof Error ? error.message : String(error) },
       'Project personality generation failed (non-fatal)',
+    );
+  }
+}
+
+// ─── Auto-Generated Project Profile ──────────────────────────────
+
+/**
+ * Generate a structured project profile from code summaries and metadata.
+ * Stored in `projects.settings.ai_profile` — always available as Tier 1 context.
+ * Regenerated at most once every 12 hours to avoid spamming LLM calls.
+ */
+export async function generateProjectProfile(
+  projectId: string,
+  resolvedKey: ResolvedKey,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: any,
+): Promise<void> {
+  try {
+    const db = adminDb;
+    const { data: project } = await db
+      .from('projects')
+      .select('name, description, primary_language, framework, detected_stack, settings')
+      .eq('id', projectId)
+      .single();
+
+    if (!project) return;
+
+    const p = project as Record<string, unknown>;
+    const settings = (p.settings ?? {}) as Record<string, unknown>;
+
+    // Skip if profile was recently generated
+    if (settings.ai_profile && settings.ai_profile_generated_at) {
+      const generatedAt = new Date(String(settings.ai_profile_generated_at));
+      const hoursSince = (Date.now() - generatedAt.getTime()) / (1000 * 60 * 60);
+      if (hoursSince < 12) return;
+    }
+
+    // Fetch directory summaries for context
+    const { data: dirSummaries } = await db
+      .from('code_summaries')
+      .select('scope, path, summary, node_count')
+      .eq('project_id', projectId)
+      .eq('scope', 'directory')
+      .order('node_count', { ascending: false })
+      .limit(20);
+
+    // Fetch top-level file summaries for pattern detection
+    const { data: fileSummaries } = await db
+      .from('code_summaries')
+      .select('path, summary')
+      .eq('project_id', projectId)
+      .eq('scope', 'file')
+      .order('node_count', { ascending: false })
+      .limit(15);
+
+    // Fetch node type distribution
+    const { data: nodeTypes } = await db
+      .from('code_nodes')
+      .select('oir_type')
+      .eq('project_id', projectId);
+
+    const typeCounts: Record<string, number> = {};
+    if (nodeTypes) {
+      for (const n of nodeTypes as Array<{ oir_type: string }>) {
+        typeCounts[n.oir_type] = (typeCounts[n.oir_type] ?? 0) + 1;
+      }
+    }
+
+    const contextLines: string[] = [];
+    if (p.name) contextLines.push(`Project: ${p.name}`);
+    if (p.description) contextLines.push(`Description: ${p.description}`);
+    if (p.primary_language) contextLines.push(`Language: ${p.primary_language}`);
+    if (p.framework) contextLines.push(`Framework: ${p.framework}`);
+    if (p.detected_stack && typeof p.detected_stack === 'object') {
+      contextLines.push(`Stack: ${JSON.stringify(p.detected_stack)}`);
+    }
+    if (Object.keys(typeCounts).length > 0) {
+      contextLines.push(`Node type distribution: ${JSON.stringify(typeCounts)}`);
+    }
+    if (dirSummaries && (dirSummaries as unknown[]).length > 0) {
+      contextLines.push('\nDirectory summaries:');
+      for (const s of dirSummaries as Array<{ path: string; summary: string; node_count: number }>) {
+        contextLines.push(`- ${s.path} (${s.node_count} nodes): ${s.summary}`);
+      }
+    }
+    if (fileSummaries && (fileSummaries as unknown[]).length > 0) {
+      contextLines.push('\nKey files:');
+      for (const s of fileSummaries as Array<{ path: string; summary: string }>) {
+        contextLines.push(`- ${s.path}: ${s.summary}`);
+      }
+    }
+
+    const model = selectModel('overview', '', resolvedKey.provider, 'fast');
+
+    const profileSchema = {
+      type: 'object' as const,
+      properties: {
+        architecture_style: {
+          type: 'string' as const,
+          description: 'Primary architecture pattern (e.g., "Monorepo with microservices", "MVC", "Layered backend + SPA frontend")',
+        },
+        key_patterns: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Important design patterns used (e.g., "Repository pattern", "Event-driven", "CQRS")',
+        },
+        naming_conventions: {
+          type: 'string' as const,
+          description: 'Observed naming conventions (e.g., "camelCase functions, PascalCase components, kebab-case files")',
+        },
+        module_boundaries: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Key module/package boundaries with their responsibility (e.g., "backend/src/services — business logic")',
+        },
+        entry_points: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Main entry points of the application (e.g., "backend/src/server.ts", "frontend/src/app/page.tsx")',
+        },
+        common_abstractions: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Key abstractions/base types used across the codebase (e.g., "tRPC routers", "Zustand stores", "React Flow custom nodes")',
+        },
+      },
+      required: ['architecture_style', 'key_patterns', 'naming_conventions', 'module_boundaries', 'entry_points', 'common_abstractions'],
+    };
+
+    const start = Date.now();
+    const result = await callLLM(
+      [
+        {
+          role: 'system',
+          content: 'Analyze the codebase metadata and produce a structured project profile. Be specific — use actual directory names, patterns, and technologies found in the code. Keep arrays concise (3-8 items). This profile will be used as persistent AI context.',
+        },
+        {
+          role: 'user',
+          content: contextLines.join('\n'),
+        },
+      ],
+      resolvedKey,
+      { model, maxTokens: 1024, temperature: 0.2, responseSchema: profileSchema },
+    );
+    const latency = Date.now() - start;
+
+    let profile: unknown;
+    try {
+      profile = JSON.parse(result.content);
+    } catch {
+      recordModelPerformance(adminDb, 'projectProfile', model, resolvedKey.provider, false, latency).catch(() => {});
+      return;
+    }
+
+    recordModelPerformance(adminDb, 'projectProfile', model, resolvedKey.provider, true, latency).catch(() => {});
+
+    const newSettings = {
+      ...settings,
+      ai_profile: profile,
+      ai_profile_generated_at: new Date().toISOString(),
+    };
+
+    await db
+      .from('projects')
+      .update({ settings: newSettings })
+      .eq('id', projectId);
+
+    logger.info({ projectId, model }, 'Project profile generated');
+  } catch (error) {
+    logger.warn(
+      { projectId, error: error instanceof Error ? error.message : String(error) },
+      'Project profile generation failed (non-fatal)',
     );
   }
 }

@@ -13,7 +13,7 @@ import {
   useNodesState,
   useReactFlow,
 } from '@xyflow/react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, startTransition, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 
 import { Keyboard, Loader2, Lock, Unlock } from 'lucide-react';
@@ -21,10 +21,14 @@ import { toast } from 'sonner';
 import type { OmniousEdge, OmniousNode as OmniousNodeType } from '@/lib/stores/graph-store';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
+import { useAIStore } from '@/lib/stores/ai-store';
 import { AnimatedFlowEdge } from './edges/animated-flow-edge';
+import { GraphGlobalFlagsContext } from './graph-global-flags-context';
 import { useGraphContextMenu } from './graph-context-menu';
 import { ModuleGroupNode } from './nodes/module-group-node';
 import { OmniousNode } from './nodes/omnious-node';
+import { AISliceAnnotation, type SliceNarrative } from './ai-slice-annotation';
+import { KeyboardShortcutsDialog } from '@/components/shared/keyboard-shortcuts-dialog';
 
 // Register custom node/edge types
 const nodeTypes = {
@@ -43,6 +47,9 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
   return true;
 }
 
+/** Maximum nodes passed to ReactFlow at once. Above this limit a warning is shown. */
+const NODE_RENDER_LIMIT = 500;
+
 /**
  * React Flow canvas for AI-driven subgraph visualization.
  * Replaces sigma-canvas.tsx — renders focused subgraphs (<100 nodes)
@@ -53,7 +60,13 @@ export function ReactFlowCanvas() {
   const storeEdges = useGraphStore((s) => s.edges);
   const isLayouting = useGraphStore((s) => s.isLayouting);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
+  const sliceNarrative = useGraphStore((s) => s.sliceNarrative);
   const minimapVisible = useUIStore((s) => s.minimapVisible);
+
+  // Global flags — read once here, provided via context to all nodes (avoids N×3 per-node subscriptions)
+  const heatmapActive = useGraphStore((s) => s.heatmapActive);
+  const errorFlowActive = useGraphStore((s) => s.errorFlowNodeIds.size > 0);
+  const focusActive = focusedNodeId !== null;
 
   const [nodes, setNodes, onNodesChange] = useNodesState<OmniousNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<OmniousEdge>([]);
@@ -73,6 +86,7 @@ export function ReactFlowCanvas() {
   const connectedRef = useRef<Set<string>>(new Set());
   const nodeTypeFiltersRef = useRef(new Set());
   const severityFiltersRef = useRef(new Set());
+  const tooManyNodesWarnedRef = useRef(false);
 
   // Pin all nodes on initial graph load only (lock-by-default).
   useEffect(() => {
@@ -93,14 +107,23 @@ export function ReactFlowCanvas() {
   const connectedNodeIds = useGraphStore((s) => s.connectedNodeIds);
 
   useEffect(() => {
+    if (storeNodes.length === 0) {
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
+
     let filteredNodes = storeNodes;
 
     if (nodeTypeFilters.size > 0) {
-      filteredNodes = storeNodes.filter((n) => !nodeTypeFilters.has(n.data.oirType));
+      filteredNodes = storeNodes.filter((n) =>
+        (n.type as string) === 'group' || !nodeTypeFilters.has(n.data.oirType),
+      );
     }
 
     if (severityFilters.size > 0) {
       filteredNodes = filteredNodes.filter((n) => {
+        if ((n.type as string) === 'group') return true;
         const sev = n.data.errorSeverity as string | undefined;
         if (!sev) return true;
         return severityFilters.has(sev as 'error' | 'warning' | 'info');
@@ -109,6 +132,20 @@ export function ReactFlowCanvas() {
 
     if (focusedNodeId && connectedNodeIds.size > 0) {
       filteredNodes = filteredNodes.filter((n) => connectedNodeIds.has(n.id));
+    }
+
+    // Hard cap: prevent main-thread freeze on very large graphs
+    if (filteredNodes.length > NODE_RENDER_LIMIT) {
+      if (!tooManyNodesWarnedRef.current) {
+        tooManyNodesWarnedRef.current = true;
+        toast.warning(
+          `Showing ${NODE_RENDER_LIMIT} of ${filteredNodes.length} nodes — use AI query for a focused subgraph.`,
+          { duration: 6000 },
+        );
+      }
+      filteredNodes = filteredNodes.slice(0, NODE_RENDER_LIMIT);
+    } else {
+      tooManyNodesWarnedRef.current = false;
     }
 
     // Apply current selection + pin state without subscribing to them
@@ -126,13 +163,14 @@ export function ReactFlowCanvas() {
       draggable: !pinned.has(n.id),
     }));
 
-    setNodes(withState);
-
     const visibleIds = new Set(withState.map((n) => n.id));
     const filteredEdges = storeEdges.filter(
       (e) => visibleIds.has(e.source) && visibleIds.has(e.target),
     );
-    setEdges(filteredEdges);
+    startTransition(() => {
+      setNodes(withState);
+      setEdges(filteredEdges);
+    });
   }, [
     storeNodes,
     storeEdges,
@@ -150,13 +188,15 @@ export function ReactFlowCanvas() {
   useEffect(() => {
     if (setsEqual(selectedRef.current, selectedNodeIds)) return;
     selectedRef.current = selectedNodeIds;
-    setNodes((prev) =>
-      prev.map((n) => {
-        const shouldBeSelected = selectedNodeIds.has(n.id);
-        if (n.selected === shouldBeSelected) return n; // preserve identity
-        return { ...n, selected: shouldBeSelected };
-      }),
-    );
+    startTransition(() => {
+      setNodes((prev) =>
+        prev.map((n) => {
+          const shouldBeSelected = selectedNodeIds.has(n.id);
+          if (n.selected === shouldBeSelected) return n; // preserve identity
+          return { ...n, selected: shouldBeSelected };
+        }),
+      );
+    });
   }, [selectedNodeIds, setNodes]);
 
   // ── Effect 3: Pin changes — patch draggable in-place ──────────────────
@@ -165,19 +205,21 @@ export function ReactFlowCanvas() {
   useEffect(() => {
     if (setsEqual(pinnedRef.current, pinnedNodeIds)) return;
     pinnedRef.current = pinnedNodeIds;
-    setNodes((prev) =>
-      prev.map((n) => {
-        const shouldBeDraggable = !pinnedNodeIds.has(n.id);
-        if (n.draggable === shouldBeDraggable) return n;
-        return { ...n, draggable: shouldBeDraggable };
-      }),
-    );
+    startTransition(() => {
+      setNodes((prev) =>
+        prev.map((n) => {
+          const shouldBeDraggable = !pinnedNodeIds.has(n.id);
+          if (n.draggable === shouldBeDraggable) return n;
+          return { ...n, draggable: shouldBeDraggable };
+        }),
+      );
+    });
   }, [pinnedNodeIds, setNodes]);
 
   // ── fitView: triggered after layout completes ────────────────────────
   useEffect(() => {
     function handleFit() {
-      fitView({ padding: 0.15, duration: 0 });
+      fitView({ padding: 0.2, duration: 500 });
     }
     window.addEventListener('omnious:focus-fit', handleFit);
     return () => window.removeEventListener('omnious:focus-fit', handleFit);
@@ -261,7 +303,10 @@ export function ReactFlowCanvas() {
   // Disable edge animation for large graphs (> 300 nodes) to improve render perf
   const edgeAnimated = storeNodes.length <= 300;
 
+  const globalFlags = { heatmapActive, errorFlowActive, focusActive };
+
   return (
+    <GraphGlobalFlagsContext.Provider value={globalFlags}>
     <div className="h-full w-full relative" ref={setContainerRef}>
       <ReactFlow
         nodes={nodes}
@@ -279,12 +324,14 @@ export function ReactFlowCanvas() {
         edgeTypes={edgeTypes}
         minZoom={0.1}
         maxZoom={3}
+        onlyRenderVisibleElements
         elevateNodesOnSelect={false}
         proOptions={{ hideAttribution: true }}
         className="bg-background"
         defaultEdgeOptions={{
           type: 'animated-flow',
           animated: edgeAnimated,
+          interactionWidth: 16,
         }}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} className="bg-background!" />
@@ -317,9 +364,27 @@ export function ReactFlowCanvas() {
       {/* Context menu overlay */}
       {menuElement}
 
+      {/* Keyboard shortcuts dialog (portal-rendered) */}
+      <KeyboardShortcutsDialog />
+
+      {/* AI slice narrative annotation */}
+      {sliceNarrative && (
+        <AISliceAnnotation
+          narrative={sliceNarrative}
+          onFollowUp={(question) => {
+            useAIStore.getState().setPrefillMessage(question);
+            useUIStore.getState().setActiveDetailTab('ai');
+          }}
+          onDismiss={() => {
+            useGraphStore.getState().setSliceNarrative(null);
+          }}
+        />
+      )}
+
       {/* Layout processing overlay */}
       {isLayouting && <LayoutOverlay nodeCount={storeNodes.length} />}
     </div>
+    </GraphGlobalFlagsContext.Provider>
   );
 }
 

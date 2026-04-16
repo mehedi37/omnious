@@ -11,6 +11,7 @@ const nextConfig: NextConfig = {
   reactCompiler: {
     compilationMode: 'annotation',
   },
+  transpilePackages: ['next-themes'],
   experimental: { viewTransition: true },
   output: 'standalone',
   logging: { fetches: { fullUrl: true } },

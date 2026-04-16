@@ -210,6 +210,5 @@
 }
 
 .omnious-node-pulse {
-  animation: omnious-node-pulse 2.5s ease-in-out infinite;
-  will-change: box-shadow;
+  animation: omnious-node-pulse 0.6s ease-out 1 forwards;
 }

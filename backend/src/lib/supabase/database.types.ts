@@ -110,6 +110,58 @@ export type Database = {
           },
         ]
       }
+      ai_session_insights: {
+        Row: {
+          created_at: string
+          id: string
+          insight_type: string
+          payload: Json
+          project_id: string
+          session_id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          insight_type: string
+          payload?: Json
+          project_id: string
+          session_id: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          insight_type?: string
+          payload?: Json
+          project_id?: string
+          session_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_session_insights_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_session_insights_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "ai_sessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_session_insights_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       api_key_audit_log: {
         Row: {
           action: string
@@ -382,6 +434,53 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "code_nodes_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      code_node_clusters: {
+        Row: {
+          cluster_color: string
+          cluster_label: string
+          created_at: string
+          id: string
+          layer: string | null
+          node_count: number
+          node_ids: string[]
+          project_id: string
+          representative_dir: string | null
+          updated_at: string
+        }
+        Insert: {
+          cluster_color: string
+          cluster_label: string
+          created_at?: string
+          id?: string
+          layer?: string | null
+          node_count: number
+          node_ids: string[]
+          project_id: string
+          representative_dir?: string | null
+          updated_at?: string
+        }
+        Update: {
+          cluster_color?: string
+          cluster_label?: string
+          created_at?: string
+          id?: string
+          layer?: string | null
+          node_count?: number
+          node_ids?: string[]
+          project_id?: string
+          representative_dir?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "code_node_clusters_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
@@ -775,6 +874,50 @@ export type Database = {
           },
         ]
       }
+      project_documents: {
+        Row: {
+          content: string
+          content_hash: string
+          created_at: string
+          doc_path: string
+          doc_type: string
+          embedding: string | null
+          id: string
+          project_id: string
+          updated_at: string
+        }
+        Insert: {
+          content: string
+          content_hash: string
+          created_at?: string
+          doc_path: string
+          doc_type?: string
+          embedding?: string | null
+          id?: string
+          project_id: string
+          updated_at?: string
+        }
+        Update: {
+          content?: string
+          content_hash?: string
+          created_at?: string
+          doc_path?: string
+          doc_type?: string
+          embedding?: string | null
+          id?: string
+          project_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_documents_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       saved_views: {
         Row: {
           created_at: string
@@ -783,6 +926,7 @@ export type Database = {
           id: string
           is_shared: boolean
           name: string
+          narrative: Json | null
           project_id: string
           updated_at: string
           user_id: string
@@ -796,6 +940,7 @@ export type Database = {
           id?: string
           is_shared?: boolean
           name: string
+          narrative?: Json | null
           project_id: string
           updated_at?: string
           user_id: string
@@ -809,6 +954,7 @@ export type Database = {
           id?: string
           is_shared?: boolean
           name?: string
+          narrative?: Json | null
           project_id?: string
           updated_at?: string
           user_id?: string

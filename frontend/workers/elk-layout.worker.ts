@@ -23,7 +23,7 @@ interface LayoutRequest {
 }
 
 /** Threshold above which we switch to faster algorithms */
-const LARGE_GRAPH_THRESHOLD = 200;
+const LARGE_GRAPH_THRESHOLD = 150;
 
 const LAYOUT_OPTIONS: Record<string, Record<string, string>> = {
   'layered-tb': {
@@ -164,15 +164,35 @@ self.onmessage = async (event: MessageEvent<LayoutRequest>) => {
     }
 
     // Extract positions — handle both flat and compound layouts
-    const positions: Array<{ id: string; x: number; y: number }> = [];
+    const positions: Array<{ id: string; x: number; y: number; parentId?: string }> = [];
+    const groups: Array<{ id: string; x: number; y: number; width: number; height: number; childIds: string[] }> = [];
 
     function extractPositions(children: typeof elkGraph.children, offsetX = 0, offsetY = 0) {
       for (const child of children ?? []) {
         const cx = (child.x ?? 0) + offsetX;
         const cy = (child.y ?? 0) + offsetY;
-        // If it has children, it's a compound node — recurse
+        // If it has children, it's a compound group node
         if ((child as any).children?.length > 0) {
-          extractPositions((child as any).children, cx, cy);
+          const childIds: string[] = [];
+          // Group node — record its position and dimensions
+          groups.push({
+            id: child.id,
+            x: cx,
+            y: cy,
+            width: child.width ?? 200,
+            height: child.height ?? 150,
+            childIds: (child as any).children.map((c: { id: string }) => c.id),
+          });
+          // Extract child positions relative to the group parent
+          for (const grandChild of (child as any).children ?? []) {
+            positions.push({
+              id: grandChild.id,
+              x: grandChild.x ?? 0,
+              y: grandChild.y ?? 0,
+              parentId: child.id,
+            });
+            childIds.push(grandChild.id);
+          }
         } else {
           positions.push({ id: child.id, x: cx, y: cy });
         }
@@ -221,7 +241,7 @@ self.onmessage = async (event: MessageEvent<LayoutRequest>) => {
     }
 
     console.timeEnd(`[elk] layout requestId=${requestId} nodes=${nodes.length}`);
-    self.postMessage({ requestId, positions, edgeRoutes });
+    self.postMessage({ requestId, positions, edgeRoutes, groups });
   } catch (error) {
     console.timeEnd(`[elk] layout requestId=${requestId} nodes=${nodes.length}`);
     self.postMessage({ requestId, positions: [], edgeRoutes: [], error: String(error) });

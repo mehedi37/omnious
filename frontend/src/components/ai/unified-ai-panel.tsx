@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -37,6 +38,8 @@ import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
 import { AIMessage } from './ai-message';
 import { AIQuickActions } from './ai-quick-actions';
+import { AIStreamingIndicator } from './ai-streaming-indicator';
+import { AIContextBadge } from './ai-context-badge';
 import { type MentionEntry, MentionTextarea } from './mention-textarea';
 
 // ─── Types ───────────────────────────────────────────────────
@@ -217,16 +220,30 @@ export function UnifiedAIPanel({
     textareaRef.current?.focus();
   }, []);
 
-  // Auto-scroll to bottom only when already near the bottom
+  // Auto-scroll to bottom when near bottom, or force-scroll during active streaming
+  const lastContent = messages[messages.length - 1]?.content;
   useEffect(() => {
     const el = scrollRef.current?.querySelector('[data-radix-scroll-area-viewport]');
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const isNearBottom = distanceFromBottom < 80;
-    if (isNearBottom) {
+    const isNearBottom = distanceFromBottom < 120;
+    if (isNearBottom || isStreaming) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages.length, querySteps.length]);
+  }, [messages.length, lastContent, querySteps.length, isStreaming]);
+
+  // Toast when AI response completes
+  const prevStreamingRef = useRef(false);
+  useEffect(() => {
+    if (prevStreamingRef.current && !isStreaming && messages.length > 0) {
+      const last = messages[messages.length - 1];
+      if (last?.role === 'assistant' && last.content) {
+        const snippet = last.content.length > 80 ? `${last.content.slice(0, 80)}…` : last.content;
+        toast.success(snippet, { duration: 3000 });
+      }
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming, messages]);
 
   // Listen for omnious:prefill-ai event (from graph context menu "Ask AI About This")
   useEffect(() => {
@@ -504,6 +521,10 @@ export function UnifiedAIPanel({
             {nodeCount} nodes · {edgeCount} edges
           </span>
         )}
+        {mode === 'graph' && nodeCount === 0 && (
+          <span className="ml-auto" />
+        )}
+        <AIContextBadge />
         {onClose && (
           <Button
             variant="ghost"
@@ -626,8 +647,11 @@ export function UnifiedAIPanel({
             />
           ))}
 
-          {/* Loading/thinking indicator */}
-          {(isQuerying || createSessionMutation.isPending) && !isStreaming && (
+          {/* Loading/thinking indicator — stage-aware when streaming */}
+          {(isQuerying || createSessionMutation.isPending || isStreaming) && (
+            <AIStreamingIndicator />
+          )}
+          {(isQuerying || createSessionMutation.isPending) && !isStreaming && !useAIStore.getState().currentStage && (
             <div className="flex items-center gap-3 py-1">
               <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10">
                 <Sparkles className="h-3 w-3 text-primary" />

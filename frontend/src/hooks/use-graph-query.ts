@@ -4,7 +4,7 @@ import { useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useRef } from 'react';
 import { cancelScheduledGraphLayout, scheduleGraphLayout } from '@/lib/layout/schedule-layout';
 import type { AIMessageAttachment } from '@/lib/stores/ai-store';
-import { useAIStore } from '@/lib/stores/ai-store';
+import { useAIStore, type StreamStage } from '@/lib/stores/ai-store';
 import { toReactFlowEdges, toReactFlowNodes, useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
@@ -82,6 +82,20 @@ export function useGraphQuery() {
           'Loaded AI-generated graph slice from link',
         ]);
     }
+
+    // Restore persisted narrative if available
+    const n = savedSliceQuery.data.narrative as Record<string, unknown> | null;
+    if (n && typeof n.summary === 'string') {
+      useGraphStore.getState().setSliceNarrative({
+        summary: n.summary,
+        pattern: typeof n.pattern === 'string' ? n.pattern : null,
+        dataFlow: typeof n.dataFlow === 'string' ? n.dataFlow : null,
+        followUpQuestions: Array.isArray(n.followUpQuestions)
+          ? (n.followUpQuestions as unknown[]).filter((q): q is string => typeof q === 'string')
+          : [],
+      });
+    }
+
     scheduleGraphLayout();
   }, [savedSliceQuery.data]);
 
@@ -145,6 +159,7 @@ export function useGraphQuery() {
   );
 
   const saveGraphSliceMutation = trpc.ai.saveGraphSlice.useMutation();
+  const generateNarrativeMutation = trpc.ai.generateNarrative.useMutation();
   const createSessionMutation = trpc.ai.createSession.useMutation();
   const appendMessageMutation = trpc.ai.appendMessage.useMutation();
 
@@ -153,6 +168,25 @@ export function useGraphQuery() {
       useGraphStore.getState().setModuleGroups(moduleGroupsQuery.data.groups);
     }
   }, [moduleGroupsQuery.data]);
+
+  // ── Cluster data (persisted community detection) ──────────────────────
+
+  const clustersQuery = trpc.graph.getClusters.useQuery(
+    { projectId: projectId ?? '' },
+    {
+      enabled: !!projectId && !!overviewQuery.data,
+      staleTime: 10 * 60_000,
+      gcTime: 30 * 60_000,
+      retry: false,
+      refetchOnWindowFocus: false,
+    },
+  );
+
+  useEffect(() => {
+    if (clustersQuery.data?.clusters) {
+      useGraphStore.getState().setClusterData(clustersQuery.data.clusters);
+    }
+  }, [clustersQuery.data]);
 
   // ── Session persistence helper ─────────────────────────────────────────
 
@@ -231,6 +265,21 @@ export function useGraphQuery() {
           if (saved.viewId && workspaceSlug && projectSlug) {
             useGraphStore.getState().setLatestSliceId(saved.viewId);
             explanationWithLink = `${result.explanation}\n\n[Open this graph slice](/dashboard/${workspaceSlug}/${projectSlug}/graph?ai_gen=${saved.viewId})`;
+
+            // Best-effort: generate narrative for the slice
+            generateNarrativeMutation
+              .mutateAsync({
+                projectId,
+                viewId: saved.viewId,
+                nodes: result.nodes.map((n) => ({ name: n.name, type: n.type, file_path: n.file_path })),
+                edges: result.edges.map((e) => ({ source: e.source_node_id, target: e.target_node_id, type: e.type })),
+                query: lastQueryRef.current || '',
+                explanation: result.explanation,
+              })
+              .then((narrative) => {
+                useGraphStore.getState().setSliceNarrative(narrative);
+              })
+              .catch(() => { /* best-effort */ });
           }
         }
       } catch {
@@ -398,6 +447,13 @@ export function useGraphQuery() {
         const token = sessionData.session?.access_token;
         if (!token) throw new Error('Not authenticated');
 
+        // Include conversation history so graph queries have multi-turn context
+        const previousMessages = useAIStore
+          .getState()
+          .messages.filter((m) => m.role === 'user' || m.role === 'assistant')
+          .slice(-6)
+          .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
         const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
         const resp = await fetch(`${apiBase}/api/ai/stream-graph-query`, {
           method: 'POST',
@@ -412,6 +468,7 @@ export function useGraphQuery() {
             contextNodeIds,
             attachments,
             modelPreference,
+            previousMessages: previousMessages.length > 0 ? previousMessages : undefined,
           }),
         });
 
@@ -434,12 +491,15 @@ export function useGraphQuery() {
             const raw = line.slice(6).trim();
             try {
               const event = JSON.parse(raw) as
+                | { type: 'stage'; stage: string }
                 | { type: 'step'; text: string }
                 | { type: 'delta'; text: string }
                 | { type: 'done'; nodes: DoneNodes; edges: DoneEdges; steps: string[] }
                 | { type: 'error'; message: string };
 
-              if (event.type === 'delta') {
+              if (event.type === 'stage') {
+                useAIStore.getState().setCurrentStage(event.stage as StreamStage);
+              } else if (event.type === 'delta') {
                 useAIStore.getState().appendToLastMessage(event.text);
               } else if (event.type === 'done') {
                 doneNodes = event.nodes;
@@ -483,6 +543,21 @@ export function useGraphQuery() {
                 useGraphStore.getState().setLatestSliceId(saved.viewId);
                 const link = `\n\n[Open this graph slice](/dashboard/${workspaceSlug}/${projectSlug}/graph?ai_gen=${saved.viewId})`;
                 useAIStore.getState().appendToLastMessage(link);
+
+                // Best-effort: generate narrative for the slice
+                generateNarrativeMutation
+                  .mutateAsync({
+                    projectId: projectId!,
+                    viewId: saved.viewId,
+                    nodes: doneNodes.map((n) => ({ name: n.name, type: n.type, file_path: n.file_path })),
+                    edges: doneEdges.map((e) => ({ source: e.source_node_id, target: e.target_node_id, type: e.type })),
+                    query: lastQueryRef.current || '',
+                    explanation,
+                  })
+                  .then((narrative) => {
+                    useGraphStore.getState().setSliceNarrative(narrative);
+                  })
+                  .catch(() => { /* best-effort */ });
               }
             })
             .catch(() => {
@@ -510,6 +585,7 @@ export function useGraphQuery() {
       projectSlug,
       prepareQuery,
       saveGraphSliceMutation,
+      generateNarrativeMutation,
       shareNextSlice,
       persistGraphSession,
     ],

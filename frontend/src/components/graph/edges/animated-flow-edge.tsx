@@ -1,7 +1,7 @@
 'use client';
 
 import { BaseEdge, type EdgeProps, getBezierPath } from '@xyflow/react';
-import { memo, useState } from 'react';
+import { memo } from 'react';
 import { EDGE_COLORS } from '@/lib/oir/constants';
 import type { OIREdgeType } from '@/lib/oir/types';
 import type { OmniousEdgeData } from '@/lib/stores/graph-store';
@@ -45,7 +45,9 @@ function AnimatedFlowEdgeComponent({
   const edgeType = edgeData?.edgeType ?? 'calls';
   const isRuntime = edgeData?.isRuntime ?? false;
   const flowReplay = edgeData?.flowReplay ?? false;
-  const [hovered, setHovered] = useState(false);
+
+  const hovered = useGraphStore((s) => s.hoveredEdgeId === id);
+  const setHoveredEdgeId = useGraphStore((s) => s.setHoveredEdgeId);
 
   const errorFlowActive = useGraphStore((s) => s.errorFlowEdgeIds.size > 0);
   const isInErrorFlow = useGraphStore((s) => s.errorFlowEdgeIds.has(id));
@@ -100,16 +102,8 @@ function AnimatedFlowEdgeComponent({
           strokeDasharray: isDashed ? '6 3' : undefined,
         }}
         markerEnd={`url(#${markerId})`}
-      />
-
-      {/* Invisible wider hit area for hover detection */}
-      <path
-        d={edgePath}
-        fill="none"
-        stroke="transparent"
-        strokeWidth={16}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
+        onMouseEnter={() => setHoveredEdgeId(id)}
+        onMouseLeave={() => setHoveredEdgeId(null)}
       />
 
       {/* Animated dot only during flow replay — avoids constant GPU repaints */}
