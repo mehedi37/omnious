@@ -4,6 +4,8 @@ import {
   AlertCircle,
   BrainCircuit,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Crosshair,
   ExternalLink,
@@ -49,6 +51,16 @@ export function ErrorDetail({ errorId }: Props) {
     { projectId: currentProjectId ?? '', errorId },
     { enabled: !!currentProjectId },
   );
+
+  // Lightweight sibling list for prev/next navigation
+  const siblingsQuery = trpc.error.list.useQuery(
+    { projectId: currentProjectId ?? '', limit: 100, offset: 0 },
+    { enabled: !!currentProjectId, staleTime: 30_000 },
+  );
+  const siblingIds = (siblingsQuery.data?.errors ?? []).map((e) => e.id);
+  const siblingIdx = siblingIds.indexOf(errorId);
+  const prevId = siblingIdx > 0 ? siblingIds[siblingIdx - 1] : null;
+  const nextId = siblingIdx >= 0 && siblingIdx < siblingIds.length - 1 ? siblingIds[siblingIdx + 1] : null;
 
   const resolveMutation = trpc.error.resolve.useMutation({
     onSuccess: () => {
@@ -160,6 +172,31 @@ export function ErrorDetail({ errorId }: Props) {
           <h1 className="text-lg font-semibold leading-snug break-all">{err.error_message}</h1>
         </div>
         <div className="flex gap-2 shrink-0">
+          {/* Prev / Next navigation */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            disabled={!prevId}
+            title="Previous error"
+            onClick={() =>
+              router.push(`/dashboard/${workspaceSlug}/${projectSlug}/errors/${prevId}`)
+            }
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            disabled={!nextId}
+            title="Next error"
+            onClick={() =>
+              router.push(`/dashboard/${workspaceSlug}/${projectSlug}/errors/${nextId}`)
+            }
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
           {isResolved ? (
             <Button
               variant="outline"

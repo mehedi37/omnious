@@ -9,7 +9,6 @@ import {
   EyeOff,
   Flame,
   Info,
-  Lock,
   Map,
   Maximize,
   Route,
@@ -183,12 +182,6 @@ export function useGraphContextMenu() {
     close();
   }, [menu?.nodeId, close]);
 
-  const handlePin = useCallback(() => {
-    if (!menu?.nodeId) return;
-    useGraphStore.getState().togglePinNode(menu.nodeId);
-    close();
-  }, [menu?.nodeId, close]);
-
   const handleExpandDeps = useCallback(() => {
     if (!menu?.nodeId) return;
     window.dispatchEvent(
@@ -305,12 +298,10 @@ export function useGraphContextMenu() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  const pinnedNodeIds = useGraphStore((s) => s.pinnedNodeIds);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
   const errorFlowActive = useGraphStore((s) => s.errorFlowNodeIds.size > 0);
-  const isNodePinned = menu?.nodeId ? pinnedNodeIds.has(menu.nodeId) : false;
-  const isNodeFocused = menu?.nodeId ? focusedNodeId === menu.nodeId : false;
   const minimapVisible = useUIStore((s) => s.minimapVisible);
+  const isNodeFocused = menu?.nodeId ? focusedNodeId === menu.nodeId : false;
 
   const pos = adjustedPos ?? menu?.position;
 
@@ -342,12 +333,6 @@ export function useGraphContextMenu() {
               label={isNodeFocused ? 'Exit Focus' : 'Focus (2-hop)'}
               shortcut="N"
               onClick={handleFocus}
-            />
-            <MenuItem
-              icon={Lock}
-              label={isNodePinned ? 'Unlock Position' : 'Lock Position'}
-              shortcut="L"
-              onClick={handlePin}
             />
             <MenuItem
               icon={Expand}

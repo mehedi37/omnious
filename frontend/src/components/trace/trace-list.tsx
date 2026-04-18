@@ -1,6 +1,6 @@
 'use client';
 
-import { Activity, AlertCircle, ArrowRight, Clock, Play } from 'lucide-react';
+import { Activity, AlertCircle, ArrowRight, ChevronLeft, ChevronRight, Clock, Play } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
@@ -28,13 +28,18 @@ export function TraceList() {
   const params = useParams<{ workspaceSlug: string; projectSlug: string }>();
   const currentProjectId = useWorkspaceStore((s) => s.currentProjectId);
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 25;
 
   const tracesQuery = trpc.trace.list.useQuery(
-    { projectId: currentProjectId ?? '', limit: 50, offset: 0 },
+    { projectId: currentProjectId ?? '', limit: PAGE_SIZE, offset: page * PAGE_SIZE },
     { enabled: !!currentProjectId, staleTime: 10_000 },
   );
 
   const traces = tracesQuery.data?.traces ?? [];
+  const total = tracesQuery.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
   const filtered = search
     ? traces.filter(
         (t) =>
@@ -154,6 +159,33 @@ export function TraceList() {
           </TableBody>
         </Table>
       </ScrollArea>
+
+      {/* Pagination bar */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-end gap-2 px-6 py-3 border-t text-sm text-muted-foreground">
+          <span>
+            Page {page + 1} of {totalPages}
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            disabled={page === 0}
+            onClick={() => setPage((p) => p - 1)}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            disabled={page >= totalPages - 1}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

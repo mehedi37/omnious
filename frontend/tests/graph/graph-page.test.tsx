@@ -4,36 +4,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
-// Mock @xyflow/react — provides a minimal ReactFlowProvider and hooks
-vi.mock('@xyflow/react', () => {
-  const ReactFlowProvider = ({ children }: { children: React.ReactNode }) =>
-    React.createElement('div', { 'data-testid': 'rf-provider' }, children);
-
-  const ReactFlow = (props: Record<string, unknown>) =>
-    React.createElement('div', { 'data-testid': 'react-flow', ...props });
-
-  const Background = () => React.createElement('div', { 'data-testid': 'rf-background' });
-  const Controls = ({ children }: { children?: React.ReactNode }) =>
-    React.createElement('div', { 'data-testid': 'rf-controls' }, children);
-  const ControlButton = (props: Record<string, unknown>) =>
-    React.createElement('button', { 'data-testid': 'rf-control-button', ...props });
-  const MiniMap = () => React.createElement('div', { 'data-testid': 'rf-minimap' });
-
-  return {
-    ReactFlowProvider,
-    ReactFlow,
-    Background,
-    Controls,
-    ControlButton,
-    MiniMap,
-    BackgroundVariant: { Dots: 'dots' },
-    useReactFlow: () => ({ fitView: vi.fn() }),
-    useNodesState: () => [[], vi.fn(), vi.fn()],
-    useEdgesState: () => [[], vi.fn(), vi.fn()],
-  };
-});
-
-// Mock trpc
 vi.mock('@/trpc/client', () => ({
   trpc: {
     project: {
@@ -139,8 +109,13 @@ vi.mock('@/hooks/use-error-heatmap', () => ({
 }));
 
 // Mock child components
-vi.mock('@/components/graph/react-flow-canvas', () => ({
-  ReactFlowCanvas: () => React.createElement('div', { 'data-testid': 'react-flow-canvas' }),
+vi.mock('@/components/graph/d3/d3-graph-canvas', () => ({
+  D3GraphCanvas: () => React.createElement('div', { 'data-testid': 'd3-graph-canvas' }),
+}));
+
+// Also mock the dynamic import wrapper
+vi.mock('@/components/graph/debugger-graph', () => ({
+  DebuggerGraph: () => React.createElement('div', { 'data-testid': 'd3-graph-canvas' }),
 }));
 
 vi.mock('@/components/graph/graph-filter-toolbar', () => ({
@@ -183,16 +158,6 @@ describe('GraphPage', () => {
     expect(container).toBeTruthy();
   });
 
-  it('wraps content in ReactFlowProvider', async () => {
-    const { default: GraphPage } = await import(
-      '@/app/dashboard/[workspaceSlug]/[projectSlug]/graph/page'
-    );
-
-    render(React.createElement(GraphPage));
-
-    expect(screen.getByTestId('rf-provider')).toBeInTheDocument();
-  });
-
   it('renders graph canvas when nodes exist', async () => {
     const { default: GraphPage } = await import(
       '@/app/dashboard/[workspaceSlug]/[projectSlug]/graph/page'
@@ -200,7 +165,7 @@ describe('GraphPage', () => {
 
     render(React.createElement(GraphPage));
 
-    expect(screen.getByTestId('react-flow-canvas')).toBeInTheDocument();
+    expect(screen.getByTestId('d3-graph-canvas')).toBeInTheDocument();
     expect(screen.getByTestId('graph-filter-toolbar')).toBeInTheDocument();
   });
 });

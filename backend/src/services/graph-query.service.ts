@@ -1214,8 +1214,15 @@ export function buildGraphSlice(
     ? seedNodes.reduce((a, b) => ((a.relevance ?? 0) >= (b.relevance ?? 0) ? a : b))
     : null;
 
+  // Build a meaningful title from the entry-point name
+  const titleBase = entryPoint?.name
+    ? entryPoint.name
+    : (seedNodes[0]?.name ?? nodes[0]?.name ?? query.slice(0, 40));
+  const extra = nodes.length > 1 ? ` & ${nodes.length - 1} more` : '';
+  const sliceTitle = `${titleBase}${extra}`;
+
   return {
-    title: query.length > 100 ? `${query.slice(0, 97)}...` : query,
+    title: sliceTitle,
     explanationMd: explanation,
     nodeOirIds,
     edgePairs,

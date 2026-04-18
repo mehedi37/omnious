@@ -1,8 +1,6 @@
 'use client';
 
-import { useReactFlow } from '@xyflow/react';
 import { useCallback, useEffect } from 'react';
-import { scheduleGraphLayout } from '@/lib/layout/schedule-layout';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 
@@ -26,11 +24,8 @@ function isTyping(e: KeyboardEvent): boolean {
 
 /**
  * Wires up all keyboard shortcuts documented in keyboard-shortcuts-dialog.tsx.
- * Must be mounted inside a ReactFlowProvider.
  */
 export function useKeyboardShortcuts() {
-  const reactFlow = useReactFlow();
-
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       // Allow Ctrl/Cmd combos to pass through to their handlers even inside inputs
@@ -68,9 +63,7 @@ export function useKeyboardShortcuts() {
             if (isTyping(e)) return; // Don't override select-all in inputs
             e.preventDefault();
             const nodes = useGraphStore.getState().nodes;
-            const allIds = new Set(nodes.map((n) => n.id));
-            // Use selectNode for first, then toggleNodeSelection for rest
-            const ids = Array.from(allIds);
+            const ids = nodes.map((n) => n.id);
             if (ids.length > 0) {
               useGraphStore.getState().selectNode(ids[0]);
               for (let i = 1; i < ids.length; i++) {
@@ -96,23 +89,18 @@ export function useKeyboardShortcuts() {
         return; // Don't process other keys when Ctrl is held
       }
 
-      // ── Navigation: Arrow keys ─────────────────────────────────────────
+      // ── Navigation: Arrow keys — fire pan events to D3 engine ─────────
 
       if (key === 'ArrowUp' || key === 'ArrowDown' || key === 'ArrowLeft' || key === 'ArrowRight') {
         if (isTyping(e)) return;
         e.preventDefault();
         const step = shift ? PAN_STEP_LARGE : PAN_STEP;
-        const viewport = reactFlow.getViewport();
-        let dx = 0;
-        let dy = 0;
+        let dx = 0, dy = 0;
         if (key === 'ArrowUp') dy = step;
         if (key === 'ArrowDown') dy = -step;
         if (key === 'ArrowLeft') dx = step;
         if (key === 'ArrowRight') dx = -step;
-        reactFlow.setViewport(
-          { x: viewport.x + dx, y: viewport.y + dy, zoom: viewport.zoom },
-          { duration: 150 },
-        );
+        window.dispatchEvent(new CustomEvent('omnious:pan', { detail: { dx, dy } }));
         return;
       }
 
@@ -121,21 +109,21 @@ export function useKeyboardShortcuts() {
       if (key === '+' || key === '=') {
         if (isTyping(e)) return;
         e.preventDefault();
-        reactFlow.zoomIn({ duration: 200 });
+        window.dispatchEvent(new CustomEvent('omnious:zoom-in'));
         return;
       }
 
       if (key === '-') {
         if (isTyping(e)) return;
         e.preventDefault();
-        reactFlow.zoomOut({ duration: 200 });
+        window.dispatchEvent(new CustomEvent('omnious:zoom-out'));
         return;
       }
 
       if (key === '0' || key === 'Home') {
         if (isTyping(e)) return;
         e.preventDefault();
-        reactFlow.fitView({ padding: 0.15, duration: 400 });
+        window.dispatchEvent(new CustomEvent('omnious:focus-fit'));
         return;
       }
 
@@ -146,17 +134,13 @@ export function useKeyboardShortcuts() {
       switch (key.toLowerCase()) {
         case 'f': {
           if (shift) {
-            // Shift+F → Fit to selected nodes
+            // Shift+F → Fit to selected nodes (same as fit-all in D3)
             e.preventDefault();
-            const selectedIds = useGraphStore.getState().selectedNodeIds;
-            if (selectedIds.size > 0) {
-              const selectedNodes = reactFlow.getNodes().filter((n) => selectedIds.has(n.id));
-              reactFlow.fitView({ nodes: selectedNodes, padding: 0.3, duration: 400 });
-            }
+            window.dispatchEvent(new CustomEvent('omnious:focus-fit'));
           } else {
             // F → Fit view
             e.preventDefault();
-            reactFlow.fitView({ padding: 0.15, duration: 400 });
+            window.dispatchEvent(new CustomEvent('omnious:focus-fit'));
           }
           return;
         }
@@ -192,15 +176,10 @@ export function useKeyboardShortcuts() {
           }
           const nextNode = visibleNodes[nextIdx];
           gs.selectNode(nextNode.id);
-          // Center on the node
-          const rfNode = reactFlow.getNodes().find((n) => n.id === nextNode.id);
-          if (rfNode) {
-            reactFlow.setCenter(
-              rfNode.position.x + (rfNode.measured?.width ?? 200) / 2,
-              rfNode.position.y + (rfNode.measured?.height ?? 60) / 2,
-              { duration: 300, zoom: reactFlow.getZoom() },
-            );
-          }
+          // Center on the node via D3 engine custom event
+          window.dispatchEvent(
+            new CustomEvent('omnious:focus-node', { detail: { nodeId: nextNode.id } }),
+          );
           return;
         }
 
@@ -217,13 +196,11 @@ export function useKeyboardShortcuts() {
 
         case '1': {
           useGraphStore.getState().setLayoutMode('layered-tb');
-          scheduleGraphLayout();
           return;
         }
 
         case '2': {
           useGraphStore.getState().setLayoutMode('layered-lr');
-          scheduleGraphLayout();
           return;
         }
 
@@ -250,7 +227,7 @@ export function useKeyboardShortcuts() {
             // Shift+H → Toggle error heatmap
             useGraphStore.getState().toggleHeatmap();
           }
-          // Plain H is handled by context menu (hide node type)
+          // Plain H → fit (handled by D3 engine directly)
           return;
         }
 
@@ -277,7 +254,6 @@ export function useKeyboardShortcuts() {
           if (gs.flowMode === 'replay') {
             gs.clearFlowReplay();
           }
-          // Trace replay play/pause would be implemented with the trace replay feature
           return;
         }
 
@@ -288,7 +264,7 @@ export function useKeyboardShortcuts() {
         }
       }
     },
-    [reactFlow],
+    [],
   );
 
   // Register global keydown listener
@@ -296,25 +272,5 @@ export function useKeyboardShortcuts() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
-
-  // Register Shift+Scroll → horizontal pan on the React Flow container
-  useEffect(() => {
-    const container = document.querySelector('.react-flow') as HTMLElement | null;
-    if (!container) return;
-
-    function handleWheel(e: WheelEvent) {
-      if (e.shiftKey) {
-        e.preventDefault();
-        const viewport = reactFlow.getViewport();
-        reactFlow.setViewport({
-          x: viewport.x - e.deltaY,
-          y: viewport.y,
-          zoom: viewport.zoom,
-        });
-      }
-    }
-
-    container.addEventListener('wheel', handleWheel, { passive: false });
-    return () => container.removeEventListener('wheel', handleWheel);
-  }, [reactFlow]);
 }
+

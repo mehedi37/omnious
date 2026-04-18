@@ -20,10 +20,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { scheduleGraphLayout } from '@/lib/layout/schedule-layout';
 import { buildFileTree, type FileTreeNode } from '@/lib/oir/build-file-tree';
 import { NODE_TYPE_COLORS, NODE_TYPE_ICONS } from '@/lib/oir/constants';
-import { toReactFlowEdges, toReactFlowNodes, useGraphStore } from '@/lib/stores/graph-store';
+import { toOmniousEdges, toOmniousNodes, useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { cn } from '@/lib/utils';
@@ -516,7 +515,7 @@ export function AstTreeSidebar() {
       const checked = (allNodes.nodes ?? []).filter((n) => checkedIds.includes(n.id));
 
       // Build subgraph-shaped nodes
-      const rfNodes = toReactFlowNodes(
+      const rfNodes = toOmniousNodes(
         checked.map((n) => ({
           id: n.id,
           oir_id: n.oir_id,
@@ -538,7 +537,7 @@ export function AstTreeSidebar() {
       const filteredEdges = (edgesResult.edges ?? []).filter(
         (e) => selectedSet.has(e.source_node_id) && selectedSet.has(e.target_node_id),
       );
-      const rfEdges = toReactFlowEdges(
+      const rfEdges = toOmniousEdges(
         filteredEdges.map((e) => ({
           id: e.id,
           source_node_id: e.source_node_id,
@@ -549,7 +548,6 @@ export function AstTreeSidebar() {
       );
 
       useGraphStore.getState().setGraph(rfNodes, rfEdges);
-      scheduleGraphLayout();
     } finally {
       setIsRendering(false);
     }

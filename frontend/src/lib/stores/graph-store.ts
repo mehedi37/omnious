@@ -1,4 +1,3 @@
-import type { Edge, Node } from '@xyflow/react';
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
@@ -44,8 +43,19 @@ export interface OmniousEdgeData {
   [key: string]: unknown;
 }
 
-export type OmniousNode = Node<OmniousNodeData, 'omnious'>;
-export type OmniousEdge = Edge<OmniousEdgeData>;
+export interface OmniousNode {
+  id: string;
+  data: OmniousNodeData;
+  /** Persisted world-space position (optional; D3 manages layout) */
+  position?: { x: number; y: number };
+}
+
+export interface OmniousEdge {
+  id: string;
+  source: string;
+  target: string;
+  data: OmniousEdgeData;
+}
 
 // ─── Node flow animation state ───────────────────────────────────────────────
 
@@ -124,7 +134,7 @@ interface GraphState {
   /** O(1) lookup index: node id → node data (always in sync with nodes[]) */
   nodeMap: Map<string, OmniousNodeData>;
 
-  // Layout state
+  // Layout mode (for D3 force layout biasing)
   layoutMode: 'layered-tb' | 'layered-lr' | 'force' | 'stress';
   isLayouting: boolean;
   layoutVersion: number;
@@ -525,7 +535,6 @@ export const useGraphStore = create<GraphState>()(
                 id: re.id,
                 source: re.sourceNodeId,
                 target: re.targetNodeId,
-                type: 'animated-flow',
                 data: { edgeType: 'runtime_call', isRuntime: true, flowReplay: true },
               });
             }
@@ -712,23 +721,8 @@ export const useGraphStore = create<GraphState>()(
       toggleGroupCollapse: (groupId) =>
         set((state) => {
           const next = new Set(state.collapsedGroups);
-          if (next.has(groupId)) {
-            next.delete(groupId);
-            // Show children again
-            for (const node of state.nodes) {
-              if ((node as any).parentId === groupId) {
-                (node as any).hidden = false;
-              }
-            }
-          } else {
-            next.add(groupId);
-            // Hide children
-            for (const node of state.nodes) {
-              if ((node as any).parentId === groupId) {
-                (node as any).hidden = true;
-              }
-            }
-          }
+          if (next.has(groupId)) next.delete(groupId);
+          else next.add(groupId);
           state.collapsedGroups = next;
         }),
 
@@ -787,8 +781,8 @@ export const useGraphStore = create<GraphState>()(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Convert backend subgraph nodes to React Flow nodes */
-export function toReactFlowNodes(
+/** Convert backend subgraph nodes to Omnious graph nodes */
+export function toOmniousNodes(
   subgraphNodes: Array<{
     id: string;
     oir_id: string;
@@ -805,11 +799,8 @@ export function toReactFlowNodes(
     code_body?: string | null;
   }>,
 ): OmniousNode[] {
-  return subgraphNodes.map((n, i) => ({
+  return subgraphNodes.map((n) => ({
     id: n.id,
-    type: 'omnious',
-    // Temporary position — will be overridden by ELK layout
-    position: { x: (i % 6) * 300, y: Math.floor(i / 6) * 120 },
     data: {
       label: n.name,
       oirType: n.type as OIRNodeType,
@@ -827,8 +818,8 @@ export function toReactFlowNodes(
   }));
 }
 
-/** Convert backend subgraph edges to React Flow edges */
-export function toReactFlowEdges(
+/** Convert backend subgraph edges to Omnious graph edges */
+export function toOmniousEdges(
   subgraphEdges: Array<{
     id: string;
     source_node_id: string;
@@ -841,7 +832,6 @@ export function toReactFlowEdges(
     id: e.id,
     source: e.source_node_id,
     target: e.target_node_id,
-    type: 'animated-flow',
     data: {
       edgeType: e.type as OIREdgeType,
     },

@@ -2,10 +2,9 @@
 
 import { useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useRef } from 'react';
-import { cancelScheduledGraphLayout, scheduleGraphLayout } from '@/lib/layout/schedule-layout';
 import type { AIMessageAttachment } from '@/lib/stores/ai-store';
 import { useAIStore, type StreamStage } from '@/lib/stores/ai-store';
-import { toReactFlowEdges, toReactFlowNodes, useGraphStore } from '@/lib/stores/graph-store';
+import { toOmniousEdges, toOmniousNodes, useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { createClient as createBrowserClient } from '@/lib/supabase/client';
@@ -44,7 +43,7 @@ export function useGraphQuery() {
   const activeDetailTab = useUIStore((s) => s.activeDetailTab);
   const aiGenId = searchParams.get('ai_gen');
 
-  useEffect(() => cancelScheduledGraphLayout, []);
+
 
   // ── Overview graph (landing page) ──────────────────────────────────────
 
@@ -70,8 +69,8 @@ export function useGraphQuery() {
   useEffect(() => {
     if (!savedSliceQuery.data) return;
 
-    const nodes = toReactFlowNodes(savedSliceQuery.data.nodes);
-    const edges = toReactFlowEdges(savedSliceQuery.data.edges);
+    const nodes = toOmniousNodes(savedSliceQuery.data.nodes);
+    const edges = toOmniousEdges(savedSliceQuery.data.edges);
 
     useGraphStore.getState().setGraph(nodes, edges);
     useGraphStore.getState().setLatestSliceId(savedSliceQuery.data.viewId);
@@ -96,7 +95,6 @@ export function useGraphQuery() {
       });
     }
 
-    scheduleGraphLayout();
   }, [savedSliceQuery.data]);
 
   // Clear graph store when project changes (skip on initial mount)
@@ -112,11 +110,10 @@ export function useGraphQuery() {
   useEffect(() => {
     if (!overviewQuery.data) return;
 
-    const nodes = toReactFlowNodes(overviewQuery.data.nodes);
-    const edges = toReactFlowEdges(overviewQuery.data.edges);
+    const nodes = toOmniousNodes(overviewQuery.data.nodes);
+    const edges = toOmniousEdges(overviewQuery.data.edges);
 
     useGraphStore.getState().setGraph(nodes, edges);
-    scheduleGraphLayout();
   }, [overviewQuery.data]);
 
   // ── Auto-enable heatmap when unresolved errors exist ───────────────────
@@ -234,8 +231,8 @@ export function useGraphQuery() {
     },
     onSuccess: async (result) => {
       // Update graph with the focused subgraph
-      const nodes = toReactFlowNodes(result.nodes);
-      const edges = toReactFlowEdges(result.edges);
+      const nodes = toOmniousNodes(result.nodes);
+      const edges = toOmniousEdges(result.edges);
 
       useGraphStore.getState().setGraph(nodes, edges);
       useGraphStore.getState().setQueryResult(result.explanation, result.steps);
@@ -307,8 +304,7 @@ export function useGraphQuery() {
         model: result.usage.model ?? 'unknown',
       });
 
-      // Trigger layout
-      scheduleGraphLayout();
+
     },
     onError: (error) => {
       useGraphStore.getState().setQueryActive(false);
@@ -380,10 +376,9 @@ export function useGraphQuery() {
     if (!projectId) return;
     queryErrorsMutation.refetch().then(({ data }) => {
       if (!data) return;
-      const nodes = toReactFlowNodes(data.nodes);
-      const edges = toReactFlowEdges(data.edges);
+      const nodes = toOmniousNodes(data.nodes);
+      const edges = toOmniousEdges(data.edges);
       useGraphStore.getState().setGraph(nodes, edges);
-      scheduleGraphLayout();
     });
   }, [projectId, queryErrorsMutation]);
 
@@ -391,12 +386,11 @@ export function useGraphQuery() {
 
   const loadOverview = useCallback(() => {
     if (!overviewQuery.data) return;
-    const nodes = toReactFlowNodes(overviewQuery.data.nodes);
-    const edges = toReactFlowEdges(overviewQuery.data.edges);
+    const nodes = toOmniousNodes(overviewQuery.data.nodes);
+    const edges = toOmniousEdges(overviewQuery.data.edges);
     useGraphStore.getState().setGraph(nodes, edges);
     useGraphStore.getState().clearQueryResult();
     useAIStore.getState().clearSession();
-    scheduleGraphLayout();
   }, [overviewQuery.data]);
 
   // ── Streaming AI graph query (primary path) ────────────────────────────
@@ -515,8 +509,8 @@ export function useGraphQuery() {
         }
 
         // After stream ends — update graph
-        const rfNodes = toReactFlowNodes(doneNodes);
-        const rfEdges = toReactFlowEdges(doneEdges);
+        const rfNodes = toOmniousNodes(doneNodes);
+        const rfEdges = toOmniousEdges(doneEdges);
         useGraphStore.getState().setGraph(rfNodes, rfEdges);
 
         const explanation = useAIStore.getState().messages.at(-1)?.content ?? '';
@@ -564,8 +558,6 @@ export function useGraphQuery() {
               /* best-effort */
             });
         }
-
-        scheduleGraphLayout();
 
         // Persist graph session best-effort
         persistGraphSession(lastQueryRef.current, explanation);

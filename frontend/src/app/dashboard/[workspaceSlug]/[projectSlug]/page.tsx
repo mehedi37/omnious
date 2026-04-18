@@ -4,7 +4,10 @@ import {
   Activity,
   AlertTriangle,
   Brain,
+  Copy,
+  Check as CheckIcon,
   GitGraph,
+  Key,
   Layers,
   Network,
   FileText,
@@ -18,7 +21,10 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import { useState } from 'react';
 import { deriveSyncState, SyncStatusBadge } from '@/components/project/sync-status-badge';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
 import { trpc } from '@/trpc/client';
@@ -64,11 +70,26 @@ function StatCard({
 export default function ProjectPage() {
   const params = useParams<{ workspaceSlug: string; projectSlug: string }>();
   const projectId = useWorkspaceStore((s) => s.currentProjectId);
+  const [keyCopied, setKeyCopied] = useState(false);
 
   const { data: overview, isLoading } = trpc.project.getProjectOverview.useQuery(
     { projectId: projectId! },
     { enabled: !!projectId, refetchInterval: 30_000 },
   );
+
+  const { data: projectData } = trpc.project.getById.useQuery(
+    { projectId: projectId! },
+    { enabled: !!projectId, staleTime: 60_000 },
+  );
+
+  const apiKey = projectData?.api_key ?? null;
+
+  function handleCopyKey() {
+    if (!apiKey) return;
+    navigator.clipboard.writeText(apiKey);
+    setKeyCopied(true);
+    setTimeout(() => setKeyCopied(false), 2000);
+  }
 
   const basePath = `/dashboard/${params.workspaceSlug}/${params.projectSlug}`;
 
@@ -251,6 +272,42 @@ export default function ProjectPage() {
           </Link>
         </div>
       )}
+
+      {/* API Key + CLI Quick Start */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Key className="h-4 w-4" /> API Key &amp; CLI Quick Start
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-2">
+            <code className="flex-1 rounded bg-muted px-3 py-2 font-mono text-xs truncate">
+              {apiKey ? `${apiKey.slice(0, 8)}${'•'.repeat(32)}` : 'Loading…'}
+            </code>
+            <Button variant="outline" size="sm" onClick={handleCopyKey} disabled={!apiKey}>
+              {keyCopied ? (
+                <CheckIcon className="h-3.5 w-3.5 text-green-500" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </Button>
+          </div>
+          <pre className="rounded-lg bg-muted px-4 py-3 text-xs font-mono whitespace-pre-wrap break-all">
+{`# Set your key
+export OMNIOUS_API_KEY="${apiKey ? `${apiKey.slice(0, 8)}…` : '<your-api-key>'}"
+
+# Index and push your codebase
+npx @omnious/cli index && npx @omnious/cli push`}
+          </pre>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="text-[10px]">MCP</Badge>
+            <span className="text-xs text-muted-foreground">
+              Use this key with the Omnious MCP server to give AI coding assistants full context.
+            </span>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

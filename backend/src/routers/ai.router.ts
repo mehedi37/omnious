@@ -359,13 +359,13 @@ export const aiRouter = router({
 
       // 5. Call the LLM via service
       let summary = '';
+      const selectedModel = selectModel(
+        'errorExplain',
+        errorSnap.error_message ?? '',
+        resolvedKey.provider,
+        input.modelPreference,
+      );
       try {
-        const selectedModel = selectModel(
-          'errorExplain',
-          errorSnap.error_message ?? '',
-          resolvedKey.provider,
-          input.modelPreference,
-        );
         const llmResult = await callLLM(
           [
             { role: 'system', content: SYSTEM_PROMPTS.errorExplain },
@@ -424,6 +424,26 @@ export const aiRouter = router({
 
       if (!sessionId) {
         const nodeName = node ? String((node as { name?: unknown }).name ?? 'Unknown') : 'Error';
+
+        // Generate a punchy session title from the error context
+        let sessionTitle = `${nodeName} crashed`;
+        try {
+          const titleResult = await callLLM(
+            [
+              {
+                role: 'user',
+                content: `In 4-6 words, write a punchy debug session title for this bug:\nError: ${errorSnap.error_type ?? 'Error'} – ${(errorSnap.error_message ?? '').slice(0, 120)}\nNode: ${nodeName}\nReply with ONLY the title, no quotes, no punctuation at the end.`,
+              },
+            ],
+            resolvedKey,
+            { maxTokens: 20, model: selectedModel },
+          );
+          const candidate = titleResult.content.trim().replace(/^["']|["']$/g, '');
+          if (candidate) sessionTitle = candidate;
+        } catch {
+          // fallback already set
+        }
+
         const { data: session, error: sessionError } = await ctx.db
           .from('ai_sessions')
           .insert({
@@ -436,7 +456,7 @@ export const aiRouter = router({
               { role: 'assistant', content: summary },
             ],
             status: 'active',
-            metadata: { name: `${nodeName} debug` },
+            metadata: { name: sessionTitle },
           })
           .select('id')
           .single();

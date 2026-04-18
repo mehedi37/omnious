@@ -1,25 +1,25 @@
 'use client';
 
-import { ReactFlowProvider } from '@xyflow/react';
-import { FolderTree, PanelRight } from 'lucide-react';
+import { FolderTree, PanelRight, Pause, Play, X } from 'lucide-react';
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import { AstTreeSidebar } from '@/components/graph/ast-tree-sidebar';
+import { D3GraphCanvas } from '@/components/graph/d3/d3-graph-canvas';
 import { GraphFilterToolbar } from '@/components/graph/graph-filter-toolbar';
 import { InspectorPanel } from '@/components/graph/panels/inspector-panel';
-import { ReactFlowCanvas } from '@/components/graph/react-flow-canvas';
 import { EmptyProjectState } from '@/components/project/empty-project-state';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useElkLayout } from '@/hooks/use-elk-layout';
 import { useErrorHeatmap } from '@/hooks/use-error-heatmap';
 import { useGraphQuery } from '@/hooks/use-graph-query';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import { usePushNotifications } from '@/hooks/use-push-notifications';
+import { useTracePlayback } from '@/hooks/use-trace-playback';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useGraphStore } from '@/lib/stores/graph-store';
 import { useUIStore } from '@/lib/stores/ui-store';
 import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import type { Span } from '@/lib/oir/types';
 import { trpc } from '@/trpc/client';
 
 function GraphPageContent() {
@@ -79,6 +79,9 @@ function GraphPageInner() {
   const [mobileTreeOpen, setMobileTreeOpen] = useState(false);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
+  const currentProjectId = useWorkspaceStore((s) => s.currentProjectId);
+  const pendingReplayTraceId = useUIStore((s) => s.pendingReplayTraceId);
+  const trpcUtils = trpc.useUtils();
 
   // Wire up all keyboard shortcuts
   useKeyboardShortcuts();
@@ -89,8 +92,9 @@ function GraphPageInner() {
   // Subscribe to Realtime push events — auto-refresh graph when CLI pushes
   usePushNotifications();
 
-  // Connect ELK layout worker to graph store
-  useElkLayout();
+  // Trace replay controls
+  const { startReplay, exitReplay, isPlaying, togglePlay, currentStep, totalSteps } =
+    useTracePlayback();
 
   // AI-driven data hook — loads overview on mount, supports AI queries
   const {
@@ -116,24 +120,67 @@ function GraphPageInner() {
     return () => window.removeEventListener('omnious:expand-deps', handleExpandDeps);
   }, [streamQuery]);
 
-  // Pick up focus-node from sessionStorage (coming from error list "Focus on Graph")
+  // Pick up focus-node from sessionStorage (coming from error list "Focus on Graph").
+  // Poll until the node exists in the store — avoids race with simulation settling.
   useEffect(() => {
     const focusNodeId = sessionStorage.getItem('omnious:focus-node');
-    if (focusNodeId) {
-      sessionStorage.removeItem('omnious:focus-node');
-      const timer = setTimeout(() => {
-        useGraphStore.getState().selectNode(focusNodeId);
-        useGraphStore.getState().setFocusMode(focusNodeId);
-        useGraphStore.getState().highlightConnectedEdges(focusNodeId);
+    if (!focusNodeId) return;
+    sessionStorage.removeItem('omnious:focus-node');
+
+    let timer: ReturnType<typeof setTimeout>;
+
+    function tryFocus() {
+      const nodes = useGraphStore.getState().nodes;
+      if (nodes.length > 0 && nodes.some((n) => n.id === focusNodeId)) {
+        useGraphStore.getState().selectNode(focusNodeId!);
+        useGraphStore.getState().setFocusMode(focusNodeId!);
+        useGraphStore.getState().highlightConnectedEdges(focusNodeId!);
         useUIStore.getState().setActiveDetailTab('details');
-        // Zoom to the focused node after layout settles
         window.dispatchEvent(
           new CustomEvent('omnious:focus-node', { detail: { nodeId: focusNodeId } }),
         );
-      }, 500);
-      return () => clearTimeout(timer);
+      } else {
+        // Graph not ready yet — retry
+        timer = setTimeout(tryFocus, 200);
+      }
     }
+
+    // Give the engine an initial moment to mount before polling
+    timer = setTimeout(tryFocus, 300);
+    return () => clearTimeout(timer);
   }, []);
+
+  // Consume pendingReplayTraceId — fetch spans and start the flow animation
+  useEffect(() => {
+    if (!pendingReplayTraceId || !currentProjectId) return;
+
+    // Clear immediately so a re-render doesn't re-trigger
+    useUIStore.getState().setPendingReplayTraceId(null);
+
+    async function doReplay(traceId: string) {
+      const result = await trpcUtils.trace.getById.fetch({
+        projectId: currentProjectId!,
+        traceId,
+      });
+
+      if (!result?.spans || result.spans.length === 0) return;
+
+      // Convert OmniousEdge[] → CodeEdge-compatible for buildFlowSteps
+      const staticEdges = useGraphStore.getState().edges.map((e) => ({
+        id: e.id,
+        project_id: currentProjectId!,
+        source_node_id: e.source,
+        target_node_id: e.target,
+        type: (e.data?.edgeType ?? 'calls') as import('@/lib/oir/types').OIREdgeType,
+        metadata: null,
+        created_at: new Date().toISOString(),
+      }));
+
+      startReplay(traceId, result.spans as Span[], staticEdges);
+    }
+
+    doReplay(pendingReplayTraceId).catch(console.error);
+  }, [pendingReplayTraceId, currentProjectId, trpcUtils, startReplay]);
 
   const inspectorProps = {
     onQuery: streamQuery,
@@ -179,7 +226,7 @@ function GraphPageInner() {
       <div className="relative h-full flex flex-col">
         <GraphFilterToolbar />
         <div className="relative flex-1 min-h-0">
-          <ReactFlowCanvas />
+          <D3GraphCanvas className="absolute inset-0" />
           {loadingOverlay}
 
           {/* FAB: open file tree */}
@@ -256,7 +303,21 @@ function GraphPageInner() {
           onToggleRight={handleRightToggle}
         />
         <div className="relative flex-1 min-h-0 min-w-0">
-          <ReactFlowCanvas />
+          <D3GraphCanvas className="absolute inset-0" />
+          {/* Trace replay controls bar */}
+          {totalSteps > 0 && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full border bg-background/90 backdrop-blur-sm px-4 py-2 shadow-lg text-sm">
+              <span className="text-muted-foreground">
+                Step {currentStep + 1} / {totalSteps}
+              </span>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={togglePlay}>
+                {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+              </Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={exitReplay}>
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )}
         </div>
         {loadingOverlay}
       </div>
@@ -282,9 +343,7 @@ export default function GraphPage() {
         </div>
       }
     >
-      <ReactFlowProvider>
-        <GraphPageContent />
-      </ReactFlowProvider>
+      <GraphPageContent />
     </Suspense>
   );
 }
