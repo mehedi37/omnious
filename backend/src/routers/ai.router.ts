@@ -1386,4 +1386,182 @@ export const aiRouter = router({
       );
       return { status };
     }),
+
+  /** List AI session insights for this project (Knowledge Timeline). */
+  listInsights: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        limit: z.number().int().min(1).max(100).default(50),
+        offset: z.number().int().min(0).default(0),
+        insightType: z.string().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      let query = ctx.db
+        .from('ai_session_insights')
+        .select(
+          `id, insight_type, payload, created_at,
+           ai_session:ai_sessions (id, type, title, created_at)`,
+          { count: 'exact' },
+        )
+        .eq('project_id', input.projectId)
+        .order('created_at', { ascending: false })
+        .range(input.offset, input.offset + input.limit - 1);
+
+      if (input.insightType) {
+        query = query.eq('insight_type', input.insightType);
+      }
+
+      const { data, count } = await query;
+      return { insights: data ?? [], total: count ?? 0 };
+    }),
+
+  /**
+   * Generate (or return cached) an AI incident narrative for an error snapshot.
+   * Stores the result in error_snapshots.metadata.narrative so subsequent calls return instantly.
+   */
+  generateIncidentNarrative: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        errorId: z.string().uuid(),
+        apiKeyId: z.string().uuid().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      // 1. Fetch error snapshot + linked code node
+      const { data: errorSnap, error: snapError } = await ctx.db
+        .from('error_snapshots')
+        .select(`*, code_node:code_nodes (id, name, type, file_path, line_start, signature)`)
+        .eq('id', input.errorId)
+        .eq('project_id', input.projectId)
+        .single();
+
+      if (snapError || !errorSnap) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Error snapshot not found' });
+      }
+
+      // 2. Return cached narrative if it already exists
+      const existingMeta = (errorSnap.metadata ?? {}) as Record<string, unknown>;
+      if (existingMeta.narrative) {
+        return existingMeta.narrative as {
+          title: string;
+          story: string;
+          blastRadius: string[];
+          likelyFix: string;
+          confidence: 'high' | 'medium' | 'low';
+        };
+      }
+
+      // 3. Resolve API key
+      let resolvedKey;
+      try {
+        resolvedKey = await resolveApiKey(ctx.user.id, ctx.db, {
+          apiKeyId: input.apiKeyId,
+          projectId: input.projectId,
+        });
+      } catch {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'AI is not configured. Ensure Ollama is running.',
+        });
+      }
+
+      // 4. Build context string
+      const node = errorSnap.code_node as Record<string, unknown> | null;
+      const contextParts: string[] = [
+        `Error type: ${errorSnap.error_type ?? 'Unknown'}`,
+        `Message: ${errorSnap.error_message}`,
+        `Occurrences: ${errorSnap.occurrence_count} (first seen ${errorSnap.first_seen_at?.slice(0, 10) ?? 'unknown'})`,
+      ];
+      if (errorSnap.error_stack) {
+        contextParts.push(`Stack trace (first 600 chars):\n${errorSnap.error_stack.slice(0, 600)}`);
+      }
+      if (node) {
+        contextParts.push(
+          `Affected function: ${String(node.name ?? '?')} (${String(node.type ?? '?')}) in ${String(node.file_path ?? '?')}`,
+        );
+        if (node.signature) contextParts.push(`Signature: ${String(node.signature)}`);
+      }
+
+      // 2-hop neighbors for blast radius context
+      if (node?.id) {
+        const { data: neighbors } = await (ctx.db.rpc as (...args: unknown[]) => unknown)('traverse_graph', {
+          p_node_id: String(node.id),
+          p_direction: 'both',
+          p_max_depth: 2,
+        }) as { data: Array<Record<string, unknown>> | null };
+        if (neighbors && neighbors.length > 0) {
+          const neighborNames = neighbors
+            .slice(0, 12)
+            .map((n) => `${String(n.name ?? '?')} (${String(n.type ?? '?')})`);
+          contextParts.push(`Connected nodes (2-hop): ${neighborNames.join(', ')}`);
+        }
+      }
+
+      // 5. Call the LLM
+      const selectedModel = selectModel(
+        'errorExplain',
+        errorSnap.error_message ?? '',
+        resolvedKey.provider,
+      );
+      let raw = '';
+      try {
+        const result = await callLLM(
+          [
+            { role: 'system', content: SYSTEM_PROMPTS.incidentNarrative },
+            { role: 'user', content: contextParts.join('\n') },
+          ],
+          resolvedKey,
+          { maxTokens: 512, model: selectedModel },
+        );
+        raw = result.content;
+      } catch (err) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `AI call failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+
+      // 6. Parse JSON response
+      type Narrative = { title: string; story: string; blastRadius: string[]; likelyFix: string; confidence: 'high' | 'medium' | 'low' };
+      let narrative: Narrative;
+      try {
+        const fenceStripped = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+        const objStart = fenceStripped.indexOf('{');
+        const objEnd = fenceStripped.lastIndexOf('}');
+        const jsonStr = objStart !== -1 ? fenceStripped.slice(objStart, objEnd + 1) : fenceStripped;
+        const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+        narrative = {
+          title: String(parsed.title ?? `${errorSnap.error_type} on ${node?.name ?? 'unknown'}`),
+          story: String(parsed.story ?? errorSnap.error_message ?? ''),
+          blastRadius: Array.isArray(parsed.blastRadius) ? parsed.blastRadius.map(String) : [],
+          likelyFix: String(parsed.likelyFix ?? ''),
+          confidence: (['high', 'medium', 'low'] as const).includes(
+            parsed.confidence as 'high' | 'medium' | 'low',
+          )
+            ? (parsed.confidence as 'high' | 'medium' | 'low')
+            : 'medium',
+        };
+      } catch {
+        narrative = {
+          title: `${errorSnap.error_type ?? 'Error'} on ${String(node?.name ?? 'unknown')}`,
+          story: errorSnap.error_message ?? '',
+          blastRadius: node?.name ? [String(node.name)] : [],
+          likelyFix: '',
+          confidence: 'low',
+        };
+      }
+
+      // 7. Store narrative in error_snapshots.metadata (merge with existing)
+      const newMeta = { ...existingMeta, narrative };
+      await ctx.db
+        .from('error_snapshots')
+        .update({ metadata: newMeta as import('../lib/supabase/database.types.js').Json })
+        .eq('id', input.errorId)
+        .eq('project_id', input.projectId);
+
+      return narrative;
+    }),
 });

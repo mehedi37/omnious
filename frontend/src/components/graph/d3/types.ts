@@ -53,7 +53,8 @@ export interface GraphVisualState {
   severityFilters: Set<string>;
   hoveredEdgeId: string | null;
   clusterMap: Map<string, { label: string; color: string; layer: string | null }>;
-  layoutMode: 'layered-tb' | 'layered-lr' | 'force' | 'stress';
+  layoutMode: 'layered-tb' | 'layered-lr' | 'force' | 'stress' | 'structure' | 'dagre';
+  searchResultIds: Set<string>;
 }
 
 // ─── Level of detail ──────────────────────────────────────────────────────
@@ -96,4 +97,5 @@ export interface EngineCallbacks {
   onNodeContextMenu: (nodeId: string, nodeName: string, x: number, y: number) => void;
   onPaneContextMenu: (x: number, y: number) => void;
   onEdgeHover: (edgeId: string | null) => void;
+  onTransformChange?: (tx: number, ty: number, k: number) => void;
 }

@@ -2,7 +2,6 @@
 
 import {
   AlertCircle,
-  BrainCircuit,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -11,15 +10,13 @@ import {
   ExternalLink,
   FileCode,
   Loader2,
-  RefreshCw,
   RotateCcw,
-  Zap,
+  Sparkles,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { MarkdownRenderer } from '@/components/shared/markdown-renderer';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -42,10 +39,6 @@ export function ErrorDetail({ errorId }: Props) {
   const router = useRouter();
   const pathname = usePathname();
 
-  const [aiAction, setAiAction] = useState<'why_broke' | 'fix_it' | null>(null);
-  const [aiResult, setAiResult] = useState<{ summary: string; sessionId: string | null } | null>(
-    null,
-  );
 
   const errorQuery = trpc.error.getById.useQuery(
     { projectId: currentProjectId ?? '', errorId },
@@ -78,24 +71,19 @@ export function ErrorDetail({ errorId }: Props) {
     onError: (err) => toast.error(err.message),
   });
 
-  const explainMutation = trpc.ai.explainError.useMutation({
-    onError: (err) => toast.error(err.message),
+  const narrativeMutation = trpc.ai.generateIncidentNarrative.useMutation({
+    onError: () => { /* silently skip if AI not configured */ },
   });
 
-  async function handleAiAction(action: 'why_broke' | 'fix_it') {
-    if (!currentProjectId) return;
-    setAiAction(action);
-    setAiResult(null);
-    try {
-      const result = await explainMutation.mutateAsync({
-        projectId: currentProjectId,
-        errorId,
-      });
-      setAiResult(result);
-    } finally {
-      setAiAction(null);
-    }
-  }
+  // Auto-generate narrative on first view if not yet cached
+  useEffect(() => {
+    if (!currentProjectId || !errorQuery.data) return;
+    const meta = errorQuery.data.metadata as Record<string, unknown> | null;
+    if (meta?.narrative) return;
+    if (narrativeMutation.isPending || narrativeMutation.isSuccess) return;
+    narrativeMutation.mutate({ projectId: currentProjectId, errorId });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProjectId, errorQuery.data?.id]);
 
   function handleFocusOnGraph(nodeId: string) {
     const graphPath = `/dashboard/${workspaceSlug}/${projectSlug}/graph`;
@@ -221,6 +209,82 @@ export function ErrorDetail({ errorId }: Props) {
         </div>
       </div>
 
+      {/* Incident Narrative Card */}
+      {(() => {
+        const cachedNarrative = (err.metadata as Record<string, unknown> | null)?.narrative as
+          | { title: string; story: string; blastRadius: string[]; likelyFix: string; confidence: 'high' | 'medium' | 'low' }
+          | undefined;
+        const narrative = narrativeMutation.data ?? cachedNarrative;
+        const isLoading = narrativeMutation.isPending && !narrative;
+
+        if (!isLoading && !narrative) return null;
+
+        const CONFIDENCE_STYLES = {
+          high: 'bg-green-500/15 text-green-700 dark:text-green-400 border-green-500/30',
+          medium: 'bg-yellow-500/15 text-yellow-700 dark:text-yellow-400 border-yellow-500/30',
+          low: 'bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/30',
+        };
+
+        return (
+          <Card className="border-primary/20 bg-primary/5">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm flex items-center gap-2 text-primary">
+                <Sparkles className="h-4 w-4" />
+                Incident Analysis
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {isLoading ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-6 w-3/4" />
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-5/6" />
+                </div>
+              ) : narrative ? (
+                <>
+                  <div className="flex items-start justify-between gap-3">
+                    <h3 className="text-base font-semibold leading-snug">{narrative.title}</h3>
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded-full border font-medium shrink-0 capitalize ${CONFIDENCE_STYLES[narrative.confidence]}`}
+                    >
+                      {narrative.confidence} confidence
+                    </span>
+                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{narrative.story}</p>
+                  {narrative.blastRadius.length > 0 && (
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                        Blast Radius
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {narrative.blastRadius.map((name) => (
+                          <span
+                            key={name}
+                            className="text-xs font-mono px-2 py-0.5 bg-muted rounded-md border"
+                          >
+                            {name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {narrative.likelyFix && (
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                        Likely Fix
+                      </p>
+                      <p className="text-sm text-muted-foreground leading-relaxed bg-muted/50 rounded-md p-2 border">
+                        {narrative.likelyFix}
+                      </p>
+                    </div>
+                  )}
+                </>
+              ) : null}
+            </CardContent>
+          </Card>
+        );
+      })()}
+
       {/* Stats row */}
       <div className="grid grid-cols-3 gap-4">
         <Card>
@@ -242,93 +306,6 @@ export function ErrorDetail({ errorId }: Props) {
           </CardContent>
         </Card>
       </div>
-
-      {/* AI Quick Actions */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <BrainCircuit className="h-4 w-4" />
-            AI Analysis
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex gap-2 flex-wrap">
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={explainMutation.isPending}
-              onClick={() => handleAiAction('why_broke')}
-            >
-              {aiAction === 'why_broke' ? (
-                <Loader2 className="h-3 w-3 mr-2 animate-spin" />
-              ) : (
-                <BrainCircuit className="h-3 w-3 mr-2" />
-              )}
-              Why did this break?
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={explainMutation.isPending}
-              onClick={() => handleAiAction('fix_it')}
-            >
-              {aiAction === 'fix_it' ? (
-                <Loader2 className="h-3 w-3 mr-2 animate-spin" />
-              ) : (
-                <Zap className="h-3 w-3 mr-2" />
-              )}
-              Suggest a fix
-            </Button>
-            {aiResult && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setAiResult(null);
-                  setAiAction(null);
-                }}
-              >
-                <RefreshCw className="h-3 w-3 mr-1" />
-                Clear
-              </Button>
-            )}
-          </div>
-
-          {explainMutation.isPending && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Analyzing with AI…
-            </div>
-          )}
-
-          {aiResult && (
-            <div className="rounded-md bg-muted/50 p-4 space-y-2">
-              <MarkdownRenderer content={aiResult.summary} />
-              {aiResult.sessionId && (
-                <Link
-                  href={`/dashboard/${workspaceSlug}/${projectSlug}/ai?session=${aiResult.sessionId}`}
-                  className="text-xs text-primary hover:underline inline-flex items-center gap-1"
-                >
-                  Open full AI session <ExternalLink className="h-3 w-3" />
-                </Link>
-              )}
-            </div>
-          )}
-
-          {!aiResult && !explainMutation.isPending && (
-            <p className="text-xs text-muted-foreground">
-              Requires local Ollama runtime configuration. Check{' '}
-              <Link
-                href={`/dashboard/${workspaceSlug}/${projectSlug}/settings?tab=ai-keys`}
-                className="underline"
-              >
-                Settings → AI Runtime
-              </Link>
-              .
-            </p>
-          )}
-        </CardContent>
-      </Card>
 
       {/* Stack trace */}
       {err.error_stack && (

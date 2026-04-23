@@ -287,7 +287,10 @@ export function ErrorList() {
                           href={`${detailBase}/${error.id}`}
                           className="text-sm truncate block hover:underline hover:text-foreground text-muted-foreground"
                         >
-                          {error.error_message}
+                          {(() => {
+                            const narrative = (error.metadata as Record<string, unknown> | null)?.narrative as { title?: string; confidence?: string } | undefined;
+                            return narrative?.title ?? error.error_message;
+                          })()}
                         </Link>
                       </TableCell>
                       <TableCell className="text-right font-mono text-sm font-medium">

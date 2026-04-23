@@ -482,6 +482,36 @@ export function drawNode(
       isSelected, isDimmed, isHeatmap, heatLevel, isEntryPoint, clusterColor, now,
     );
   }
+
+  // Search match ring — drawn after main node render
+  if (visualState.searchResultIds.size > 0 && visualState.searchResultIds.has(node.id)) {
+    const pad = lod === 'dot' ? 4 : 6;
+    const rx = lod === 'dot' ? 8 + pad : node.width / 2 + pad;
+    const ry = lod === 'dot' ? 8 + pad : node.height / 2 + pad;
+    ctx.save();
+    ctx.strokeStyle = '#f59e0b'; // amber-400
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    if (lod === 'dot') {
+      ctx.arc(x, y, rx, 0, Math.PI * 2);
+    } else {
+      const rr = 10;
+      ctx.moveTo(x - rx + rr, y - ry);
+      ctx.lineTo(x + rx - rr, y - ry);
+      ctx.arcTo(x + rx, y - ry, x + rx, y - ry + rr, rr);
+      ctx.lineTo(x + rx, y + ry - rr);
+      ctx.arcTo(x + rx, y + ry, x + rx - rr, y + ry, rr);
+      ctx.lineTo(x - rx + rr, y + ry);
+      ctx.arcTo(x - rx, y + ry, x - rx, y + ry - rr, rr);
+      ctx.lineTo(x - rx, y - ry + rr);
+      ctx.arcTo(x - rx, y - ry, x - rx + rr, y - ry, rr);
+      ctx.closePath();
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
 }
 
 // ─── Flow animation node highlight ────────────────────────────────────────

@@ -80,6 +80,14 @@ export function D3GraphCanvas({ className, onNodeClick }: D3GraphCanvasProps) {
       onEdgeHover: (edgeId) => {
         useGraphStore.getState().setHoveredEdgeId(edgeId);
       },
+      onTransformChange: (tx, ty, k) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.dispatchEvent(new CustomEvent('omnious:transform', {
+          detail: { tx, ty, k, w: canvas.clientWidth, h: canvas.clientHeight },
+          bubbles: true,
+        }));
+      },
     });
 
     engineRef.current = engine;
@@ -141,6 +149,7 @@ export function D3GraphCanvas({ className, onNodeClick }: D3GraphCanvasProps) {
     hoveredEdgeId: s.hoveredEdgeId,
     clusterMap: s.clusterMap,
     layoutMode: s.layoutMode,
+    searchResultIds: s.searchResultIds,
   }), []);
 
   useEffect(() => {
@@ -166,7 +175,8 @@ export function D3GraphCanvas({ className, onNodeClick }: D3GraphCanvasProps) {
           a.nodeTypeFilters === b.nodeTypeFilters &&
           a.hoveredEdgeId === b.hoveredEdgeId &&
           a.clusterMap === b.clusterMap &&
-          a.layoutMode === b.layoutMode,
+          a.layoutMode === b.layoutMode &&
+          a.searchResultIds === b.searchResultIds,
         fireImmediately: true,
       },
     );
@@ -178,6 +188,17 @@ export function D3GraphCanvas({ className, onNodeClick }: D3GraphCanvasProps) {
     return useGraphStore.subscribe(
       (s) => s.layoutMode,
       (mode) => engineRef.current?.setLayoutMode(mode),
+    );
+  }, []);
+
+  // ── Focus node subscription — pan + zoom to node when focusedNodeId changes ─
+
+  useEffect(() => {
+    return useGraphStore.subscribe(
+      (s) => s.focusedNodeId,
+      (nodeId) => {
+        if (nodeId) engineRef.current?.focusNode(nodeId);
+      },
     );
   }, []);
 

@@ -1321,6 +1321,18 @@ ${ANTI_HALLUCINATION}
 Answer questions about code, architecture, debugging, and best practices.
 Use markdown for code examples, lists, and structure. Be concise and precise.
 When referencing code, use file paths and function names — never internal IDs.`,
+
+  /** For incident narrative generation — returns structured JSON */
+  incidentNarrative: `OUTPUT ONLY VALID JSON. NO MARKDOWN CODE FENCES. NO PROSE BEFORE OR AFTER THE JSON OBJECT.
+
+You are a senior incident analyst. Given an error snapshot and its code context, produce a concise, actionable incident narrative.
+
+${ANTI_HALLUCINATION}
+
+Respond with ONLY this JSON object (keys and structure must match exactly):
+{"title":"<5-8 word incident title, present tense>","story":"<2-3 sentences: what is happening, how long, user impact>","blastRadius":["<function or module name>"],"likelyFix":"<1-2 sentence code-level fix suggestion>","confidence":"high"}
+
+Replace "high" with "medium" or "low" based on how confident you are in the root cause.`,
 } as const;
 
 // ─── JSON Extraction ─────────────────────────────────────────
@@ -1842,4 +1854,96 @@ function _compressAssistantMessage(content: string): string {
   const refs = [...new Set(content.match(/`([^`]{2,60})`/g) ?? [])].slice(0, 10);
   const refStr = refs.length > 0 ? ` Mentions: ${refs.join(', ')}` : '';
   return firstSentence.trim() + refStr;
+}
+
+// ─── Insight Feed ────────────────────────────────────────────
+
+export interface InsightFeedEntry {
+  level: 'error' | 'warning' | 'info';
+  title: string;
+  detail: string;
+  timestamp: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyDbClient = { from: (...args: any[]) => any };
+
+/**
+ * Generate 3-5 proactive insights about a project's current health.
+ * Called after each push (fire-and-forget). Stores results in projects.settings.insights_feed.
+ */
+export async function generateInsightFeed(
+  projectId: string,
+  resolvedKey: ResolvedKey,
+  db: AnyDbClient,
+  model: string,
+): Promise<InsightFeedEntry[]> {
+  const [nodeCountResult, recentErrorsResult] = await Promise.all([
+    db.from('code_nodes').select('*', { count: 'exact', head: true }).eq('project_id', projectId),
+    db
+      .from('error_snapshots')
+      .select('error_type, error_message, occurrence_count, severity')
+      .eq('project_id', projectId)
+      .eq('resolved', false)
+      .order('occurrence_count', { ascending: false })
+      .limit(8),
+  ]);
+
+  const nodeCount = (nodeCountResult.count ?? 0) as number;
+  const recentErrors = (recentErrorsResult.data ?? []) as Array<Record<string, unknown>>;
+
+  if (nodeCount === 0 && recentErrors.length === 0) return [];
+
+  const contextLines: string[] = [
+    `Codebase: ${nodeCount} indexed functions/modules`,
+    `Unresolved errors: ${recentErrors.length}`,
+  ];
+
+  if (recentErrors.length > 0) {
+    const errorLines = recentErrors
+      .slice(0, 5)
+      .map(
+        (e) =>
+          `- ${String(e.error_type ?? 'Error')}: ${String(e.error_message ?? '').slice(0, 100)} (×${String(e.occurrence_count ?? 1)}, ${String(e.severity ?? 'error')})`,
+      );
+    contextLines.push(`Top errors:\n${errorLines.join('\n')}`);
+  }
+
+  const userPrompt = [
+    `Project state:\n${contextLines.join('\n')}`,
+    '',
+    'Generate 3-4 brief actionable intelligence insights about this project health.',
+    'Reply with ONLY a JSON array (no markdown fences, no prose):',
+    '[{"level":"warning","title":"short title","detail":"one sentence explanation"}]',
+    'Use level "error" for urgent, "warning" for risks, "info" for positives.',
+  ].join('\n');
+
+  try {
+    const result = await callLLM([{ role: 'user', content: userPrompt }], resolvedKey, {
+      maxTokens: 512,
+      model,
+    });
+    const raw = result.content;
+    const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+    const arrStart = cleaned.indexOf('[');
+    const arrEnd = cleaned.lastIndexOf(']');
+    if (arrStart === -1 || arrEnd === -1) return [];
+    const parsed = JSON.parse(cleaned.slice(arrStart, arrEnd + 1)) as Array<Record<string, unknown>>;
+    const ts = new Date().toISOString();
+    return parsed
+      .slice(0, 5)
+      .map((entry) => ({
+        level: (['error', 'warning', 'info'] as const).includes(
+          entry.level as 'error' | 'warning' | 'info',
+        )
+          ? (entry.level as InsightFeedEntry['level'])
+          : 'info',
+        title: String(entry.title ?? '').slice(0, 80),
+        detail: String(entry.detail ?? '').slice(0, 200),
+        timestamp: ts,
+      }))
+      .filter((e) => e.title.length > 0);
+  } catch {
+    return [];
+  }
 }

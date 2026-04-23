@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { router, projectProcedure, apiKeyProcedure } from '../trpc/index.js';
 import { oirNodeTypeSchema, oirNodeSchema, oirEdgeSchema, oirEdgeByOirIdSchema } from '@omnious/shared/oir-schemas';
-import { resolveApiKey, generateModuleGroups, backfillNodeEmbeddings, selectModel, generateProjectPersonality, generateProjectProfile, indexProjectDocuments } from '../services/ai.service.js';
+import { resolveApiKey, generateModuleGroups, backfillNodeEmbeddings, selectModel, generateProjectPersonality, generateProjectProfile, indexProjectDocuments, generateInsightFeed } from '../services/ai.service.js';
 import { generateCodeSummaries, getCodeSummaries } from '../services/summary.service.js';
 import { computeAndPersistClusters, getClusters, enhanceClusterLabels } from '../services/clustering.service.js';
 import { memPalaceService } from '../services/mempalace.service.js';
@@ -492,6 +492,28 @@ export const graphRouter = router({
         );
       });
 
+      // Generate AI insight feed (non-blocking — fire and forget)
+      generateInsightFeed(project.id, summaryKey, ctx.adminDb, summaryModel)
+        .then(async (insights) => {
+          if (insights.length === 0) return;
+          const { data: proj } = await ctx.adminDb
+            .from('projects')
+            .select('settings')
+            .eq('id', project.id)
+            .single();
+          const currentSettings = ((proj?.settings as Record<string, unknown> | null) ?? {});
+          await ctx.adminDb
+            .from('projects')
+            .update({ settings: { ...currentSettings, insights_feed: insights } as unknown as import('../lib/supabase/database.types.js').Json })
+            .eq('id', project.id);
+        })
+        .catch((err) => {
+          logger.warn(
+            { projectId: project.id, error: err instanceof Error ? err.message : String(err) },
+            'Insight feed generation failed (non-fatal)',
+          );
+        });
+
       // Compute and persist community clusters (non-blocking — fire and forget)
       // Skip if the graph hash hasn't changed (re-push of identical code)
       const graphHashChanged = !input.index_hash || input.index_hash !== project.last_index_hash;
@@ -509,6 +531,67 @@ export const graphRouter = router({
             'Community detection failed (non-fatal)',
           );
         });
+
+      // ── Snapshot push diff (non-blocking — fire and forget) ──
+      // Compute which nodes were added/removed vs previous push and store as push history
+      void (async () => {
+        try {
+          const { data: projSnap } = await ctx.adminDb
+            .from('projects')
+            .select('settings')
+            .eq('id', project.id)
+            .single();
+          const snapSettings = (projSnap?.settings as Record<string, unknown> | null) ?? {};
+          const prevSnapshot = snapSettings.node_snapshot as { oir_ids: string[]; hash: string | null; snapped_at: string } | undefined;
+          const prevOirSet = new Set<string>(prevSnapshot?.oir_ids ?? []);
+
+          // Fetch ALL current nodes after upsert
+          const { data: currentNodes } = await ctx.adminDb
+            .from('code_nodes')
+            .select('oir_id, name, file_path, type')
+            .eq('project_id', project.id);
+          const currentList = currentNodes ?? [];
+          const currentOirSet = new Set(currentList.map((n) => n.oir_id));
+
+          // Compute diff (cap at 100 per category to avoid huge settings JSON)
+          const addedNodes = currentList.filter((n) => !prevOirSet.has(n.oir_id)).slice(0, 100);
+          // For removed, we only have oir_ids — store minimal info
+          const removedOirIds = [...prevOirSet].filter((id) => !currentOirSet.has(id)).slice(0, 100);
+
+          const newEntry = {
+            hash: input.index_hash ?? null,
+            pushed_at: new Date().toISOString(),
+            added: addedNodes.map((n) => ({ oir_id: n.oir_id, name: n.name, file_path: n.file_path, type: n.type })),
+            removed_oir_ids: removedOirIds,
+            files_changed: (input.changed_file_paths ?? []).length + (input.stale_file_paths ?? []).length,
+            stats: {
+              nodes_added: addedNodes.length,
+              nodes_removed: removedOirIds.length,
+              files_changed: (input.changed_file_paths ?? []).length + (input.stale_file_paths ?? []).length,
+            },
+          };
+
+          const pushHistory = [newEntry, ...((snapSettings.push_history as typeof newEntry[]) ?? [])].slice(0, 5);
+          const newSnapshot = { oir_ids: [...currentOirSet], hash: input.index_hash ?? null, snapped_at: new Date().toISOString() };
+
+          // Re-fetch settings for safe merge (may have been updated by insight feed write)
+          const { data: freshProj } = await ctx.adminDb
+            .from('projects')
+            .select('settings')
+            .eq('id', project.id)
+            .single();
+          const freshSettings = ((freshProj?.settings as Record<string, unknown> | null) ?? {});
+          await ctx.adminDb
+            .from('projects')
+            .update({ settings: { ...freshSettings, push_history: pushHistory, node_snapshot: newSnapshot } as import('../lib/supabase/database.types.js').Json })
+            .eq('id', project.id);
+        } catch (err) {
+          logger.warn(
+            { projectId: project.id, error: err instanceof Error ? err.message : String(err) },
+            'Push diff snapshot failed (non-fatal)',
+          );
+        }
+      })();
 
       // ── Broadcast push completion via Supabase Realtime ──
       const pushEvent = {
@@ -735,6 +818,41 @@ export const graphRouter = router({
     .query(async ({ ctx, input }) => {
       const summaries = await getCodeSummaries(input.projectId, ctx.db);
       return { summaries };
+    }),
+
+  /** Fetch the AI-generated summary for a specific file (used by Inspector panel) */
+  getFileSummary: projectProcedure
+    .input(z.object({ projectId: z.string().uuid(), filePath: z.string().min(1).max(500) }))
+    .query(async ({ ctx, input }) => {
+      const { data } = await ctx.db
+        .from('code_summaries')
+        .select('summary, scope, path, node_count, updated_at')
+        .eq('project_id', input.projectId)
+        .eq('scope', 'file')
+        .eq('path', input.filePath)
+        .maybeSingle();
+      return data ?? null;
+    }),
+
+  /** Get push diff history for a project (last 5 pushes). */
+  getPushHistory: projectProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const { data } = await ctx.db
+        .from('projects')
+        .select('settings')
+        .eq('id', input.projectId)
+        .single();
+      const settings = (data?.settings as Record<string, unknown> | null) ?? {};
+      const pushHistory = (settings.push_history ?? []) as Array<{
+        hash: string | null;
+        pushed_at: string;
+        added: Array<{ oir_id: string; name: string; file_path: string; type: string }>;
+        removed_oir_ids: string[];
+        files_changed: number;
+        stats: { nodes_added: number; nodes_removed: number; files_changed: number };
+      }>;
+      return pushHistory;
     }),
 
   /** Lightweight full-project tree — all code nodes (id, name, type, file_path, line_start only).

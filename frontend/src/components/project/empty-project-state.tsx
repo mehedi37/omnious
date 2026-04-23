@@ -8,16 +8,21 @@ import {
   FileCode,
   GitBranch,
   Github,
+  Loader2,
+  Sparkles,
   Terminal,
   Upload,
   Workflow,
 } from 'lucide-react';
 import { useState } from 'react';
+import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useWorkspaceStore } from '@/lib/stores/workspace-store';
+import { trpc } from '@/trpc/client';
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -64,6 +69,24 @@ export function EmptyProjectState({
   workspaceSlug,
 }: EmptyProjectStateProps) {
   const maskedKey = apiKey ? `${apiKey.slice(0, 8)}...${apiKey.slice(-4)}` : 'kp_your_project_key';
+  const projectId = useWorkspaceStore((s) => s.currentProjectId);
+  const trpcUtils = trpc.useUtils();
+
+  const seedMutation = trpc.project.seedDemoData.useMutation({
+    onSuccess: (result) => {
+      if (result.seeded) {
+        toast.success(`Demo loaded! ${result.nodes} nodes, ${result.edges} edges, ${result.errors} errors`);
+        // Invalidate queries so the graph page refreshes
+        void trpcUtils.graph.listNodes.invalidate();
+        void trpcUtils.project.getById.invalidate();
+      } else {
+        toast.info('Project already has data — no seeding needed.');
+      }
+    },
+    onError: (err) => {
+      toast.error(`Demo seed failed: ${err.message}`);
+    },
+  });
 
   return (
     <div className="flex h-full items-center justify-center p-6">
@@ -78,6 +101,23 @@ export function EmptyProjectState({
             <strong>{projectName}</strong> is ready. Push your code graph using the CLI or GitHub
             Actions to see the visualization.
           </p>
+          <div className="flex items-center justify-center gap-3 pt-1">
+            <span className="text-xs text-muted-foreground">Or skip setup and explore with demo data:</span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5 border-primary/30 text-primary hover:bg-primary/5"
+              disabled={!projectId || seedMutation.isPending}
+              onClick={() => projectId && seedMutation.mutate({ projectId })}
+            >
+              {seedMutation.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5" />
+              )}
+              Load demo data
+            </Button>
+          </div>
         </div>
 
         {/* Steps */}

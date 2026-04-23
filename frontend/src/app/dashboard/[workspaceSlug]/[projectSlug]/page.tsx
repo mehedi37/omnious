@@ -18,9 +18,11 @@ import {
   AlertCircle,
   Loader2,
   BarChart3,
+  Sparkles,
+  Crosshair,
 } from 'lucide-react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { deriveSyncState, SyncStatusBadge } from '@/components/project/sync-status-badge';
 import { Badge } from '@/components/ui/badge';
@@ -71,10 +73,16 @@ export default function ProjectPage() {
   const params = useParams<{ workspaceSlug: string; projectSlug: string }>();
   const projectId = useWorkspaceStore((s) => s.currentProjectId);
   const [keyCopied, setKeyCopied] = useState(false);
+  const router = useRouter();
 
   const { data: overview, isLoading } = trpc.project.getProjectOverview.useQuery(
     { projectId: projectId! },
     { enabled: !!projectId, refetchInterval: 30_000 },
+  );
+
+  const { data: recentErrors } = trpc.error.listRecent.useQuery(
+    { projectId: projectId!, limit: 5 },
+    { enabled: !!projectId && (overview?.counts.errors ?? 0) > 0, staleTime: 30_000 },
   );
 
   const { data: projectData } = trpc.project.getById.useQuery(
@@ -111,6 +119,7 @@ export default function ProjectPage() {
     .sort(([, a], [, b]) => b - a);
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="mx-auto max-w-5xl space-y-6 p-6">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -127,6 +136,117 @@ export default function ProjectPage() {
           )}
         </div>
       </div>
+
+      {/* Intelligence Feed — AI proactive insights */}
+      {overview.insights_feed && overview.insights_feed.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" /> Intelligence Feed
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {overview.insights_feed.map((entry, i) => {
+              const levelStyles = {
+                error: 'border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-400',
+                warning: 'border-yellow-500/30 bg-yellow-500/5 text-yellow-700 dark:text-yellow-400',
+                info: 'border-blue-500/30 bg-blue-500/5 text-blue-700 dark:text-blue-400',
+              };
+              const dotStyles = {
+                error: 'bg-red-500',
+                warning: 'bg-yellow-500',
+                info: 'bg-blue-500',
+              };
+              return (
+                <div
+                  key={i}
+                  className={`flex gap-3 rounded-md border p-3 ${levelStyles[entry.level]}`}
+                >
+                  <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${dotStyles[entry.level]}`} />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium leading-snug">{entry.title}</p>
+                    <p className="text-xs opacity-80 mt-0.5">{entry.detail}</p>
+                  </div>
+                </div>
+              );
+            })}
+            <p className="text-[10px] text-muted-foreground pt-1">
+              Updated after last push · {formatRelativeTime(overview.last_indexed_at)}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Incident Feed — active unresolved errors sorted by recency */}
+      {recentErrors && recentErrors.length > 0 && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-destructive" /> Active Incidents
+            </CardTitle>
+            <Link
+              href={`${basePath}/errors`}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              View all {overview.counts.errors} →
+            </Link>
+          </CardHeader>
+          <CardContent className="space-y-2 pt-0">
+            {recentErrors.map((err) => {
+              const meta = err.metadata as Record<string, unknown> | null;
+              const narrative = meta?.narrative as { title?: string; confidence?: string } | undefined;
+              const headline = narrative?.title ?? err.error_type ?? 'Unknown Error';
+              const codeNode = err.code_node as { id: string; name: string; file_path: string } | null;
+              return (
+                <div
+                  key={err.id}
+                  className="flex items-start gap-3 rounded-md border p-3 hover:border-destructive/30 transition-colors group"
+                >
+                  <div className={`mt-1 h-2 w-2 shrink-0 rounded-full ${err.severity === 'error' ? 'bg-red-500' : err.severity === 'warning' ? 'bg-yellow-500' : 'bg-blue-500'}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium leading-snug truncate">{headline}</p>
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                      <span className="text-xs text-muted-foreground">{err.error_message?.slice(0, 80)}</span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      <span className="text-[10px] font-mono text-muted-foreground/70">×{err.occurrence_count}</span>
+                      {codeNode && <span className="text-[10px] text-muted-foreground/70">{codeNode.name}</span>}
+                      <Clock className="h-2.5 w-2.5 text-muted-foreground/50 shrink-0" />
+                      <span className="text-[10px] text-muted-foreground/70">{formatRelativeTime(err.last_seen_at)}</span>
+                      {narrative?.confidence && (
+                        <Badge variant="outline" className="text-[9px] h-4 px-1">
+                          {narrative.confidence} confidence
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {codeNode?.id && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => {
+                          sessionStorage.setItem('omnious:focus-node', codeNode.id);
+                          router.push(`${basePath}/graph`);
+                        }}
+                      >
+                        <Crosshair className="h-3 w-3" />
+                        Investigate
+                      </Button>
+                    )}
+                    <Link href={`${basePath}/errors/${err.id}`}>
+                      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs gap-1">
+                        <ArrowRight className="h-3 w-3" />
+                      </Button>
+                    </Link>
+                  </div>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Stats Grid */}
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
@@ -161,62 +281,64 @@ export default function ProjectPage() {
       </div>
 
       {/* AI Coverage + Node Types */}
-      <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
-        {/* AI Intelligence Coverage */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Brain className="h-4 w-4" /> AI Coverage
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <CoverageRow label="Summaries" count={overview.counts.summaries} total={overview.counts.nodes} icon={FileText} />
-            <CoverageRow label="Clusters" count={overview.counts.clusters} icon={Layers} />
-            <div className="flex items-center justify-between text-sm">
-              <span className="flex items-center gap-2 text-muted-foreground">
-                <BarChart3 className="h-3.5 w-3.5" /> AI Profile
-              </span>
-              {overview.has_ai_profile ? (
-                <span className="flex items-center gap-1 text-green-500 text-xs"><CheckCircle2 className="h-3.5 w-3.5" /> Generated</span>
-              ) : (
-                <span className="flex items-center gap-1 text-yellow-500 text-xs"><AlertCircle className="h-3.5 w-3.5" /> Pending push</span>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Node Type Breakdown */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Network className="h-4 w-4" /> Node Types
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {typeEntries.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No nodes indexed yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {typeEntries.slice(0, 8).map(([type, count]) => (
-                  <div key={type} className="flex items-center justify-between text-sm">
-                    <span className="capitalize text-muted-foreground">{type.replace(/_/g, ' ')}</span>
-                    <div className="flex items-center gap-2">
-                      <div
-                        className="h-2 rounded-full bg-primary/60"
-                        style={{ width: `${Math.max(12, (count / overview.counts.nodes) * 120)}px` }}
-                      />
-                      <span className="w-8 text-right font-mono text-xs">{count}</span>
-                    </div>
-                  </div>
-                ))}
-                {typeEntries.length > 8 && (
-                  <p className="text-xs text-muted-foreground">+{typeEntries.length - 8} more types</p>
+      {overview.counts.nodes > 0 && (
+        <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
+          {/* AI Intelligence Coverage */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Brain className="h-4 w-4" /> AI Coverage
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <CoverageRow label="Summaries" count={overview.counts.summaries} total={overview.counts.nodes} icon={FileText} />
+              <CoverageRow label="Clusters" count={overview.counts.clusters} icon={Layers} />
+              <div className="flex items-center justify-between text-sm">
+                <span className="flex items-center gap-2 text-muted-foreground">
+                  <BarChart3 className="h-3.5 w-3.5" /> AI Profile
+                </span>
+                {overview.has_ai_profile ? (
+                  <span className="flex items-center gap-1 text-green-500 text-xs"><CheckCircle2 className="h-3.5 w-3.5" /> Generated</span>
+                ) : (
+                  <span className="flex items-center gap-1 text-yellow-500 text-xs"><AlertCircle className="h-3.5 w-3.5" /> Pending push</span>
                 )}
               </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+            </CardContent>
+          </Card>
+
+          {/* Node Type Breakdown */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Network className="h-4 w-4" /> Node Types
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {typeEntries.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No nodes indexed yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {typeEntries.slice(0, 8).map(([type, count]) => (
+                    <div key={type} className="flex items-center justify-between text-sm">
+                      <span className="capitalize text-muted-foreground">{type.replace(/_/g, ' ')}</span>
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="h-2 rounded-full bg-primary/60"
+                          style={{ width: `${Math.max(12, (count / overview.counts.nodes) * 120)}px` }}
+                        />
+                        <span className="w-8 text-right font-mono text-xs">{count}</span>
+                      </div>
+                    </div>
+                  ))}
+                  {typeEntries.length > 8 && (
+                    <p className="text-xs text-muted-foreground">+{typeEntries.length - 8} more types</p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Quick Actions / Empty State */}
       {overview.counts.nodes === 0 ? (
@@ -308,6 +430,7 @@ npx @omnious/cli index && npx @omnious/cli push`}
           </div>
         </CardContent>
       </Card>
+    </div>
     </div>
   );
 }

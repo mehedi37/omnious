@@ -1,9 +1,13 @@
 'use client';
 
 import { FolderTree, PanelRight, Pause, Play, X } from 'lucide-react';
+import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import { AstTreeSidebar } from '@/components/graph/ast-tree-sidebar';
 import { D3GraphCanvas } from '@/components/graph/d3/d3-graph-canvas';
+import { GraphDiffPanel } from '@/components/graph/graph-diff-panel';
+import { GraphMinimap } from '@/components/graph/graph-minimap';
+import { GraphSearchPanel } from '@/components/graph/graph-search-panel';
 import { GraphFilterToolbar } from '@/components/graph/graph-filter-toolbar';
 import { InspectorPanel } from '@/components/graph/panels/inspector-panel';
 import { EmptyProjectState } from '@/components/project/empty-project-state';
@@ -79,9 +83,13 @@ function GraphPageInner() {
   const [mobileTreeOpen, setMobileTreeOpen] = useState(false);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
+  const [diffSheetOpen, setDiffSheetOpen] = useState(false);
   const currentProjectId = useWorkspaceStore((s) => s.currentProjectId);
   const pendingReplayTraceId = useUIStore((s) => s.pendingReplayTraceId);
   const trpcUtils = trpc.useUtils();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   // Wire up all keyboard shortcuts
   useKeyboardShortcuts();
@@ -136,9 +144,7 @@ function GraphPageInner() {
         useGraphStore.getState().setFocusMode(focusNodeId!);
         useGraphStore.getState().highlightConnectedEdges(focusNodeId!);
         useUIStore.getState().setActiveDetailTab('details');
-        window.dispatchEvent(
-          new CustomEvent('omnious:focus-node', { detail: { nodeId: focusNodeId } }),
-        );
+        // The canvas subscribes to focusedNodeId changes and pans automatically
       } else {
         // Graph not ready yet — retry
         timer = setTimeout(tryFocus, 200);
@@ -209,6 +215,20 @@ function GraphPageInner() {
     }
   }, [detailPanelOpen, handleDesktopInspectorClose, handleDesktopInspectorOpen]);
 
+  const handleToggleDiff = useCallback(() => {
+    setDiffSheetOpen((prev) => !prev);
+  }, []);
+
+  const handleExitSlice = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete('ai_gen');
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname);
+    useGraphStore.getState().setLatestSliceId(null);
+    // Reload full graph overview
+    loadOverview();
+  }, [router, pathname, searchParams, loadOverview]);
+
   // ── Loading overlay shared between mobile & desktop ──
   const loadingOverlay = isDataLoading ? (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/50 backdrop-blur-sm pointer-events-none">
@@ -224,7 +244,7 @@ function GraphPageInner() {
   if (isMobile) {
     return (
       <div className="relative h-full flex flex-col">
-        <GraphFilterToolbar />
+        <GraphFilterToolbar onExitSlice={handleExitSlice} />
         <div className="relative flex-1 min-h-0">
           <D3GraphCanvas className="absolute inset-0" />
           {loadingOverlay}
@@ -301,9 +321,14 @@ function GraphPageInner() {
           rightPanelOpen={detailPanelOpen}
           onToggleLeft={handleLeftToggle}
           onToggleRight={handleRightToggle}
+          diffOpen={diffSheetOpen}
+          onToggleDiff={handleToggleDiff}
+          onExitSlice={handleExitSlice}
         />
         <div className="relative flex-1 min-h-0 min-w-0">
           <D3GraphCanvas className="absolute inset-0" />
+          <GraphSearchPanel />
+          <GraphMinimap />
           {/* Trace replay controls bar */}
           {totalSteps > 0 && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full border bg-background/90 backdrop-blur-sm px-4 py-2 shadow-lg text-sm">
@@ -318,6 +343,13 @@ function GraphPageInner() {
               </Button>
             </div>
           )}
+
+          {/* Diff Sheet */}
+          <Sheet open={diffSheetOpen} onOpenChange={setDiffSheetOpen}>
+            <SheetContent side="right" showCloseButton className="w-95 sm:w-105 p-0 flex flex-col gap-0">
+              <GraphDiffPanel />
+            </SheetContent>
+          </Sheet>
         </div>
         {loadingOverlay}
       </div>

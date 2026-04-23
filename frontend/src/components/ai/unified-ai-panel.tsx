@@ -484,7 +484,11 @@ export function UnifiedAIPanel({
           {mode === 'graph' ? 'AI Graph Explorer' : 'AI Assistant'}
         </h3>
         {mode === 'graph' && (
-          <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+          <Badge
+            variant="outline"
+            className="h-5 px-1.5 text-[10px]"
+            title={shareNextSlice ? 'Next slice will be shareable via link' : 'Next slice is private'}
+          >
             {shareNextSlice ? 'Shared' : 'Private'}
           </Badge>
         )}
@@ -735,13 +739,16 @@ export function UnifiedAIPanel({
             {modelTier === 'auto' && ' — routes per query'}
           </span>
           {mode === 'graph' && (
-            <label className="ml-auto flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer">
-              <span>Shared</span>
+            <label
+              className="ml-auto flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer"
+              title="When enabled, the next generated graph slice will be accessible via a shareable link"
+            >
+              <span>Share slice</span>
               <Switch
                 size="sm"
                 checked={shareNextSlice}
                 onCheckedChange={setShareNextSlice}
-                aria-label="Make next graph slice link shareable"
+                aria-label="Make next graph slice accessible via a shareable link"
               />
             </label>
           )}

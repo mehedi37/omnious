@@ -8,6 +8,7 @@ import {
   Braces,
   Crosshair,
   FileCode,
+  Sparkles,
   X,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -201,6 +202,9 @@ export function NodeDetailPanel() {
           </div>
         )}
 
+        {/* AI-generated file summary */}
+        {attrs.filePath && <NodeFileSummary nodeId={nodeId} filePath={attrs.filePath} />}
+
         {/* Errors section */}
         <NodeErrorList nodeId={nodeId} nodeLabel={attrs.label} />
 
@@ -311,6 +315,45 @@ function ConnectedNodesList({ nodeId }: { nodeId: string }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function NodeFileSummary({ nodeId: _nodeId, filePath }: { nodeId: string; filePath: string }) {
+  const projectId = useWorkspaceStore((s) => s.currentProjectId);
+
+  const { data, isLoading } = trpc.graph.getFileSummary.useQuery(
+    { projectId: projectId ?? '', filePath },
+    { enabled: !!projectId && !!filePath },
+  );
+
+  if (!projectId) return null;
+  if (isLoading) return (
+    <div className="space-y-1">
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+        <Sparkles className="h-3 w-3" />
+        AI Summary
+      </p>
+      <p className="text-xs text-muted-foreground animate-pulse">Generating…</p>
+    </div>
+  );
+  if (!data) return null;
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+          <Sparkles className="h-3 w-3" />
+          AI Summary
+        </p>
+        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium border border-primary/20">
+          AI Generated
+        </span>
+      </div>
+      <p className="text-sm text-muted-foreground leading-relaxed">{data.summary}</p>
+      <p className="text-[10px] text-muted-foreground/60">
+        {data.node_count} symbol{data.node_count !== 1 ? 's' : ''} in file
+      </p>
     </div>
   );
 }

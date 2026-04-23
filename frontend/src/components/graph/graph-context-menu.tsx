@@ -11,6 +11,7 @@ import {
   Info,
   Map,
   Maximize,
+  MessageSquareDot,
   Route,
   RotateCcw,
 } from 'lucide-react';
@@ -216,6 +217,17 @@ export function useGraphContextMenu() {
     close();
   }, [menu?.nodeName, close]);
 
+  const handleAskThisNode = useCallback(() => {
+    if (!menu?.nodeName || !menu.nodeId) return;
+    // Select the node so Inspector has context, then prompt AI in first person
+    useGraphStore.getState().selectNode(menu.nodeId);
+    useAIStore.getState().setPrefillMessage(
+      `You are \`${menu.nodeName}\`. Describe yourself in first person: what you do, who calls you, your key dependencies, and any known failure patterns.`,
+    );
+    useUIStore.getState().setActiveDetailTab('ai');
+    close();
+  }, [menu?.nodeName, menu?.nodeId, close]);
+
   const handleCopyName = useCallback(() => {
     if (menu?.nodeName) {
       navigator.clipboard.writeText(menu.nodeName).then(() => {
@@ -345,6 +357,7 @@ export function useGraphContextMenu() {
             <MenuItem icon={AlertTriangle} label="Show Errors" onClick={handleShowErrors} />
             <MenuItem icon={Route} label={errorFlowActive ? 'Clear Error Path' : 'Trace Error Path'} onClick={handleTraceErrorPath} />
             <MenuItem icon={BotMessageSquare} label="Ask AI About This" onClick={handleAskAI} />
+            <MenuItem icon={MessageSquareDot} label="Ask This Node" onClick={handleAskThisNode} />
             <MenuItem icon={Copy} label="Copy Name" shortcut="Ctrl+C" onClick={handleCopyName} />
             <MenuSeparator />
             <MenuItem icon={EyeOff} label="Hide Node Type" shortcut="H" onClick={handleHideNode} />

@@ -8,10 +8,11 @@
  */
 
 import * as d3 from 'd3';
+import dagre from '@dagrejs/dagre';
 import type { D3SimNode, D3SimLink } from './types';
 import type { OmniousEdge } from '@/lib/stores/graph-store';
 
-export type LayoutMode = 'layered-tb' | 'layered-lr' | 'force' | 'stress';
+export type LayoutMode = 'layered-tb' | 'layered-lr' | 'force' | 'stress' | 'structure' | 'dagre';
 
 // ─── Topological depth BFS ────────────────────────────────────────────────
 
@@ -151,6 +152,81 @@ export function createSimulation(
     // Stress minimization: weaker charge, longer desired edge distance
     (sim.force('charge') as d3.ForceManyBody<D3SimNode>).strength(-150);
     (sim.force('link') as d3.ForceLink<D3SimNode, D3SimLink>).distance(240).strength(0.2);
+  } else if (layoutMode === 'structure') {
+    // File-tree structure mode: group nodes by top-level directory on X axis,
+    // BFS call-graph depth on Y axis — addresses the "hairball" problem.
+    const depths = computeTopologicalDepths(nodes, edges);
+    const maxDepth = Math.max(1, ...depths.values());
+
+    // Collect unique top-level directories
+    const dirSet = new Set<string>();
+    for (const n of nodes) {
+      const parts = (n.filePath ?? '').split('/');
+      // Use the second segment (after 'src' etc.) if available, else first
+      const key = parts.length > 2 ? parts.slice(0, 2).join('/') : parts[0] ?? 'root';
+      dirSet.add(key);
+    }
+    const dirs = [...dirSet].sort();
+    const dirIndex = new Map(dirs.map((d, i) => [d, i]));
+    const dirSpacing = canvasWidth / Math.max(1, dirs.length);
+
+    sim.force(
+      'structureX',
+      d3
+        .forceX<D3SimNode>((d) => {
+          const parts = (d.filePath ?? '').split('/');
+          const key = parts.length > 2 ? parts.slice(0, 2).join('/') : parts[0] ?? 'root';
+          const idx = dirIndex.get(key) ?? 0;
+          return (idx + 0.5) * dirSpacing - canvasWidth / 2 + cx;
+        })
+        .strength(0.25),
+    );
+    sim.force(
+      'structureY',
+      d3
+        .forceY<D3SimNode>((d) => {
+          const depth = depths.get(d.id) ?? 0;
+          const layerH = Math.min(180, (canvasHeight * 0.8) / (maxDepth + 1));
+          return cy - canvasHeight * 0.35 + depth * layerH;
+        })
+        .strength(0.25),
+    );
+    (sim.force('charge') as d3.ForceManyBody<D3SimNode>).strength(-180);
+  } else if (layoutMode === 'dagre') {
+    // Exact DAG layout using dagre — positions are pinned (fx/fy) so physics won't move them.
+    // The simulation still runs for collision avoidance via the collide force.
+    const g = new dagre.graphlib.Graph();
+    g.setDefaultEdgeLabel(() => ({}));
+    g.setGraph({ rankdir: 'TB', nodesep: 80, ranksep: 120, marginx: 40, marginy: 40 });
+
+    for (const n of nodes) {
+      g.setNode(n.id, { width: n.width ?? 140, height: 50 });
+    }
+    for (const e of edges) {
+      g.setEdge(e.source, e.target);
+    }
+
+    dagre.layout(g);
+
+    // Centre the dagre layout on the canvas
+    const graphInfo = g.graph();
+    const gw = (graphInfo.width ?? 0) as number;
+    const gh = (graphInfo.height ?? 0) as number;
+    const offsetX = cx - gw / 2;
+    const offsetY = cy - gh / 2;
+
+    for (const n of nodes) {
+      const pos = g.node(n.id);
+      if (pos) {
+        n.fx = pos.x + offsetX;
+        n.fy = pos.y + offsetY;
+      }
+    }
+
+    // No positional forces needed — positions are fixed; keep only collision.
+    sim.force('charge', null);
+    sim.force('center', null);
+    sim.force('link', null);
   }
 
   return sim;

@@ -78,6 +78,7 @@ export class D3GraphEngine {
     hoveredEdgeId: null,
     clusterMap: new Map(),
     layoutMode: 'layered-tb',
+    searchResultIds: new Set(),
   };
 
   private layoutMode: LayoutMode = 'layered-tb';
@@ -108,6 +109,7 @@ export class D3GraphEngine {
     this.zoom = createZoomBehavior(canvas, (t) => {
       this.transform = t;
       this.markDirty();
+      this.callbacks.onTransformChange?.(t.x, t.y, t.k);
     });
 
     // Input event listeners
@@ -215,6 +217,8 @@ export class D3GraphEngine {
         this.quadtree = buildQuadtree(this.simNodes);
         this.fitGraph();
         this.startRenderLoop();
+        // Emit node positions for minimap
+        this.emitNodePositions();
       },
       25,
       nodes.length > 500 ? 200 : 300,
@@ -286,18 +290,19 @@ export class D3GraphEngine {
 
   focusNode(id: string): void {
     const node = this.simNodes.find((n) => n.id === id);
-    if (!node || !node.x || !node.y) return;
+    if (!node || node.x == null || node.y == null) return;
 
     const cssW = this.canvas.clientWidth;
     const cssH = this.canvas.clientHeight;
-    // Preserve the current zoom level — only pan so the node is centred
-    const scale = this.transform.k;
+    // Zoom to at least 1.0 so the focused node is clearly visible
+    const scale = Math.max(this.transform.k, 1.0);
     const tx = cssW / 2 - node.x * scale;
     const ty = cssH / 2 - node.y * scale;
 
     d3.select(this.canvas)
       .transition()
-      .duration(350)
+      .duration(500)
+      .ease(d3.easeCubicOut)
       .call(this.zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
   }
 
@@ -373,10 +378,14 @@ export class D3GraphEngine {
     // ── Flow dots on active edges ────────────────────────────────────────
     if (visualState.activeEdgeIds.size > 0) {
       const elapsed = now - this.lastFlowTime;
-      this.lastFlowTime = now;
-      this.flowDotT = (this.flowDotT + elapsed / 1200) % 1;
+      if (elapsed >= 33) {
+        // Cap flow dot animation to ~30fps
+        this.lastFlowTime = now;
+        this.flowDotT = (this.flowDotT + elapsed / 1200) % 1;
+      }
       this.markDirty();
       for (const link of simLinks) {
+        if (!edgeVisible(link)) continue;
         if (visualState.activeEdgeIds.has(link.id)) drawFlowDot(ctx, link, this.flowDotT);
       }
     }
@@ -597,6 +606,16 @@ export class D3GraphEngine {
       this.startRenderLoop();
     }
   };
+
+  private emitNodePositions(): void {
+    const positions = this.simNodes
+      .filter((n) => n.x !== undefined && n.y !== undefined)
+      .map((n) => ({ id: n.id, x: n.x!, y: n.y! }));
+    this.canvas.dispatchEvent(new CustomEvent('omnious:node-positions', {
+      detail: positions,
+      bubbles: true,
+    }));
+  }
 
   // ─── Cleanup ──────────────────────────────────────────────────────────────
 

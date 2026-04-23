@@ -221,4 +221,23 @@ export const errorRouter = router({
 
       return { errors: data ?? [], total: count ?? 0 };
     }),
+
+  /** Fast summary of the most recent unresolved errors — used on the project overview page. */
+  listRecent: projectProcedure
+    .input(
+      z.object({
+        projectId: z.string().uuid(),
+        limit: z.number().int().min(1).max(20).default(5),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { data } = await ctx.db
+        .from('error_snapshots')
+        .select('id, error_type, error_message, occurrence_count, severity, last_seen_at, metadata, code_node:code_nodes (id, name, file_path)')
+        .eq('project_id', input.projectId)
+        .is('resolved_at', null)
+        .order('last_seen_at', { ascending: false })
+        .limit(input.limit);
+      return data ?? [];
+    }),
 });

@@ -6,9 +6,15 @@ import {
   Crosshair,
   Filter,
   Flame,
+  GitCompare,
+  GitGraph,
   Info,
+  LayoutDashboard,
+  Network,
   PanelLeft,
   PanelRight,
+  Search,
+  Undo2,
   X,
 } from 'lucide-react';
 import { useCallback } from 'react';
@@ -35,6 +41,9 @@ interface GraphFilterToolbarProps {
   rightPanelOpen?: boolean;
   onToggleLeft?: () => void;
   onToggleRight?: () => void;
+  diffOpen?: boolean;
+  onToggleDiff?: () => void;
+  onExitSlice?: () => void;
 }
 
 // ─── Filter chip ─────────────────────────────────────────────────────────────
@@ -69,11 +78,18 @@ export function GraphFilterToolbar({
   rightPanelOpen,
   onToggleLeft,
   onToggleRight,
+  diffOpen,
+  onToggleDiff,
+  onExitSlice,
 }: GraphFilterToolbarProps) {
   const severityFilters = useGraphStore((s) => s.severityFilters);
   const heatmapActive = useGraphStore((s) => s.heatmapActive);
+  const layoutMode = useGraphStore((s) => s.layoutMode);
   const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
   const nodeMap = useGraphStore((s) => s.nodeMap);
+  const nodeSearchOpen = useGraphStore((s) => s.nodeSearchOpen);
+  const searchResultIds = useGraphStore((s) => s.searchResultIds);
+  const latestSliceId = useGraphStore((s) => s.latestSliceId);
 
   const focusedNodeName = focusedNodeId
     ? (nodeMap.get(focusedNodeId)?.label ?? focusedNodeId)
@@ -90,6 +106,29 @@ export function GraphFilterToolbar({
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b bg-background/95 backdrop-blur-sm overflow-x-auto">
       <Filter className="h-3.5 w-3.5 text-muted-foreground mr-1 shrink-0" />
+
+      {/* Search toggle */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => useGraphStore.getState().setNodeSearchOpen(!nodeSearchOpen)}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all',
+              'hover:shadow-sm',
+              nodeSearchOpen || searchResultIds.size > 0
+                ? 'text-amber-600 bg-amber-500/10 border-amber-500/30 shadow-sm'
+                : 'border-border text-muted-foreground opacity-50 hover:opacity-75',
+            )}
+          >
+            <Search className="h-3 w-3" />
+            {searchResultIds.size > 0 ? `${searchResultIds.size} matches` : 'Search'}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Search nodes (Ctrl+F)</TooltipContent>
+      </Tooltip>
+
+      <div className="mx-1 h-4 w-px bg-border" />
 
       <FilterChip
         severity="error"
@@ -135,6 +174,72 @@ export function GraphFilterToolbar({
         Heatmap
       </button>
 
+      {onToggleDiff && (
+        <button
+          type="button"
+          onClick={onToggleDiff}
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all',
+            'hover:shadow-sm',
+            diffOpen
+              ? 'text-purple-500 bg-purple-500/10 border-purple-500/30 shadow-sm'
+              : 'border-border text-muted-foreground opacity-50 hover:opacity-75',
+          )}
+        >
+          <GitCompare className="h-3 w-3" />
+          What Changed?
+        </button>
+      )}
+
+      {/* Layout mode toggle: Semantic ↔ Structure */}
+      <div className="mx-1 h-4 w-px bg-border" />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => useGraphStore.getState().setLayoutMode(layoutMode === 'structure' ? 'layered-tb' : 'structure')}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all',
+              'hover:shadow-sm',
+              layoutMode === 'structure'
+                ? 'text-teal-600 bg-teal-500/10 border-teal-500/30 shadow-sm'
+                : 'border-border text-muted-foreground opacity-50 hover:opacity-75',
+            )}
+          >
+            {layoutMode === 'structure' ? (
+              <><LayoutDashboard className="h-3 w-3" /> Structure</>
+            ) : (
+              <><Network className="h-3 w-3" /> Semantic</>
+            )}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          {layoutMode === 'structure' ? 'Switch to Semantic (call graph) layout' : 'Switch to Structure (file-tree) layout'}
+        </TooltipContent>
+      </Tooltip>
+
+      {/* DAG layout toggle */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => useGraphStore.getState().setLayoutMode(layoutMode === 'dagre' ? 'layered-tb' : 'dagre')}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all',
+              'hover:shadow-sm',
+              layoutMode === 'dagre'
+                ? 'text-violet-600 bg-violet-500/10 border-violet-500/30 shadow-sm'
+                : 'border-border text-muted-foreground opacity-50 hover:opacity-75',
+            )}
+          >
+            <GitGraph className="h-3 w-3" /> DAG
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          {layoutMode === 'dagre' ? 'Switch to Semantic layout' : 'Switch to DAG layout (ranked, acyclic)'}
+        </TooltipContent>
+      </Tooltip>
+
       {/* Focus mode exit chip — only visible when a node is focused */}
       {focusedNodeName && (
         <>
@@ -151,6 +256,25 @@ export function GraphFilterToolbar({
             <Crosshair className="h-3 w-3" />
             <span className="max-w-35 truncate">{focusedNodeName}</span>
             <X className="h-3 w-3 opacity-60" />
+          </button>
+        </>
+      )}
+
+      {/* Slice exit chip — only visible when viewing an AI-generated graph slice */}
+      {latestSliceId && onExitSlice && (
+        <>
+          <div className="mx-1 h-4 w-px bg-border" />
+          <button
+            type="button"
+            onClick={onExitSlice}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all',
+              'hover:shadow-sm text-violet-600 bg-violet-500/10 border-violet-500/30 shadow-sm',
+            )}
+            title="Exit AI slice and return to full graph"
+          >
+            <Undo2 className="h-3 w-3" />
+            <span>Exit slice</span>
           </button>
         </>
       )}

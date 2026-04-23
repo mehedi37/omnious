@@ -135,7 +135,7 @@ interface GraphState {
   nodeMap: Map<string, OmniousNodeData>;
 
   // Layout mode (for D3 force layout biasing)
-  layoutMode: 'layered-tb' | 'layered-lr' | 'force' | 'stress';
+  layoutMode: 'layered-tb' | 'layered-lr' | 'force' | 'stress' | 'structure' | 'dagre';
   isLayouting: boolean;
   layoutVersion: number;
 
@@ -171,6 +171,8 @@ interface GraphState {
 
   // Search
   nodeSearchOpen: boolean;
+  searchQuery: string;
+  searchResultIds: Set<string>;
 
   // Edge highlighting
   highlightedNodeId: string | null;
@@ -261,6 +263,7 @@ interface GraphState {
   setFocusMode: (nodeId: string) => void;
   clearFocusMode: () => void;
   setNodeSearchOpen: (open: boolean) => void;
+  setSearchQuery: (query: string) => void;
   highlightConnectedEdges: (nodeId: string | null) => void;
 
   // AI query state
@@ -325,6 +328,8 @@ export const useGraphStore = create<GraphState>()(
       connectedNodeIds: new Set<string>(),
 
       nodeSearchOpen: false,
+      searchQuery: '',
+      searchResultIds: new Set<string>(),
       highlightedNodeId: null,
 
       queryActive: false,
@@ -648,6 +653,30 @@ export const useGraphStore = create<GraphState>()(
       setNodeSearchOpen: (open) =>
         set((state) => {
           state.nodeSearchOpen = open;
+          if (!open) {
+            state.searchQuery = '';
+            state.searchResultIds = new Set();
+          }
+        }),
+
+      setSearchQuery: (query) =>
+        set((state) => {
+          state.searchQuery = query;
+          if (!query.trim()) {
+            state.searchResultIds = new Set();
+            return;
+          }
+          const lower = query.toLowerCase();
+          const results = new Set<string>();
+          for (const node of state.nodes) {
+            const label = (node.data.label ?? '').toLowerCase();
+            const path = (node.data.filePath ?? '').toLowerCase();
+            const type = (node.data.oirType ?? '').toLowerCase();
+            if (label.includes(lower) || path.includes(lower) || type.includes(lower)) {
+              results.add(node.id);
+            }
+          }
+          state.searchResultIds = results;
         }),
 
       highlightConnectedEdges: (nodeId) =>
